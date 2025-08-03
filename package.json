@@ -1,0 +1,23 @@
+{
+  "name": "viteonly",
+  "version": "1.0.0",
+  "description": "A simple Vite only starter kit for React",
+  "main": "script.tsx",
+  "scripts": {
+    "dev": "vite --open",
+    "build": "vite build"
+  },
+  "keywords": [],
+  "author": "stagas <gstagas@gmail.com>",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "vite": "^7.0.6"
+  }
+}
