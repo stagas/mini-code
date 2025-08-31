@@ -172,10 +172,29 @@ export class MouseHandler {
   }
 
   handlePointerUp(event: PointerEvent, currentState: InputState) {
+    // If we have a zero-length selection (no actual dragging occurred), clear it
+    if (
+      currentState.selection &&
+      this.isSelectionEmpty(currentState.selection) &&
+      this.clickCount === 1
+    ) {
+      const newState = { ...currentState }
+      newState.selection = null
+      this.onStateChange(newState)
+    }
+
     this.isDragging = false
     this.dragStartPosition = null
     this.isWordSelection = false
     this.isLineSelection = false
+  }
+
+  private isSelectionEmpty(selection: {
+    start: { line: number; column: number }
+    end: { line: number; column: number }
+  }): boolean {
+    const { start, end } = selection
+    return start.line === end.line && start.column === end.column
   }
 
   private getCaretPositionFromCoordinates(x: number, y: number, lines: string[]): CaretPosition {

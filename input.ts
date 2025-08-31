@@ -527,12 +527,17 @@ export class InputHandler {
     // Flush any pending debounced state before non-character operations
     this.history.flushDebouncedState(state)
 
-    // If there's a selection, save it in history since we're deleting it
-    if (state.selection) {
+    // If there's a non-empty selection, save it in history since we're deleting it
+    if (state.selection && !this.isSelectionEmpty(state.selection)) {
       this.saveBeforeStateWithCaretAndSelectionToHistory(state)
       this.deleteSelection(state)
       this.saveAfterStateWithSelectionToHistory(state)
       return
+    }
+
+    // Clear any empty selection before proceeding with normal backspace
+    if (state.selection && this.isSelectionEmpty(state.selection)) {
+      state.selection = null
     }
 
     // No selection - save before state with caret position since we're changing it
@@ -566,12 +571,17 @@ export class InputHandler {
     // Flush any pending debounced state before non-character operations
     this.history.flushDebouncedState(state)
 
-    // If there's a selection, save it in history since we're deleting it
-    if (state.selection) {
+    // If there's a non-empty selection, save it in history since we're deleting it
+    if (state.selection && !this.isSelectionEmpty(state.selection)) {
       this.saveBeforeStateWithCaretAndSelectionToHistory(state)
       this.deleteSelection(state)
       this.saveAfterStateWithSelectionToHistory(state)
       return
+    }
+
+    // Clear any empty selection before proceeding with normal delete
+    if (state.selection && this.isSelectionEmpty(state.selection)) {
+      state.selection = null
     }
 
     // No selection - save before state with caret position since we're changing it
@@ -597,12 +607,16 @@ export class InputHandler {
   }
 
   private insertCharacter(state: InputState, char: string) {
-    // If there's a selection, delete it first, then insert the character
-    if (state.selection) {
+    // If there's a non-empty selection, delete it first, then insert the character
+    if (state.selection && !this.isSelectionEmpty(state.selection)) {
       this.saveDebouncedBeforeStateToHistory(state)
       this.deleteSelection(state)
       // Don't return here - continue to insert the character
     } else {
+      // Clear any empty selection
+      if (state.selection && this.isSelectionEmpty(state.selection)) {
+        state.selection = null
+      }
       // No selection - save before state for character input
       this.saveDebouncedBeforeStateToHistory(state)
     }
@@ -861,6 +875,11 @@ export class InputHandler {
       state.caret.column = Math.max(0, state.caret.column - caretLineRemoved)
       state.caret.columnIntent = state.caret.column
     }
+  }
+
+  private isSelectionEmpty(selection: Selection): boolean {
+    const { start, end } = selection
+    return start.line === end.line && start.column === end.column
   }
 
   private deleteSelection(state: InputState) {
@@ -1133,11 +1152,14 @@ export class InputHandler {
     // Flush any pending debounced state before line move operation
     this.history.flushDebouncedState(state)
 
-    if (state.selection) {
+    if (state.selection && !this.isSelectionEmpty(state.selection)) {
       // Move selection lines
       this.moveSelectionLinesUp(state)
     } else {
-      // Move current line
+      // Clear any empty selection and move current line
+      if (state.selection && this.isSelectionEmpty(state.selection)) {
+        state.selection = null
+      }
       this.moveCurrentLineUp(state)
     }
   }
@@ -1146,11 +1168,14 @@ export class InputHandler {
     // Flush any pending debounced state before line move operation
     this.history.flushDebouncedState(state)
 
-    if (state.selection) {
+    if (state.selection && !this.isSelectionEmpty(state.selection)) {
       // Move selection lines
       this.moveSelectionLinesDown(state)
     } else {
-      // Move current line
+      // Clear any empty selection and move current line
+      if (state.selection && this.isSelectionEmpty(state.selection)) {
+        state.selection = null
+      }
       this.moveCurrentLineDown(state)
     }
   }
