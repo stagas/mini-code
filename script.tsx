@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { calculatePopupPosition, findFunctionCallContext, type FunctionCallInfo,
+  functionDefinitions } from './function-signature.js'
+import FunctionSignaturePopup from './FunctionSignaturePopup.js'
 import { History } from './history'
 import { getSelectedText, InputHandler, type InputState, type Selection } from './input'
 import { MouseHandler } from './mouse'
@@ -263,11 +266,21 @@ const CodeEditor = () => {
       'for (let i = 0; i < 10; i++) {',
       '  console.log(fibonacci(i));',
       '}',
+      '',
+      '// Try typing these function calls to see the popup:',
+      '// Math.max(',
+      '// setTimeout(',
+      '// Array.from(',
+      '// console.log(',
     ],
   })
 
   // Highlight code on every render to ensure real-time updates
   const highlightedCode = highlightCode(inputState.lines.join('\n'), 'javascript')
+
+  // Function signature popup state
+  const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
+  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
 
   const inputHandlerRef = useRef<InputHandler | null>(null)
   const historyRef = useRef<History | null>(null)
@@ -295,6 +308,31 @@ const CodeEditor = () => {
   useEffect(() => {
     inputStateRef.current = inputState
   }, [inputState])
+
+  // Update function signature popup when cursor position changes
+  useEffect(() => {
+    const callInfo = findFunctionCallContext(inputState.lines, inputState.caret.line, inputState.caret.column)
+    setFunctionCallInfo(callInfo)
+
+    if (callInfo && canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d')
+      if (ctx) {
+        // Configure context same as drawing
+        ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+
+        const padding = 16
+        const lineHeight = 20
+        const position = calculatePopupPosition(callInfo.openParenPosition, padding, lineHeight, ctx, inputState.lines)
+
+        // Get canvas position relative to viewport
+        const rect = canvasRef.current.getBoundingClientRect()
+        setPopupPosition({
+          x: rect.left + position.x,
+          y: rect.top + position.y,
+        })
+      }
+    }
+  }, [inputState.caret.line, inputState.caret.column, inputState.lines])
 
   // Ensure textarea always has focus
   useEffect(() => {
@@ -421,7 +459,28 @@ const CodeEditor = () => {
     drawCode()
 
     // Handle window resize
-    const handleResize = () => drawCode()
+    const handleResize = () => {
+      drawCode()
+
+      // Update popup position after resize
+      if (functionCallInfo && canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d')
+        if (ctx) {
+          ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+          const padding = 16
+          const lineHeight = 20
+          const position = calculatePopupPosition(functionCallInfo.openParenPosition, padding, lineHeight, ctx,
+            inputState.lines)
+
+          const rect = canvasRef.current.getBoundingClientRect()
+          setPopupPosition({
+            x: rect.left + position.x,
+            y: rect.top + position.y,
+          })
+        }
+      }
+    }
+
     window.addEventListener('resize', handleResize)
 
     return () => window.removeEventListener('resize', handleResize)
@@ -487,6 +546,16 @@ const CodeEditor = () => {
         }}
         onFocus={() => {}}
       />
+
+      {/* Function signature popup */}
+      {functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (
+        <FunctionSignaturePopup
+          signature={functionDefinitions[functionCallInfo.functionName]}
+          currentArgumentIndex={functionCallInfo.currentArgumentIndex}
+          position={popupPosition}
+          visible={true}
+        />
+      )}
     </div>
   )
 }
