@@ -4,7 +4,7 @@ import { FunctionParameter, FunctionSignature } from './function-signature'
 interface FunctionSignaturePopupProps {
   signature: FunctionSignature
   currentArgumentIndex: number
-  position: { x: number; y: number }
+  position: { x: number; y: number; showBelow: boolean }
   visible: boolean
 }
 
@@ -43,7 +43,7 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
       style={{
         left: position.x,
         top: position.y,
-        transform: 'translateY(-100%)', // Position above the cursor
+        transform: position.showBelow ? 'translateY(0%)' : 'translateY(-100%)',
       }}
     >
       <div className="p-3">

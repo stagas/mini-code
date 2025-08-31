@@ -268,12 +268,49 @@ export const calculatePopupPosition = (
   lineHeight: number,
   ctx: CanvasRenderingContext2D,
   lines: string[],
-): { x: number; y: number } => {
+  canvasRect: DOMRect,
+  popupHeight: number = 120, // Estimated popup height
+): { x: number; y: number; showBelow: boolean } => {
   const line = lines[openParenPosition.line] || ''
   const textBeforeParen = line.substring(0, openParenPosition.column)
 
-  const x = padding + ctx.measureText(textBeforeParen).width
-  const y = padding + openParenPosition.line * lineHeight - 5
+  let x = padding + ctx.measureText(textBeforeParen).width
+  const lineY = padding + openParenPosition.line * lineHeight
 
-  return { x, y }
+  // Check if popup would exceed left/right boundaries
+  const popupWidth = 400 // Estimated popup width
+  if (x + popupWidth > canvasRect.width) {
+    x = canvasRect.width - popupWidth - 10 // 10px margin from right edge
+  }
+  if (x < 10) {
+    x = 10 // 10px margin from left edge
+  }
+
+  // Check if popup would exceed top boundary
+  const spaceAbove = lineY
+  const spaceBelow = canvasRect.height - lineY - lineHeight
+
+  let y: number
+  let showBelow: boolean
+
+  if (spaceAbove >= popupHeight) {
+    // Show above - there's enough space
+    y = lineY - 5
+    showBelow = false
+  } else if (spaceBelow >= popupHeight) {
+    // Show below - not enough space above but enough below
+    y = lineY + lineHeight + 5
+    showBelow = true
+  } else {
+    // Not enough space in either direction, choose the side with more space
+    if (spaceAbove > spaceBelow) {
+      y = lineY - 5
+      showBelow = false
+    } else {
+      y = lineY + lineHeight + 5
+      showBelow = true
+    }
+  }
+
+  return { x, y, showBelow }
 }

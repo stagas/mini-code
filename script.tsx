@@ -280,7 +280,8 @@ const CodeEditor = () => {
 
   // Function signature popup state
   const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
-  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number; showBelow: boolean }>({ x: 0, y: 0,
+    showBelow: false })
 
   const inputHandlerRef = useRef<InputHandler | null>(null)
   const historyRef = useRef<History | null>(null)
@@ -322,13 +323,15 @@ const CodeEditor = () => {
 
         const padding = 16
         const lineHeight = 20
-        const position = calculatePopupPosition(callInfo.openParenPosition, padding, lineHeight, ctx, inputState.lines)
+        const rect = canvasRef.current.getBoundingClientRect()
+        const position = calculatePopupPosition(callInfo.openParenPosition, padding, lineHeight, ctx, inputState.lines,
+          rect)
 
         // Get canvas position relative to viewport
-        const rect = canvasRef.current.getBoundingClientRect()
         setPopupPosition({
           x: rect.left + position.x,
           y: rect.top + position.y,
+          showBelow: position.showBelow,
         })
       }
     }
@@ -469,13 +472,14 @@ const CodeEditor = () => {
           ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
           const padding = 16
           const lineHeight = 20
-          const position = calculatePopupPosition(functionCallInfo.openParenPosition, padding, lineHeight, ctx,
-            inputState.lines)
-
           const rect = canvasRef.current.getBoundingClientRect()
+          const position = calculatePopupPosition(functionCallInfo.openParenPosition, padding, lineHeight, ctx,
+            inputState.lines, rect)
+
           setPopupPosition({
             x: rect.left + position.x,
             y: rect.top + position.y,
+            showBelow: position.showBelow,
           })
         }
       }
