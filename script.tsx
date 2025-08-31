@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { History } from './history'
 import { getSelectedText, InputHandler, type InputState, type Selection } from './input'
 import { MouseHandler } from './mouse'
+import { getTokenColor, highlightCode, type HighlightedLine } from './syntax'
 
 const drawSelection = (
   ctx: CanvasRenderingContext2D,
@@ -67,6 +68,21 @@ const drawSelection = (
   }
 }
 
+const drawHighlightedLine = (
+  ctx: CanvasRenderingContext2D,
+  highlightedLine: HighlightedLine,
+  x: number,
+  y: number,
+) => {
+  let currentX = x
+
+  for (const token of highlightedLine.tokens) {
+    ctx.fillStyle = getTokenColor(token.type)
+    ctx.fillText(token.content, currentX, y)
+    currentX += ctx.measureText(token.content).width
+  }
+}
+
 const CodeEditor = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -85,6 +101,9 @@ const CodeEditor = () => {
       '}',
     ],
   })
+
+  // Highlight code on every render to ensure real-time updates
+  const highlightedCode = highlightCode(inputState.lines.join('\n'), 'javascript')
 
   const inputHandlerRef = useRef<InputHandler | null>(null)
   const historyRef = useRef<History | null>(null)
@@ -218,10 +237,10 @@ const CodeEditor = () => {
         drawSelection(ctx, inputState, padding, lineHeight)
       }
 
-      inputState.lines.forEach((line: string, index: number) => {
+      // Draw highlighted code
+      highlightedCode.forEach((highlightedLine: HighlightedLine, index: number) => {
         const y = padding + index * lineHeight
-        ctx.fillStyle = '#e5e7eb'
-        ctx.fillText(line, padding, y)
+        drawHighlightedLine(ctx, highlightedLine, padding, y)
       })
 
       // Draw caret
@@ -242,7 +261,7 @@ const CodeEditor = () => {
     window.addEventListener('resize', handleResize)
 
     return () => window.removeEventListener('resize', handleResize)
-  }, [inputState])
+  }, [inputState, highlightedCode])
 
   useEffect(() => {
     const canvas = canvasRef.current

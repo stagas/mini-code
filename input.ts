@@ -292,7 +292,7 @@ export class InputHandler {
   saveDebouncedBeforeStateToHistory(state: InputState) {
     this.history.saveDebouncedBeforeState({
       lines: [...state.lines],
-      caret: null, // Don't save caret position - it's not relevant for most operations
+      caret: { ...state.caret }, // Save caret position for character input to restore properly on undo
       selection: null, // Don't save selection in history - it's not relevant for most operations
     })
   }
@@ -597,16 +597,15 @@ export class InputHandler {
   }
 
   private insertCharacter(state: InputState, char: string) {
-    // If there's a selection, save it in history since we're deleting it
+    // If there's a selection, delete it first, then insert the character
     if (state.selection) {
       this.saveDebouncedBeforeStateToHistory(state)
       this.deleteSelection(state)
-      this.saveDebouncedAfterStateToHistory(state)
-      return
+      // Don't return here - continue to insert the character
+    } else {
+      // No selection - save before state for character input
+      this.saveDebouncedBeforeStateToHistory(state)
     }
-
-    // No selection - character input uses debounced history (caret position saved in after state)
-    this.saveDebouncedBeforeStateToHistory(state)
 
     const currentLine = state.lines[state.caret.line] || ''
     const newLine =
