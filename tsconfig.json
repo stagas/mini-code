@@ -1,5 +1,14 @@
 {
   "compilerOptions": {
-    "jsx": "react-jsx"
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "target": "esnext",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true
   }
 }

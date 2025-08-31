@@ -1,0 +1,321 @@
+import type { InputState, CaretPosition } from './input'
+
+export class MouseHandler {
+  private canvas: HTMLCanvasElement
+  private ctx: CanvasRenderingContext2D
+  private onStateChange: (state: InputState) => void
+  private isDragging = false
+  private dragStartPosition: CaretPosition | null = null
+  private clickCount = 0
+  private lastClickTime = 0
+  private lastClickPosition: CaretPosition | null = null
+  private isWordSelection = false
+  private isLineSelection = false
+
+  constructor(canvas: HTMLCanvasElement, onStateChange: (state: InputState) => void) {
+    this.canvas = canvas
+    this.ctx = canvas.getContext('2d')!
+    this.onStateChange = onStateChange
+  }
+
+  handlePointerDown(event: PointerEvent, currentState: InputState) {
+    const rect = this.canvas.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+
+    const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+
+    // Handle click counting for double/triple click
+    const now = Date.now()
+    const isSamePosition =
+      this.lastClickPosition &&
+      this.lastClickPosition.line === caretPosition.line &&
+      this.lastClickPosition.column === caretPosition.column
+
+    if (now - this.lastClickTime < 500 && isSamePosition) {
+      this.clickCount++
+      // Reset to 1 on 4th click
+      if (this.clickCount > 3) {
+        this.clickCount = 1
+      }
+    } else {
+      this.clickCount = 1
+    }
+
+    this.lastClickTime = now
+    this.lastClickPosition = { ...caretPosition }
+
+    const newState = { ...currentState }
+    newState.caret = caretPosition
+
+    // Handle different click types
+    if (this.clickCount === 1) {
+      // Single click - start drag selection
+      this.isDragging = true
+      this.isWordSelection = false
+      this.isLineSelection = false
+      this.dragStartPosition = { ...caretPosition }
+      newState.selection = {
+        start: { line: caretPosition.line, column: caretPosition.column },
+        end: { line: caretPosition.line, column: caretPosition.column },
+      }
+    } else if (this.clickCount === 2) {
+      // Double click - select word and start word selection drag
+      this.isDragging = true
+      this.isWordSelection = true
+      this.isLineSelection = false
+      this.dragStartPosition = { ...caretPosition }
+      const wordSelection = this.selectWordAtPosition(caretPosition, currentState.lines)
+      newState.selection = wordSelection
+      // Position caret at the end of the selected word
+      newState.caret = {
+        line: wordSelection.end.line,
+        column: wordSelection.end.column,
+        columnIntent: wordSelection.end.column,
+      }
+    } else if (this.clickCount === 3) {
+      // Triple click - select line and start line selection drag
+      this.isDragging = true
+      this.isWordSelection = false
+      this.isLineSelection = true
+      this.dragStartPosition = { ...caretPosition }
+      const lineSelection = this.selectLineAtPosition(caretPosition, currentState.lines)
+      newState.selection = lineSelection
+      // Position caret at the end of the selected line
+      newState.caret = {
+        line: lineSelection.end.line,
+        column: lineSelection.end.column,
+        columnIntent: lineSelection.end.column,
+      }
+    }
+
+    this.onStateChange(newState)
+  }
+
+  handlePointerMove(event: PointerEvent, currentState: InputState) {
+    if (!this.isDragging || !this.dragStartPosition) return
+
+    const rect = this.canvas.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+
+    const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+
+    const newState = { ...currentState }
+
+    if (this.isWordSelection) {
+      // Word selection - expand selection word by word
+      const selection = this.expandWordSelection(
+        this.dragStartPosition,
+        caretPosition,
+        currentState.lines,
+      )
+      newState.selection = selection
+
+      // Position caret at the end of selection (opposite of drag start)
+      const isDraggingForward =
+        this.dragStartPosition.line < caretPosition.line ||
+        (this.dragStartPosition.line === caretPosition.line &&
+          this.dragStartPosition.column <= caretPosition.column)
+
+      if (isDraggingForward) {
+        newState.caret = {
+          line: selection.end.line,
+          column: selection.end.column,
+          columnIntent: selection.end.column,
+        }
+      } else {
+        newState.caret = {
+          line: selection.start.line,
+          column: selection.start.column,
+          columnIntent: selection.start.column,
+        }
+      }
+    } else if (this.isLineSelection) {
+      // Line selection - expand selection line by line
+      const selection = this.expandLineSelection(
+        this.dragStartPosition,
+        caretPosition,
+        currentState.lines,
+      )
+      newState.selection = selection
+
+      // Position caret at the end of selection (opposite of drag start)
+      const isDraggingForward =
+        this.dragStartPosition.line < caretPosition.line ||
+        (this.dragStartPosition.line === caretPosition.line &&
+          this.dragStartPosition.column <= caretPosition.column)
+
+      if (isDraggingForward) {
+        newState.caret = {
+          line: selection.end.line,
+          column: selection.end.column,
+          columnIntent: selection.end.column,
+        }
+      } else {
+        newState.caret = {
+          line: selection.start.line,
+          column: selection.start.column,
+          columnIntent: selection.start.column,
+        }
+      }
+    } else {
+      // Normal character selection
+      newState.selection = {
+        start: { line: this.dragStartPosition.line, column: this.dragStartPosition.column },
+        end: { line: caretPosition.line, column: caretPosition.column },
+      }
+      newState.caret = caretPosition
+    }
+
+    this.onStateChange(newState)
+  }
+
+  handlePointerUp(event: PointerEvent, currentState: InputState) {
+    this.isDragging = false
+    this.dragStartPosition = null
+    this.isWordSelection = false
+    this.isLineSelection = false
+  }
+
+  private getCaretPositionFromCoordinates(x: number, y: number, lines: string[]): CaretPosition {
+    const padding = 16
+    const lineHeight = 20
+
+    // Calculate line number
+    const lineIndex = Math.max(0, Math.floor((y - padding) / lineHeight))
+    const clampedLineIndex = Math.min(lineIndex, lines.length - 1)
+
+    // Get the line text
+    const line = lines[clampedLineIndex] || ''
+
+    // Calculate column position
+    const adjustedX = x - padding
+    const column = this.getColumnFromX(adjustedX, line)
+
+    return {
+      line: clampedLineIndex,
+      column,
+      columnIntent: column,
+    }
+  }
+
+  private getColumnFromX(x: number, line: string): number {
+    if (x <= 0) return 0
+
+    // Measure text width to find the closest character position
+    let currentWidth = 0
+    for (let i = 0; i < line.length; i++) {
+      const charWidth = this.ctx.measureText(line[i]).width
+      const nextWidth = currentWidth + charWidth
+
+      // If x is closer to the middle of this character, return this position
+      if (x <= currentWidth + charWidth / 2) {
+        return i
+      }
+
+      currentWidth = nextWidth
+    }
+
+    // If we've gone through all characters, return the end of the line
+    return line.length
+  }
+
+  private selectWordAtPosition(
+    position: CaretPosition,
+    lines: string[],
+  ): { start: { line: number; column: number }; end: { line: number; column: number } } {
+    const line = lines[position.line] || ''
+
+    // Find word boundaries
+    let start = position.column
+    let end = position.column
+
+    // Move start to beginning of word
+    while (start > 0 && this.isWordCharacter(line[start - 1])) {
+      start--
+    }
+
+    // Move end to end of word
+    while (end < line.length && this.isWordCharacter(line[end])) {
+      end++
+    }
+
+    return {
+      start: { line: position.line, column: start },
+      end: { line: position.line, column: end },
+    }
+  }
+
+  private selectLineAtPosition(
+    position: CaretPosition,
+    lines: string[],
+  ): { start: { line: number; column: number }; end: { line: number; column: number } } {
+    const line = lines[position.line] || ''
+
+    return {
+      start: { line: position.line, column: 0 },
+      end: { line: position.line, column: line.length },
+    }
+  }
+
+  private isWordCharacter(char: string): boolean {
+    return /[a-zA-Z0-9_]/.test(char)
+  }
+
+  private expandWordSelection(
+    startPos: CaretPosition,
+    endPos: CaretPosition,
+    lines: string[],
+  ): { start: { line: number; column: number }; end: { line: number; column: number } } {
+    // Get the initial word selection from the start position
+    const startWord = this.selectWordAtPosition(startPos, lines)
+
+    // Determine which position comes first (start of drag vs current position)
+    const isStartBeforeEnd =
+      startPos.line < endPos.line ||
+      (startPos.line === endPos.line && startPos.column <= endPos.column)
+
+    const firstPos = isStartBeforeEnd ? startPos : endPos
+    const lastPos = isStartBeforeEnd ? endPos : startPos
+
+    // Get word boundaries for both positions
+    const firstWord = this.selectWordAtPosition(firstPos, lines)
+    const lastWord = this.selectWordAtPosition(lastPos, lines)
+
+    // If both positions are in the same word, just return that word
+    if (
+      firstWord.start.line === lastWord.start.line &&
+      firstWord.start.column === lastWord.start.column &&
+      firstWord.end.column === lastWord.end.column
+    ) {
+      return firstWord
+    }
+
+    // Return selection from start of first word to end of last word
+    return {
+      start: { line: firstWord.start.line, column: firstWord.start.column },
+      end: { line: lastWord.end.line, column: lastWord.end.column },
+    }
+  }
+
+  private expandLineSelection(
+    startPos: CaretPosition,
+    endPos: CaretPosition,
+    lines: string[],
+  ): { start: { line: number; column: number }; end: { line: number; column: number } } {
+    // Determine which position comes first (start of drag vs current position)
+    const isStartBeforeEnd =
+      startPos.line < endPos.line ||
+      (startPos.line === endPos.line && startPos.column <= endPos.column)
+
+    const firstLine = isStartBeforeEnd ? startPos.line : endPos.line
+    const lastLine = isStartBeforeEnd ? endPos.line : startPos.line
+
+    // Return selection from start of first line to end of last line
+    return {
+      start: { line: firstLine, column: 0 },
+      end: { line: lastLine, column: lines[lastLine]?.length || 0 },
+    }
+  }
+}

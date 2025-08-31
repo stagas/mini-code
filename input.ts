@@ -1,0 +1,1270 @@
+import { History } from './history'
+
+/**
+ * Input Handler with Debounced History
+ *
+ * History saving behavior:
+ * - Character input (a-z, 0-9, symbols): Uses debounced history with 500ms delay to group rapid typing
+ * - Other operations (Backspace, Delete, Enter, Tab, Cut, Paste): Immediate history saves
+ * - Caret position: Only saved in history after content changes (not for navigation)
+ * - Selection: Only saved in history when actually used (deleted, modified, or replaced)
+ * - Undo/Redo: Flushes any pending debounced state before operation
+ * - Navigation keys (arrows, page up/down, home/end): No history saves (cursor movement only)
+ */
+
+export interface CaretPosition {
+  line: number
+  column: number
+  columnIntent: number
+}
+
+export interface Selection {
+  start: { line: number; column: number }
+  end: { line: number; column: number }
+}
+
+export interface InputState {
+  caret: CaretPosition
+  selection: Selection | null
+  lines: string[]
+}
+
+export function getSelectedText(inputState: InputState): string {
+  if (!inputState.selection) return ''
+
+  const { start, end } = inputState.selection
+
+  // Normalize selection (ensure start comes before end)
+  const normalizedStart =
+    start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+  const normalizedEnd =
+    start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+  if (normalizedStart.line === normalizedEnd.line) {
+    // Single line selection
+    const line = inputState.lines[normalizedStart.line] || ''
+    return line.substring(normalizedStart.column, normalizedEnd.column)
+  } else {
+    // Multi-line selection
+    const selectedLines: string[] = []
+
+    for (let lineIndex = normalizedStart.line; lineIndex <= normalizedEnd.line; lineIndex++) {
+      const line = inputState.lines[lineIndex] || ''
+
+      if (lineIndex === normalizedStart.line) {
+        // First line: from start column to end of line
+        selectedLines.push(line.substring(normalizedStart.column))
+      } else if (lineIndex === normalizedEnd.line) {
+        // Last line: from start of line to end column
+        selectedLines.push(line.substring(0, normalizedEnd.column))
+      } else {
+        // Middle lines: entire line
+        selectedLines.push(line)
+      }
+    }
+
+    return selectedLines.join('\n')
+  }
+}
+
+export class InputHandler {
+  private onStateChange: (state: InputState) => void
+  private history: History
+
+  constructor(onStateChange: (state: InputState) => void, history: History) {
+    this.onStateChange = onStateChange
+    this.history = history
+  }
+
+  handleKeyDown(event: KeyboardEvent, currentState: InputState) {
+    // Do nothing for modifier keys pressed alone
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
+      return
+    }
+
+    const newState = { ...currentState }
+    const isShiftPressed = event.shiftKey
+    const shouldSaveToHistory = this.shouldSaveToHistory(event.key)
+    const isCharacterInput = this.isCharacterInput(event.key)
+
+    // Start selection if shift is pressed and no selection exists
+    if (isShiftPressed && !newState.selection) {
+      newState.selection = {
+        start: { line: newState.caret.line, column: newState.caret.column },
+        end: { line: newState.caret.line, column: newState.caret.column },
+      }
+    }
+
+    // Save before state for operations that modify content
+    if (shouldSaveToHistory) {
+      if (isCharacterInput) {
+        this.saveDebouncedBeforeStateToHistory(newState)
+      } else {
+        // Flush any pending debounced state before non-character operations
+        this.history.flushDebouncedState(newState)
+
+        // Special handling for Enter - it needs caret position in before state
+        if (event.key === 'Enter') {
+          this.saveBeforeStateWithCaretToHistory(newState)
+        } else {
+          this.saveBeforeStateToHistory(newState)
+        }
+      }
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      switch (event.key.toLowerCase()) {
+        case 'c':
+          // Allow browser default for copy
+          return
+        case 'a':
+          event.preventDefault()
+          this.handleSelectAll(currentState)
+          return
+        case 'x':
+          event.preventDefault()
+          this.handleCut(currentState)
+          return
+        case 'v':
+          // Let the paste event handle it
+          return
+        case 'z':
+          event.preventDefault()
+          this.handleUndo(currentState)
+          return
+        case 'y':
+          event.preventDefault()
+          this.handleRedo(currentState)
+          return
+      }
+    }
+
+    if (event.altKey) {
+      switch (event.key) {
+        case 'ArrowUp':
+          event.preventDefault()
+          this.moveLineUp(newState)
+          this.onStateChange(newState)
+          return
+        case 'ArrowDown':
+          event.preventDefault()
+          this.moveLineDown(newState)
+          this.onStateChange(newState)
+          return
+      }
+    }
+
+    // For any event that reaches here, we handle it and prevent default browser behavior.
+    event.preventDefault()
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        if (event.ctrlKey || event.metaKey) {
+          this.moveCaretWordLeft(newState)
+        } else {
+          this.moveCaretLeft(newState)
+        }
+        break
+      case 'ArrowRight':
+        if (event.ctrlKey || event.metaKey) {
+          this.moveCaretWordRight(newState)
+        } else {
+          this.moveCaretRight(newState)
+        }
+        break
+      case 'ArrowUp':
+        this.moveCaretUp(newState)
+        break
+      case 'ArrowDown':
+        this.moveCaretDown(newState)
+        break
+      case 'PageUp':
+        this.moveCaretPageUp(newState)
+        break
+      case 'PageDown':
+        this.moveCaretPageDown(newState)
+        break
+      case 'Home':
+        this.moveCaretToLineStart(newState)
+        break
+      case 'End':
+        this.moveCaretToLineEnd(newState)
+        break
+      case 'Backspace':
+        this.handleBackspace(newState)
+        break
+      case 'Delete':
+        this.handleDelete(newState)
+        break
+      case 'Tab':
+        if (event.shiftKey) {
+          this.handleShiftTab(newState)
+        } else {
+          this.handleTab(newState)
+        }
+        break
+      case 'Enter':
+        this.handleEnter(newState)
+        break
+      default:
+        // Handle character insertion
+        if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
+          this.insertCharacter(newState, event.key)
+        }
+        break
+    }
+
+    // Update selection end position if shift is pressed and selection exists
+    // But don't create selection for Tab key (Shift+Tab should not select)
+    if (isShiftPressed && newState.selection && event.key !== 'Tab') {
+      newState.selection.end = { line: newState.caret.line, column: newState.caret.column }
+    }
+
+    // Clear selection if shift is not pressed (except for special keys)
+    // Don't clear selection for Tab key when there's already a selection
+    if (
+      (!isShiftPressed || event.key === 'Tab') &&
+      ['Backspace', 'Delete'].indexOf(event.key) === -1 &&
+      !(event.key === 'Tab' && newState.selection)
+    ) {
+      newState.selection = null
+    }
+
+    // Save after state for operations that modify content
+    if (shouldSaveToHistory) {
+      if (isCharacterInput) {
+        this.saveDebouncedAfterStateToHistory(newState)
+      } else {
+        this.saveAfterStateToHistory(newState)
+      }
+    }
+
+    this.onStateChange(newState)
+  }
+
+  private shouldSaveToHistory(key: string): boolean {
+    // Save history for operations that modify content
+    // This includes: Backspace, Delete, Tab, Enter, and printable characters
+    // This excludes: Navigation keys, function keys, and modifier keys
+    return (
+      key === 'Backspace' ||
+      key === 'Delete' ||
+      key === 'Tab' ||
+      key === 'Enter' ||
+      (key.length === 1 &&
+        ![
+          'z',
+          'y',
+          'ArrowLeft',
+          'ArrowRight',
+          'ArrowUp',
+          'ArrowDown',
+          'PageUp',
+          'PageDown',
+          'Home',
+          'End',
+        ].includes(key))
+    )
+  }
+
+  private isCharacterInput(key: string): boolean {
+    // Character input is printable characters (not control keys)
+    // These use debounced history to group rapid typing into chunks
+    return key.length === 1 && !['Backspace', 'Delete', 'Tab', 'Enter'].includes(key)
+  }
+
+  saveBeforeStateToHistory(state: InputState) {
+    this.history.saveBeforeState({
+      lines: [...state.lines],
+      caret: null, // Don't save caret position - it's not relevant for most operations
+      selection: null, // Don't save selection in history - it's not relevant for most operations
+    })
+  }
+
+  saveAfterStateToHistory(state: InputState) {
+    this.history.saveAfterState({
+      lines: [...state.lines],
+      caret: { ...state.caret }, // Save final caret position after content changes
+      selection: null, // Don't save selection in history - it's not relevant for most operations
+    })
+  }
+
+  saveDebouncedBeforeStateToHistory(state: InputState) {
+    this.history.saveDebouncedBeforeState({
+      lines: [...state.lines],
+      caret: null, // Don't save caret position - it's not relevant for most operations
+      selection: null, // Don't save selection in history - it's not relevant for most operations
+    })
+  }
+
+  saveDebouncedAfterStateToHistory(state: InputState) {
+    this.history.saveDebouncedAfterState({
+      lines: [...state.lines],
+      caret: { ...state.caret }, // Save final caret position after content changes
+      selection: null, // Don't save selection in history - it's not relevant for most operations
+    })
+  }
+
+  // Special method for operations that actually use selection
+  saveBeforeStateWithSelectionToHistory(state: InputState) {
+    this.history.saveBeforeState({
+      lines: [...state.lines],
+      caret: null, // Don't save caret position - it's not relevant for most operations
+      selection: state.selection
+        ? {
+            start: { ...state.selection.start },
+            end: { ...state.selection.end },
+          }
+        : null,
+    })
+  }
+
+  saveAfterStateWithSelectionToHistory(state: InputState) {
+    this.history.saveAfterState({
+      lines: [...state.lines],
+      caret: { ...state.caret }, // Save final caret position after content changes
+      selection: state.selection
+        ? {
+            start: { ...state.selection.start },
+            end: { ...state.selection.end },
+          }
+        : null,
+    })
+  }
+
+  // Special method for operations that need caret position in before state (like Cut, Paste)
+  saveBeforeStateWithCaretAndSelectionToHistory(state: InputState) {
+    this.history.saveBeforeState({
+      lines: [...state.lines],
+      caret: { ...state.caret }, // Save caret position before operation
+      selection: state.selection
+        ? {
+            start: { ...state.selection.start },
+            end: { ...state.selection.end },
+          }
+        : null,
+    })
+  }
+
+  saveBeforeStateWithCaretToHistory(state: InputState) {
+    this.history.saveBeforeState({
+      lines: [...state.lines],
+      caret: { ...state.caret }, // Save caret position before operation
+      selection: null, // Don't save selection in history - it's not relevant for most operations
+    })
+  }
+
+  saveSelectionToHistory(newState: InputState) {
+    // Save selection changes to history
+    this.saveBeforeStateToHistory(newState)
+    this.saveAfterStateToHistory(newState)
+  }
+
+  private moveCaretLeft(state: InputState) {
+    if (state.caret.column > 0) {
+      state.caret.column--
+      state.caret.columnIntent = state.caret.column
+    } else if (state.caret.line > 0) {
+      state.caret.line--
+      state.caret.column = state.lines[state.caret.line]?.length || 0
+      state.caret.columnIntent = state.caret.column
+    }
+  }
+
+  private moveCaretRight(state: InputState) {
+    const currentLine = state.lines[state.caret.line] || ''
+    if (state.caret.column < currentLine.length) {
+      state.caret.column++
+      state.caret.columnIntent = state.caret.column
+    } else if (state.caret.line < state.lines.length - 1) {
+      state.caret.line++
+      state.caret.column = 0
+      state.caret.columnIntent = 0
+    }
+  }
+
+  private moveCaretUp(state: InputState) {
+    if (state.caret.line > 0) {
+      state.caret.line--
+      const targetLine = state.lines[state.caret.line] || ''
+      state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    }
+  }
+
+  private moveCaretDown(state: InputState) {
+    if (state.caret.line < state.lines.length - 1) {
+      state.caret.line++
+      const targetLine = state.lines[state.caret.line] || ''
+      state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    }
+  }
+
+  private moveCaretPageUp(state: InputState) {
+    const pageSize = 10 // Number of lines to move up
+    const newLine = Math.max(0, state.caret.line - pageSize)
+    if (newLine !== state.caret.line) {
+      state.caret.line = newLine
+      const targetLine = state.lines[state.caret.line] || ''
+      state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    }
+  }
+
+  private moveCaretPageDown(state: InputState) {
+    const pageSize = 10 // Number of lines to move down
+    const newLine = Math.min(state.lines.length - 1, state.caret.line + pageSize)
+    if (newLine !== state.caret.line) {
+      state.caret.line = newLine
+      const targetLine = state.lines[state.caret.line] || ''
+      state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    }
+  }
+
+  private moveCaretToLineStart(state: InputState) {
+    state.caret.column = 0
+    state.caret.columnIntent = 0
+  }
+
+  private moveCaretToLineEnd(state: InputState) {
+    const currentLine = state.lines[state.caret.line] || ''
+    state.caret.column = currentLine.length
+    state.caret.columnIntent = currentLine.length
+  }
+
+  private isWordChar(char: string): boolean {
+    return /[a-zA-Z0-9_]/.test(char)
+  }
+
+  private findWordStart(line: string, startColumn: number): number {
+    if (startColumn <= 0) return 0
+
+    let column = startColumn - 1
+    const startChar = line[column]
+
+    if (!startChar) return column
+
+    // If we're starting on whitespace, move left through whitespace
+    if (/\s/.test(startChar)) {
+      while (column > 0 && /\s/.test(line[column - 1])) {
+        column--
+      }
+    } else if (this.isWordChar(startChar)) {
+      // If we're on a word character, move to start of word
+      while (column > 0 && this.isWordChar(line[column - 1])) {
+        column--
+      }
+    } else {
+      // If we're on punctuation, move to start of punctuation group
+      while (column > 0 && !this.isWordChar(line[column - 1]) && !/\s/.test(line[column - 1])) {
+        column--
+      }
+    }
+
+    return column
+  }
+
+  private findWordEnd(line: string, startColumn: number): number {
+    if (startColumn >= line.length) return line.length
+
+    let column = startColumn
+    const startChar = line[column]
+
+    if (!startChar) return column
+
+    // If we're starting on whitespace, move right through whitespace
+    if (/\s/.test(startChar)) {
+      while (column < line.length && /\s/.test(line[column])) {
+        column++
+      }
+    } else if (this.isWordChar(startChar)) {
+      // If we're on a word character, move to end of word
+      while (column < line.length && this.isWordChar(line[column])) {
+        column++
+      }
+    } else {
+      // If we're on punctuation, move to end of punctuation group
+      while (column < line.length && !this.isWordChar(line[column]) && !/\s/.test(line[column])) {
+        column++
+      }
+    }
+
+    return column
+  }
+
+  private moveCaretWordLeft(state: InputState) {
+    const currentLine = state.lines[state.caret.line] || ''
+
+    if (state.caret.column > 0) {
+      // Find the start of the current or previous word
+      const newColumn = this.findWordStart(currentLine, state.caret.column)
+      state.caret.column = newColumn
+      state.caret.columnIntent = newColumn
+    } else if (state.caret.line > 0) {
+      // Move to end of previous line
+      state.caret.line--
+      const prevLine = state.lines[state.caret.line] || ''
+      state.caret.column = prevLine.length
+      state.caret.columnIntent = state.caret.column
+    }
+  }
+
+  private moveCaretWordRight(state: InputState) {
+    const currentLine = state.lines[state.caret.line] || ''
+
+    if (state.caret.column < currentLine.length) {
+      // Find the end of the current or next word
+      const newColumn = this.findWordEnd(currentLine, state.caret.column)
+      state.caret.column = newColumn
+      state.caret.columnIntent = newColumn
+    } else if (state.caret.line < state.lines.length - 1) {
+      // Move to start of next line
+      state.caret.line++
+      state.caret.column = 0
+      state.caret.columnIntent = 0
+    }
+  }
+
+  private handleBackspace(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // If there's a selection, save it in history since we're deleting it
+    if (state.selection) {
+      this.saveBeforeStateWithCaretAndSelectionToHistory(state)
+      this.deleteSelection(state)
+      this.saveAfterStateWithSelectionToHistory(state)
+      return
+    }
+
+    // No selection - save before state with caret position since we're changing it
+    this.saveBeforeStateWithCaretToHistory(state)
+
+    const currentLine = state.lines[state.caret.line] || ''
+
+    if (state.caret.column > 0) {
+      // Delete character before cursor
+      const newLine =
+        currentLine.slice(0, state.caret.column - 1) + currentLine.slice(state.caret.column)
+      state.lines[state.caret.line] = newLine
+      state.caret.column--
+      state.caret.columnIntent = state.caret.column
+    } else if (state.caret.line > 0) {
+      // Merge with previous line
+      const prevLine = state.lines[state.caret.line - 1] || ''
+      const newLine = prevLine + currentLine
+      state.lines[state.caret.line - 1] = newLine
+      state.lines.splice(state.caret.line, 1)
+      state.caret.line--
+      state.caret.column = prevLine.length
+      state.caret.columnIntent = state.caret.column
+    }
+
+    // Save after state
+    this.saveAfterStateToHistory(state)
+  }
+
+  private handleDelete(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // If there's a selection, save it in history since we're deleting it
+    if (state.selection) {
+      this.saveBeforeStateWithCaretAndSelectionToHistory(state)
+      this.deleteSelection(state)
+      this.saveAfterStateWithSelectionToHistory(state)
+      return
+    }
+
+    // No selection - save before state with caret position since we're changing it
+    this.saveBeforeStateWithCaretToHistory(state)
+
+    const currentLine = state.lines[state.caret.line] || ''
+
+    if (state.caret.column < currentLine.length) {
+      // Delete character after cursor
+      const newLine =
+        currentLine.slice(0, state.caret.column) + currentLine.slice(state.caret.column + 1)
+      state.lines[state.caret.line] = newLine
+    } else if (state.caret.line < state.lines.length - 1) {
+      // Merge with next line
+      const nextLine = state.lines[state.caret.line + 1] || ''
+      const newLine = currentLine + nextLine
+      state.lines[state.caret.line] = newLine
+      state.lines.splice(state.caret.line + 1, 1)
+    }
+
+    // Save after state
+    this.saveAfterStateToHistory(state)
+  }
+
+  private insertCharacter(state: InputState, char: string) {
+    // If there's a selection, save it in history since we're deleting it
+    if (state.selection) {
+      this.saveDebouncedBeforeStateToHistory(state)
+      this.deleteSelection(state)
+      this.saveDebouncedAfterStateToHistory(state)
+      return
+    }
+
+    // No selection - character input uses debounced history (caret position saved in after state)
+    this.saveDebouncedBeforeStateToHistory(state)
+
+    const currentLine = state.lines[state.caret.line] || ''
+    const newLine =
+      currentLine.slice(0, state.caret.column) + char + currentLine.slice(state.caret.column)
+    state.lines[state.caret.line] = newLine
+    state.caret.column++
+    state.caret.columnIntent = state.caret.column
+
+    // Save after state with debouncing
+    this.saveDebouncedAfterStateToHistory(state)
+  }
+
+  private handleTab(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // Check if we have a real selection (not just cursor position)
+    const hasRealSelection =
+      state.selection &&
+      (state.selection.start.line !== state.selection.end.line ||
+        state.selection.start.column !== state.selection.end.column)
+
+    if (hasRealSelection) {
+      // Save selection in history since we're modifying it
+      this.saveBeforeStateWithSelectionToHistory(state)
+      this.indentSelection(state)
+      this.saveAfterStateWithSelectionToHistory(state)
+    } else {
+      // No selection - save before state without selection
+      this.saveBeforeStateToHistory(state)
+
+      // No selection or cursor position - insert spaces/tab characters
+      const currentLine = state.lines[state.caret.line] || ''
+      const spaces = '  ' // 2 spaces for indentation
+      const newLine =
+        currentLine.slice(0, state.caret.column) + spaces + currentLine.slice(state.caret.column)
+      state.lines[state.caret.line] = newLine
+      state.caret.column += spaces.length
+      state.caret.columnIntent = state.caret.column
+
+      // Save after state
+      this.saveAfterStateToHistory(state)
+    }
+  }
+
+  private handleShiftTab(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // Check if we have a real selection (not just cursor position)
+    const hasRealSelection =
+      state.selection &&
+      (state.selection.start.line !== state.selection.end.line ||
+        state.selection.start.column !== state.selection.end.column)
+
+    if (hasRealSelection) {
+      // Save selection in history since we're modifying it
+      this.saveBeforeStateWithSelectionToHistory(state)
+      this.unindentSelection(state)
+      this.saveAfterStateWithSelectionToHistory(state)
+    } else {
+      // No selection - save before state without selection
+      this.saveBeforeStateToHistory(state)
+
+      // No selection or cursor position - unindent current line
+      const currentLine = state.lines[state.caret.line] || ''
+      const spaces = '  ' // 2 spaces for indentation
+
+      // Find the start of the current line (after any existing indentation)
+      const lineStart = currentLine.search(/\S/)
+      const currentIndent = lineStart === -1 ? currentLine.length : lineStart
+
+      if (currentIndent > 0) {
+        // Calculate how many spaces to remove (up to 2, but not more than current indent)
+        const spacesToRemove = Math.min(spaces.length, currentIndent)
+        const newIndent = currentIndent - spacesToRemove
+
+        // Create new line with reduced indentation
+        const newLine = Array(newIndent + 1).join(' ') + currentLine.slice(currentIndent)
+        state.lines[state.caret.line] = newLine
+
+        // Adjust caret position if it was within the removed indentation
+        if (state.caret.column <= currentIndent) {
+          state.caret.column = Math.max(0, state.caret.column - spacesToRemove)
+          state.caret.columnIntent = state.caret.column
+        }
+      }
+
+      // Save after state
+      this.saveAfterStateToHistory(state)
+    }
+  }
+
+  private handleEnter(state: InputState) {
+    // If there's a selection, delete it first
+    if (state.selection) {
+      this.deleteSelection(state)
+    }
+
+    const currentLine = state.lines[state.caret.line] || ''
+    const beforeCaret = currentLine.slice(0, state.caret.column)
+    const afterCaret = currentLine.slice(state.caret.column)
+
+    // Get the indentation of the current line
+    const lineStart = beforeCaret.search(/\S/)
+    const currentIndent = lineStart === -1 ? beforeCaret.length : lineStart
+
+    // Check if the line ends with an opening brace
+    const trimmedBeforeCaret = beforeCaret.trim()
+    const endsWithOpeningBrace = /[{([]$/.test(trimmedBeforeCaret)
+
+    // Calculate indentation for the new line
+    const spaces = '  ' // 2 spaces for indentation
+    const newIndent = endsWithOpeningBrace ? currentIndent + spaces.length : currentIndent
+
+    // Create new line with the calculated indentation
+    const newLine = Array(newIndent + 1).join(' ')
+
+    // Update current line to end at caret position
+    state.lines[state.caret.line] = beforeCaret
+
+    // Insert new line after current line
+    state.lines.splice(state.caret.line + 1, 0, newLine + afterCaret)
+
+    // Move caret to the new line at the calculated indentation level
+    state.caret.line++
+    state.caret.column = newIndent
+    state.caret.columnIntent = newIndent
+  }
+
+  private indentSelection(state: InputState) {
+    if (!state.selection) return
+
+    const { start, end } = state.selection
+    const spaces = '  ' // 2 spaces for indentation
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    // If the start is at column 0, don't include that line in indentation
+    const firstLineToIndent =
+      normalizedStart.column === 0 && normalizedEnd.line > normalizedStart.line
+        ? normalizedStart.line + 1
+        : normalizedStart.line
+
+    // If the end is at column 0, don't include that line in indentation
+    const lastLineToIndent =
+      normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
+        ? normalizedEnd.line - 1
+        : normalizedEnd.line
+
+    // Indent all lines in the selection (excluding boundary lines if at column 0)
+    for (let lineIndex = firstLineToIndent; lineIndex <= lastLineToIndent; lineIndex++) {
+      const line = state.lines[lineIndex] || ''
+      state.lines[lineIndex] = spaces + line
+    }
+
+    // Adjust selection boundaries - only adjust if the line was actually indented
+    if (
+      state.selection.start.line >= firstLineToIndent &&
+      state.selection.start.line <= lastLineToIndent
+    ) {
+      state.selection.start.column += spaces.length
+    }
+    if (
+      state.selection.end.line >= firstLineToIndent &&
+      state.selection.end.line <= lastLineToIndent
+    ) {
+      state.selection.end.column += spaces.length
+    }
+
+    // Adjust caret position - only if the caret line was indented
+    if (state.caret.line >= firstLineToIndent && state.caret.line <= lastLineToIndent) {
+      state.caret.column += spaces.length
+      state.caret.columnIntent = state.caret.column
+    }
+  }
+
+  private unindentSelection(state: InputState) {
+    if (!state.selection) return
+
+    const { start, end } = state.selection
+    const spaces = '  ' // 2 spaces for indentation
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    // If the start is at column 0, don't include that line in unindentation
+    const firstLineToUnindent =
+      normalizedStart.column === 0 && normalizedEnd.line > normalizedStart.line
+        ? normalizedStart.line + 1
+        : normalizedStart.line
+
+    // If the end is at column 0, don't include that line in unindentation
+    const lastLineToUnindent =
+      normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
+        ? normalizedEnd.line - 1
+        : normalizedEnd.line
+
+    // Track how much we actually removed from each line
+    const removedPerLine: number[] = []
+
+    // Unindent all lines in the selection (excluding boundary lines if at column 0)
+    for (let lineIndex = firstLineToUnindent; lineIndex <= lastLineToUnindent; lineIndex++) {
+      const line = state.lines[lineIndex] || ''
+
+      // Find the start of the line (after any existing indentation)
+      const lineStart = line.search(/\S/)
+      const currentIndent = lineStart === -1 ? line.length : lineStart
+
+      if (currentIndent > 0) {
+        // Calculate how many spaces to remove (up to 2, but not more than current indent)
+        const spacesToRemove = Math.min(spaces.length, currentIndent)
+        const newIndent = currentIndent - spacesToRemove
+
+        // Create new line with reduced indentation
+        const newLine = Array(newIndent + 1).join(' ') + line.slice(currentIndent)
+        state.lines[lineIndex] = newLine
+
+        removedPerLine[lineIndex] = spacesToRemove
+      } else {
+        removedPerLine[lineIndex] = 0
+      }
+    }
+
+    // Adjust selection boundaries based on what was actually removed
+    const startLineRemoved = removedPerLine[state.selection.start.line] || 0
+    const endLineRemoved = removedPerLine[state.selection.end.line] || 0
+
+    // Adjust selection boundaries - only adjust if the line was actually unindented
+    if (
+      state.selection.start.line >= firstLineToUnindent &&
+      state.selection.start.line <= lastLineToUnindent
+    ) {
+      state.selection.start.column = Math.max(0, state.selection.start.column - startLineRemoved)
+    }
+    if (
+      state.selection.end.line >= firstLineToUnindent &&
+      state.selection.end.line <= lastLineToUnindent
+    ) {
+      state.selection.end.column = Math.max(0, state.selection.end.column - endLineRemoved)
+    }
+
+    // Adjust caret position - only if the caret line was unindented
+    if (state.caret.line >= firstLineToUnindent && state.caret.line <= lastLineToUnindent) {
+      const caretLineRemoved = removedPerLine[state.caret.line] || 0
+      state.caret.column = Math.max(0, state.caret.column - caretLineRemoved)
+      state.caret.columnIntent = state.caret.column
+    }
+  }
+
+  private deleteSelection(state: InputState) {
+    if (!state.selection) return
+
+    const { start, end } = state.selection
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    if (normalizedStart.line === normalizedEnd.line) {
+      // Single line selection
+      const line = state.lines[normalizedStart.line] || ''
+      const newLine = line.slice(0, normalizedStart.column) + line.slice(normalizedEnd.column)
+      state.lines[normalizedStart.line] = newLine
+
+      // Move caret to start of selection
+      state.caret.line = normalizedStart.line
+      state.caret.column = normalizedStart.column
+      state.caret.columnIntent = state.caret.column
+    } else {
+      // Multi-line selection
+      const startLine = state.lines[normalizedStart.line] || ''
+      const endLine = state.lines[normalizedEnd.line] || ''
+
+      // Merge start and end lines
+      const newStartLine =
+        startLine.slice(0, normalizedStart.column) + endLine.slice(normalizedEnd.column)
+      state.lines[normalizedStart.line] = newStartLine
+
+      // Remove middle lines
+      state.lines.splice(normalizedStart.line + 1, normalizedEnd.line - normalizedStart.line)
+
+      // Move caret to start of selection
+      state.caret.line = normalizedStart.line
+      state.caret.column = normalizedStart.column
+      state.caret.columnIntent = state.caret.column
+    }
+
+    // Clear selection
+    state.selection = null
+  }
+
+  handleUndo(state: InputState) {
+    // Flush any pending debounced state before undo
+    this.history.flushDebouncedState(state)
+
+    const previousState = this.history.undo()
+    if (previousState) {
+      state.lines = [...previousState.lines]
+      // Only restore caret if it was saved in history
+      if (previousState.caret) {
+        state.caret = { ...previousState.caret }
+      }
+      // Only restore selection if it was saved in history
+      state.selection = previousState.selection
+        ? {
+            start: { ...previousState.selection.start },
+            end: { ...previousState.selection.end },
+          }
+        : null
+
+      // Update the React component state
+      this.onStateChange({
+        lines: [...state.lines],
+        caret: { ...state.caret },
+        selection: state.selection
+          ? {
+              start: { ...state.selection.start },
+              end: { ...state.selection.end },
+            }
+          : null,
+      })
+    }
+  }
+
+  handleRedo(state: InputState) {
+    // Flush any pending debounced state before redo
+    this.history.flushDebouncedState(state)
+
+    const nextState = this.history.redo()
+    if (nextState) {
+      state.lines = [...nextState.lines]
+      // Only restore caret if it was saved in history
+      if (nextState.caret) {
+        state.caret = { ...nextState.caret }
+      }
+      // Only restore selection if it was saved in history
+      state.selection = nextState.selection
+        ? {
+            start: { ...nextState.selection.start },
+            end: { ...nextState.selection.end },
+          }
+        : null
+
+      // Update the React component state
+      this.onStateChange({
+        lines: [...state.lines],
+        caret: { ...state.caret },
+        selection: state.selection
+          ? {
+              start: { ...state.selection.start },
+              end: { ...state.selection.end },
+            }
+          : null,
+      })
+    }
+  }
+
+  handleSelectAll(currentState: InputState) {
+    const newState = { ...currentState }
+
+    // Create selection from start of first line to end of last line
+    const firstLine = 0
+    const lastLine = newState.lines.length - 1
+    const lastLineLength = newState.lines[lastLine]?.length || 0
+
+    newState.selection = {
+      start: { line: firstLine, column: 0 },
+      end: { line: lastLine, column: lastLineLength },
+    }
+
+    // Move caret to the end of selection
+    newState.caret.line = lastLine
+    newState.caret.column = lastLineLength
+    newState.caret.columnIntent = lastLineLength
+
+    // Update the state
+    this.onStateChange({
+      lines: [...newState.lines],
+      caret: { ...newState.caret },
+      selection: {
+        start: { ...newState.selection.start },
+        end: { ...newState.selection.end },
+      },
+    })
+  }
+
+  handleCut(currentState: InputState) {
+    // Handle cut operation: copy selected text to clipboard and delete selection
+    const newState = { ...currentState }
+
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(newState)
+
+    // If there's a selection, save it in history since we're deleting it
+    if (newState.selection) {
+      this.saveBeforeStateWithCaretAndSelectionToHistory(newState)
+
+      // Copy selected text to clipboard
+      const selectedText = getSelectedText({ ...currentState })
+      if (selectedText) {
+        navigator.clipboard.writeText(selectedText).catch(err => {
+          console.error('Failed to copy to clipboard:', err)
+        })
+      }
+
+      // Delete the selection
+      this.deleteSelection(newState)
+
+      this.saveAfterStateWithSelectionToHistory(newState)
+    } else {
+      // No selection - save before state with caret position
+      this.saveBeforeStateWithCaretToHistory(newState)
+      this.saveAfterStateToHistory(newState)
+    }
+
+    // Update the state - ensure we create a new object for React
+    this.onStateChange({
+      lines: [...newState.lines],
+      caret: { ...newState.caret },
+      selection: newState.selection
+        ? {
+            start: { ...newState.selection.start },
+            end: { ...newState.selection.end },
+          }
+        : null,
+    })
+  }
+
+  handlePaste(text: string, currentState: InputState) {
+    const newState = { ...currentState }
+
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(newState)
+
+    // If there's a selection, save it in history since we're deleting it
+    if (newState.selection) {
+      this.saveBeforeStateWithCaretAndSelectionToHistory(newState)
+      this.deleteSelection(newState)
+      this.insertText(newState, text)
+      this.saveAfterStateWithSelectionToHistory(newState)
+    } else {
+      // No selection - save before state with caret position
+      this.saveBeforeStateWithCaretToHistory(newState)
+      this.insertText(newState, text)
+      this.saveAfterStateToHistory(newState)
+    }
+
+    // Update the state - ensure we create a new object for React
+    this.onStateChange({
+      lines: [...newState.lines],
+      caret: { ...newState.caret },
+      selection: newState.selection
+        ? {
+            start: { ...newState.selection.start },
+            end: { ...newState.selection.end },
+          }
+        : null,
+    })
+  }
+
+  handlePasteEvent(event: ClipboardEvent, currentState: InputState) {
+    event.preventDefault()
+
+    const text = event.clipboardData?.getData('text/plain')
+    if (text) {
+      this.handlePaste(text, currentState)
+    }
+  }
+
+  // Method to flush any pending debounced history state
+  // Should be called on blur, unmount, or before any operation that needs clean history
+  flushHistory(currentState: InputState) {
+    this.history.flushDebouncedState(currentState)
+  }
+
+  private insertText(state: InputState, text: string) {
+    const lines = text.split('\n')
+
+    if (lines.length === 1) {
+      // Single line paste
+      const currentLine = state.lines[state.caret.line] || ''
+      const newLine =
+        currentLine.slice(0, state.caret.column) + text + currentLine.slice(state.caret.column)
+      state.lines[state.caret.line] = newLine
+      state.caret.column += text.length
+      state.caret.columnIntent = state.caret.column
+    } else {
+      // Multi-line paste
+      const currentLine = state.lines[state.caret.line] || ''
+      const beforeCaret = currentLine.slice(0, state.caret.column)
+      const afterCaret = currentLine.slice(state.caret.column)
+
+      // Replace current line with first line of pasted text
+      state.lines[state.caret.line] = beforeCaret + lines[0]
+
+      // Insert middle lines
+      for (let i = 1; i < lines.length - 1; i++) {
+        state.lines.splice(state.caret.line + i, 0, lines[i])
+      }
+
+      // Insert last line
+      if (lines.length > 1) {
+        const lastLine = lines[lines.length - 1] + afterCaret
+        state.lines.splice(state.caret.line + lines.length - 1, 0, lastLine)
+      }
+
+      // Update caret position
+      state.caret.line += lines.length - 1
+      state.caret.column = lines[lines.length - 1].length
+      state.caret.columnIntent = state.caret.column
+    }
+  }
+
+  private moveLineUp(state: InputState) {
+    // Flush any pending debounced state before line move operation
+    this.history.flushDebouncedState(state)
+
+    if (state.selection) {
+      // Move selection lines
+      this.moveSelectionLinesUp(state)
+    } else {
+      // Move current line
+      this.moveCurrentLineUp(state)
+    }
+  }
+
+  private moveLineDown(state: InputState) {
+    // Flush any pending debounced state before line move operation
+    this.history.flushDebouncedState(state)
+
+    if (state.selection) {
+      // Move selection lines
+      this.moveSelectionLinesDown(state)
+    } else {
+      // Move current line
+      this.moveCurrentLineDown(state)
+    }
+  }
+
+  private moveCurrentLineUp(state: InputState) {
+    if (state.caret.line > 0) {
+      // Save before state for undo
+      this.saveBeforeStateWithCaretToHistory(state)
+
+      // Swap current line with the line above
+      const currentLine = state.lines[state.caret.line]
+      const previousLine = state.lines[state.caret.line - 1]
+
+      state.lines[state.caret.line - 1] = currentLine
+      state.lines[state.caret.line] = previousLine
+
+      // Move caret up
+      state.caret.line--
+      state.caret.columnIntent = state.caret.column
+
+      // Save after state for undo
+      this.saveAfterStateToHistory(state)
+    }
+  }
+
+  private moveCurrentLineDown(state: InputState) {
+    if (state.caret.line < state.lines.length - 1) {
+      // Save before state for undo
+      this.saveBeforeStateWithCaretToHistory(state)
+
+      // Swap current line with the line below
+      const currentLine = state.lines[state.caret.line]
+      const nextLine = state.lines[state.caret.line + 1]
+
+      state.lines[state.caret.line + 1] = currentLine
+      state.lines[state.caret.line] = nextLine
+
+      // Move caret down
+      state.caret.line++
+      state.caret.columnIntent = state.caret.column
+
+      // Save after state for undo
+      this.saveAfterStateToHistory(state)
+    }
+  }
+
+  private moveSelectionLinesUp(state: InputState) {
+    if (!state.selection) return
+
+    const { start, end } = state.selection
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    // Can't move if first line is already at top
+    if (normalizedStart.line === 0) return
+
+    // Save before state for undo
+    this.saveBeforeStateWithCaretAndSelectionToHistory(state)
+
+    // Get the line above the selection
+    const lineAbove = state.lines[normalizedStart.line - 1]
+
+    // Remove the line above and insert it after the selection
+    state.lines.splice(normalizedStart.line - 1, 1)
+    state.lines.splice(normalizedEnd.line, 0, lineAbove)
+
+    // Adjust selection positions
+    state.selection.start.line--
+    state.selection.end.line--
+
+    // Adjust caret position
+    state.caret.line--
+
+    // Save after state for undo
+    this.saveAfterStateWithSelectionToHistory(state)
+  }
+
+  private moveSelectionLinesDown(state: InputState) {
+    if (!state.selection) return
+
+    const { start, end } = state.selection
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    // Can't move if last line is already at bottom
+    if (normalizedEnd.line === state.lines.length - 1) return
+
+    // Save before state for undo
+    this.saveBeforeStateWithCaretAndSelectionToHistory(state)
+
+    // Get the line below the selection
+    const lineBelow = state.lines[normalizedEnd.line + 1]
+
+    // Remove the line below and insert it before the selection
+    state.lines.splice(normalizedEnd.line + 1, 1)
+    state.lines.splice(normalizedStart.line, 0, lineBelow)
+
+    // Adjust selection positions
+    state.selection.start.line++
+    state.selection.end.line++
+
+    // Adjust caret position
+    state.caret.line++
+
+    // Save after state for undo
+    this.saveAfterStateWithSelectionToHistory(state)
+  }
+}
