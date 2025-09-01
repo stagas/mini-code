@@ -1422,17 +1422,92 @@ export class CanvasEditor {
       if (ctx) {
         ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
         const rect = this.canvas.getBoundingClientRect()
-        const position = calculatePopupPosition(
-          callInfo.openParenPosition,
-          this.padding,
-          this.lineHeight,
-          ctx,
-          this.inputState.lines,
-          rect,
-          120,
-          this.scrollX,
-          this.scrollY,
-        )
+
+        let position: { x: number; y: number; showBelow: boolean }
+
+        if (this.options.wordWrap) {
+          // For word wrap mode, calculate position using wrapped line positioning
+          const wrappedLines = this.getWrappedLines(ctx)
+          const visualPos = this.logicalToVisualPosition(
+            callInfo.openParenPosition.line,
+            callInfo.openParenPosition.column,
+            wrappedLines,
+          )
+
+          // Calculate position based on visual line
+          const wrappedLine = wrappedLines[visualPos.visualLine]
+          if (wrappedLine) {
+            const textBeforeParen = wrappedLine.text.substring(0, visualPos.visualColumn)
+            const contentX = this.padding + ctx.measureText(textBeforeParen).width
+            const contentLineY = this.padding + visualPos.visualLine * this.lineHeight
+
+            // Convert to viewport coordinates
+            const x = contentX - this.scrollX
+            const lineY = contentLineY - this.scrollY
+
+            // Check boundaries and calculate final position
+            const popupWidth = 400
+            const popupHeight = 120
+
+            let finalX = x
+            if (x + popupWidth > rect.width) {
+              finalX = rect.width - popupWidth - 10
+            }
+            if (finalX < 10) {
+              finalX = 10
+            }
+
+            const spaceAbove = lineY
+            const spaceBelow = rect.height - lineY - this.lineHeight
+
+            let y: number
+            let showBelow: boolean
+
+            if (spaceAbove >= popupHeight) {
+              y = lineY - 5
+              showBelow = false
+            } else if (spaceBelow >= popupHeight) {
+              y = lineY + this.lineHeight
+              showBelow = true
+            } else {
+              if (spaceAbove > spaceBelow) {
+                y = lineY - 5
+                showBelow = false
+              } else {
+                y = lineY + this.lineHeight
+                showBelow = true
+              }
+            }
+
+            position = { x: finalX, y, showBelow }
+          } else {
+            // Fallback to normal positioning
+            position = calculatePopupPosition(
+              callInfo.openParenPosition,
+              this.padding,
+              this.lineHeight,
+              ctx,
+              this.inputState.lines,
+              rect,
+              120,
+              this.scrollX,
+              this.scrollY,
+            )
+          }
+        } else {
+          // For normal mode, use the existing calculation
+          position = calculatePopupPosition(
+            callInfo.openParenPosition,
+            this.padding,
+            this.lineHeight,
+            ctx,
+            this.inputState.lines,
+            rect,
+            120,
+            this.scrollX,
+            this.scrollY,
+          )
+        }
 
         const newPopupPosition = {
           x: rect.left + position.x,
