@@ -182,11 +182,24 @@ export class CanvasEditor {
   private scrollY = 0
   private readonly padding = 16
   private readonly lineHeight = 20
-  private readonly gutterWidth = 40 // Space for line numbers
   private isActive = false
 
+  private getGutterWidth(): number {
+    if (!this.options.gutter) return 0
+
+    const lineCount = this.inputState.lines.length
+    const maxLineNumber = lineCount.toString().length
+
+    // Get canvas context to measure actual character width
+    const ctx = this.canvas.getContext('2d')!
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    const charWidth = ctx.measureText('0').width
+    // Calculate width needed for line numbers + some padding
+    return maxLineNumber * charWidth + 2
+  }
+
   private getTextPadding(): number {
-    return this.options.gutter ? this.padding + this.gutterWidth + 8 : this.padding
+    return this.options.gutter ? this.padding + this.getGutterWidth() + 8 : this.padding
   }
   private wrappedLinesCache: {
     code: string
@@ -1229,15 +1242,16 @@ export class CanvasEditor {
 
     // Draw gutter if enabled
     if (this.options.gutter) {
+      const gutterWidth = this.getGutterWidth()
       ctx.fillStyle = '#374151' // Darker gray for gutter background
-      ctx.fillRect(0, 0, this.padding + this.gutterWidth, content.height)
+      ctx.fillRect(0, 0, this.padding + gutterWidth, content.height)
 
       // Draw gutter separator line
       ctx.strokeStyle = '#4b5563'
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(this.padding + this.gutterWidth - 1, 0)
-      ctx.lineTo(this.padding + this.gutterWidth - 1, content.height)
+      ctx.moveTo(this.padding + gutterWidth - 1, 0)
+      ctx.lineTo(this.padding + gutterWidth - 1, content.height)
       ctx.stroke()
     }
 
@@ -1255,9 +1269,10 @@ export class CanvasEditor {
           (visualIndex > 0 && wrappedLines[visualIndex - 1].logicalLine !== wrappedLine.logicalLine)
 
         if (isFirstVisualLine) {
+          const gutterWidth = this.getGutterWidth()
           ctx.fillStyle = '#9ca3af' // Light gray for line numbers
           ctx.textAlign = 'right'
-          ctx.fillText(lineNumber.toString(), this.padding + this.gutterWidth - 8, y)
+          ctx.fillText(lineNumber.toString(), this.padding + gutterWidth - 8, y)
           ctx.textAlign = 'left' // Reset text alignment
         }
       }
