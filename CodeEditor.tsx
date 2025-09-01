@@ -10,7 +10,11 @@ import { History } from './history.ts'
 import { getSelectedText, InputHandler, type InputState } from './input.ts'
 import { MouseHandler } from './mouse.ts'
 
-export const CodeEditor = () => {
+interface CodeEditorProps {
+  wordWrap?: boolean
+}
+
+export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -163,7 +167,7 @@ export const CodeEditor = () => {
       onScrollMetricsChange: (m) => setScrollMetrics(m),
     }
 
-    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks)
+    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, { wordWrap })
 
     return () => {
       canvasEditorRef.current?.destroy()
@@ -184,12 +188,41 @@ export const CodeEditor = () => {
       setActiveEditor(editorIdRef.current)
       // Focus first to avoid flicker then process pointer so caret updates after focus
       textareaRef.current?.focus()
-      mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
+
+      if (wordWrap && canvasEditorRef.current) {
+        // Use CanvasEditor's coordinate conversion for word wrapping
+        const rect = canvas.getBoundingClientRect()
+        const x = event.clientX - rect.left
+        const y = event.clientY - rect.top
+        const position = canvasEditorRef.current.getCaretPositionFromCoordinates(x, y)
+
+        const newState: InputState = {
+          ...inputStateRef.current,
+          caret: position,
+          selection: null,
+        }
+
+        if (inputHandlerRef.current) {
+          inputHandlerRef.current.saveBeforeStateToHistory(inputStateRef.current)
+          inputHandlerRef.current.saveAfterStateToHistory(newState)
+        }
+        setInputState(newState)
+      }
+      else {
+        mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
+      }
     }
 
     const handlePointerMove = (event: PointerEvent) => {
       event.preventDefault()
-      mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
+      if (wordWrap && canvasEditorRef.current) {
+        // TODO: Handle selection with word wrap
+        // For now, just use normal mouse handler
+        mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
+      }
+      else {
+        mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
+      }
     }
 
     const handlePointerUp = (event: PointerEvent) => {
@@ -332,7 +365,32 @@ export const CodeEditor = () => {
         }}
         onKeyDown={(e) => {
           setActiveEditor(editorIdRef.current)
-          handleKeyDown(e)
+          if (wordWrap && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault()
+            const dir = e.key === 'ArrowUp' ? 'up' : 'down'
+            const caret = inputStateRef.current.caret
+            const next = canvasEditorRef.current?.getCaretForVerticalMove(dir, caret.line, caret.columnIntent)
+            if (next && (next.line !== caret.line || next.column !== caret.column)) {
+              const newState: InputState = {
+                ...inputStateRef.current,
+                caret: { line: next.line, column: next.column, columnIntent: caret.columnIntent },
+                selection: e.shiftKey
+                  ? (inputStateRef.current.selection
+                    ? { start: inputStateRef.current.selection.start, end: { line: next.line, column: next.column } }
+                    : { start: { line: caret.line, column: caret.column },
+                      end: { line: next.line, column: next.column } })
+                  : null,
+              }
+              setInputState(newState)
+            }
+            else {
+              // If wrapped movement didn't work, fall back to normal arrow key handling
+              handleKeyDown(e)
+            }
+          }
+          else {
+            handleKeyDown(e)
+          }
         }}
         onCopy={handleCopy}
         onPaste={handlePaste}

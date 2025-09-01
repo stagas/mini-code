@@ -272,11 +272,23 @@ export interface CanvasEditorCallbacks {
   }) => void
 }
 
+export interface CanvasEditorOptions {
+  wordWrap?: boolean
+}
+
+interface WrappedLine {
+  logicalLine: number
+  text: string
+  startColumn: number
+  endColumn: number
+}
+
 export class CanvasEditor {
   private canvas: HTMLCanvasElement
   private container: HTMLElement
   private inputState: InputState
   private callbacks: CanvasEditorCallbacks
+  private options: CanvasEditorOptions
   private resizeHandler: (() => void) | null = null
   private wheelHandler: ((e: WheelEvent) => void) | null = null
   private lastFunctionCallInfo: FunctionCallInfo | null = null
@@ -288,17 +300,24 @@ export class CanvasEditor {
   private readonly padding = 16
   private readonly lineHeight = 20
   private isActive = false
+  private wrappedLinesCache: {
+    code: string
+    viewportWidth: number
+    result: WrappedLine[]
+  } | null = null
 
   constructor(
     canvas: HTMLCanvasElement,
     container: HTMLElement,
     initialState: InputState,
     callbacks: CanvasEditorCallbacks = {},
+    options: CanvasEditorOptions = {},
   ) {
     this.canvas = canvas
     this.container = container
     this.inputState = initialState
     this.callbacks = callbacks
+    this.options = options
 
     this.updateCanvasSize()
     this.draw()
@@ -320,7 +339,534 @@ export class CanvasEditor {
     }
   }
 
+  private getWrappedLines(ctx: CanvasRenderingContext2D): WrappedLine[] {
+    if (!this.options.wordWrap) {
+      // No wrapping - return original lines as single wrapped lines
+      return this.inputState.lines.map((line, index) => ({
+        logicalLine: index,
+        text: line,
+        startColumn: 0,
+        endColumn: line.length,
+      }))
+    }
+
+    const viewportWidth = this.canvas.width / (window.devicePixelRatio || 1)
+    const maxWidth = Math.max(100, viewportWidth - this.padding * 2)
+
+    // Check cache
+    if (this.wrappedLinesCache) {
+      const code = this.inputState.lines.join('\n')
+      if (
+        this.wrappedLinesCache.code === code &&
+        this.wrappedLinesCache.viewportWidth === viewportWidth
+      ) {
+        return this.wrappedLinesCache.result
+      }
+    }
+
+    const wrappedLines: WrappedLine[] = []
+
+    for (let lineIndex = 0; lineIndex < this.inputState.lines.length; lineIndex++) {
+      const line = this.inputState.lines[lineIndex] || ''
+
+      if (line.length === 0) {
+        // Empty line
+        wrappedLines.push({
+          logicalLine: lineIndex,
+          text: '',
+          startColumn: 0,
+          endColumn: 0,
+        })
+        continue
+      }
+
+      let startColumn = 0
+      while (startColumn < line.length) {
+        let endColumn = line.length
+        let testText = line.substring(startColumn, endColumn)
+
+        // If this segment fits, use it all
+        if (ctx.measureText(testText).width <= maxWidth) {
+          wrappedLines.push({
+            logicalLine: lineIndex,
+            text: testText,
+            startColumn,
+            endColumn,
+          })
+          break
+        }
+
+        // Binary search to find the longest substring that fits
+        let left = startColumn + 1
+        let right = line.length
+        let bestEnd = startColumn + 1
+
+        while (left <= right) {
+          const mid = Math.floor((left + right) / 2)
+          testText = line.substring(startColumn, mid)
+
+          if (ctx.measureText(testText).width <= maxWidth) {
+            bestEnd = mid
+            left = mid + 1
+          } else {
+            right = mid - 1
+          }
+        }
+
+        // Try to break at word boundary if possible
+        const segmentText = line.substring(startColumn, bestEnd)
+        const lastSpaceIndex = segmentText.lastIndexOf(' ')
+
+        if (lastSpaceIndex > 0 && bestEnd < line.length) {
+          // Break at word boundary
+          endColumn = startColumn + lastSpaceIndex
+        } else {
+          // Break at character boundary
+          endColumn = bestEnd
+        }
+
+        wrappedLines.push({
+          logicalLine: lineIndex,
+          text: line.substring(startColumn, endColumn),
+          startColumn,
+          endColumn,
+        })
+
+        startColumn = endColumn
+        // Skip whitespace at the start of the next wrapped line
+        while (startColumn < line.length && line[startColumn] === ' ') {
+          startColumn++
+        }
+      }
+    }
+
+    // Cache the result
+    this.wrappedLinesCache = {
+      code: this.inputState.lines.join('\n'),
+      viewportWidth,
+      result: wrappedLines,
+    }
+
+    return wrappedLines
+  }
+
+  private logicalToVisualPosition(
+    logicalLine: number,
+    logicalColumn: number,
+    wrappedLines: WrappedLine[],
+  ): { visualLine: number; visualColumn: number } {
+    for (let i = 0; i < wrappedLines.length; i++) {
+      const wrapped = wrappedLines[i]
+      if (wrapped.logicalLine !== logicalLine) continue
+
+      // Inside this wrapped segment
+      if (logicalColumn >= wrapped.startColumn && logicalColumn < wrapped.endColumn) {
+        return {
+          visualLine: i,
+          visualColumn: logicalColumn - wrapped.startColumn,
+        }
+      }
+
+      // Exactly at the boundary: prefer the next segment if it starts here
+      if (logicalColumn === wrapped.endColumn) {
+        const next = wrappedLines[i + 1]
+        if (next && next.logicalLine === logicalLine && next.startColumn === wrapped.endColumn) {
+          return { visualLine: i + 1, visualColumn: 0 }
+        }
+        // Otherwise treat as end of this segment
+        return { visualLine: i, visualColumn: wrapped.text.length }
+      }
+    }
+
+    // Fallback: place at end of the last segment for this logical line
+    for (let i = wrappedLines.length - 1; i >= 0; i--) {
+      const wrapped = wrappedLines[i]
+      if (wrapped.logicalLine === logicalLine) {
+        return {
+          visualLine: i,
+          visualColumn: wrapped.text.length,
+        }
+      }
+    }
+
+    return { visualLine: 0, visualColumn: 0 }
+  }
+
+  private visualToLogicalPosition(
+    visualLine: number,
+    visualColumn: number,
+    wrappedLines: WrappedLine[],
+  ): { logicalLine: number; logicalColumn: number } {
+    if (visualLine >= wrappedLines.length) {
+      // Beyond the last line
+      const lastWrapped = wrappedLines[wrappedLines.length - 1]
+      return {
+        logicalLine: lastWrapped?.logicalLine || 0,
+        logicalColumn: lastWrapped ? lastWrapped.endColumn : 0,
+      }
+    }
+
+    const wrapped = wrappedLines[visualLine]
+    const clampedColumn = Math.min(visualColumn, wrapped.text.length)
+    return {
+      logicalLine: wrapped.logicalLine,
+      logicalColumn: wrapped.startColumn + clampedColumn,
+    }
+  }
+
+  private getContentSizeWithWrapping(
+    ctx: CanvasRenderingContext2D,
+    wrappedLines: WrappedLine[],
+  ): { width: number; height: number } {
+    if (!this.options.wordWrap) {
+      // Use original method when not wrapping
+      return this.getContentSize(ctx)
+    }
+
+    let maxLineWidth = 0
+    for (const wrappedLine of wrappedLines) {
+      const w = ctx.measureText(wrappedLine.text).width
+      if (w > maxLineWidth) maxLineWidth = w
+    }
+    const width = this.padding + maxLineWidth + this.padding
+    const height = this.padding + wrappedLines.length * this.lineHeight + this.padding
+    return { width, height }
+  }
+
+  private drawSelectionWithWrapping(
+    ctx: CanvasRenderingContext2D,
+    inputState: InputState,
+    wrappedLines: WrappedLine[],
+  ) {
+    if (!inputState.selection) return
+
+    const { start, end } = inputState.selection
+
+    // Normalize selection (ensure start comes before end)
+    const normalizedStart =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+    const normalizedEnd =
+      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    const selectionPadding = 4
+
+    // Convert logical selection to visual positions
+    const startVisual = this.logicalToVisualPosition(
+      normalizedStart.line,
+      normalizedStart.column,
+      wrappedLines,
+    )
+    const endVisual = this.logicalToVisualPosition(
+      normalizedEnd.line,
+      normalizedEnd.column,
+      wrappedLines,
+    )
+
+    if (startVisual.visualLine === endVisual.visualLine) {
+      // Single visual line selection
+      const wrappedLine = wrappedLines[startVisual.visualLine]
+      if (wrappedLine) {
+        const startText = wrappedLine.text.substring(0, startVisual.visualColumn)
+        const selectedText = wrappedLine.text.substring(
+          startVisual.visualColumn,
+          endVisual.visualColumn,
+        )
+
+        const startX = this.padding + ctx.measureText(startText).width
+        const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
+        const y = this.padding + startVisual.visualLine * this.lineHeight - 3
+
+        ctx.fillRect(startX, y, selectedWidth, this.lineHeight - 2)
+      }
+    } else {
+      // Multi-visual-line selection
+      for (
+        let visualLine = startVisual.visualLine;
+        visualLine <= endVisual.visualLine;
+        visualLine++
+      ) {
+        const wrappedLine = wrappedLines[visualLine]
+        if (!wrappedLine) continue
+
+        const y = this.padding + visualLine * this.lineHeight - 3
+
+        if (visualLine === startVisual.visualLine) {
+          // First visual line: from start column to end of visual line
+          const startText = wrappedLine.text.substring(0, startVisual.visualColumn)
+          const selectedText = wrappedLine.text.substring(startVisual.visualColumn)
+          const startX = this.padding + ctx.measureText(startText).width
+          const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
+          ctx.fillRect(startX, y, selectedWidth, this.lineHeight - 2)
+        } else if (visualLine === endVisual.visualLine) {
+          // Last visual line: from start of visual line to end column
+          const selectedText = wrappedLine.text.substring(0, endVisual.visualColumn)
+          const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
+          ctx.fillRect(this.padding, y, selectedWidth, this.lineHeight - 2)
+        } else {
+          // Middle visual lines: entire visual line
+          const selectedWidth = ctx.measureText(wrappedLine.text).width + selectionPadding
+          ctx.fillRect(this.padding, y, selectedWidth, this.lineHeight - 2)
+        }
+      }
+    }
+  }
+
+  private extractTokensForSegment(
+    tokens: Token[],
+    startColumn: number,
+    endColumn: number,
+  ): Token[] {
+    const result: Token[] = []
+    let currentColumn = 0
+
+    for (const token of tokens) {
+      const tokenStart = currentColumn
+      const tokenEnd = currentColumn + token.content.length
+
+      if (tokenEnd <= startColumn) {
+        // Token is completely before our segment
+        currentColumn = tokenEnd
+        continue
+      }
+
+      if (tokenStart >= endColumn) {
+        // Token is completely after our segment
+        break
+      }
+
+      // Token intersects with our segment
+      const segmentStart = Math.max(startColumn, tokenStart)
+      const segmentEnd = Math.min(endColumn, tokenEnd)
+      const segmentContent = token.content.substring(
+        segmentStart - tokenStart,
+        segmentEnd - tokenStart,
+      )
+
+      if (segmentContent.length > 0) {
+        result.push({
+          type: token.type,
+          content: segmentContent,
+          length: segmentContent.length,
+        })
+      }
+
+      currentColumn = tokenEnd
+    }
+
+    return result
+  }
+
+  private drawBraceMatchingForWrappedLine(
+    ctx: CanvasRenderingContext2D,
+    highlightedCode: HighlightedLine[],
+    wrappedLine: WrappedLine,
+    visualIndex: number,
+    y: number,
+  ) {
+    // Find matching braces at cursor position
+    const matchingBraces = findMatchingBrace(
+      highlightedCode,
+      this.inputState.caret.line,
+      this.inputState.caret.column,
+    )
+
+    if (!matchingBraces) return
+
+    // Check if opening brace is in this wrapped line segment
+    if (matchingBraces.line === wrappedLine.logicalLine) {
+      const braceColumn = this.getBraceColumnInLogicalLine(
+        highlightedCode[matchingBraces.line],
+        matchingBraces.tokenIndex,
+      )
+      if (braceColumn >= wrappedLine.startColumn && braceColumn < wrappedLine.endColumn) {
+        const braceX =
+          this.padding +
+          ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
+            .width
+
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(braceX, y + 18)
+        ctx.lineTo(braceX + ctx.measureText(matchingBraces.token.content).width, y + 18)
+        ctx.stroke()
+      }
+    }
+
+    // Check if closing brace is in this wrapped line segment
+    if (matchingBraces.matchingLine === wrappedLine.logicalLine) {
+      const braceColumn = this.getBraceColumnInLogicalLine(
+        highlightedCode[matchingBraces.matchingLine],
+        matchingBraces.matchingTokenIndex,
+      )
+      if (braceColumn >= wrappedLine.startColumn && braceColumn < wrappedLine.endColumn) {
+        const braceX =
+          this.padding +
+          ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
+            .width
+
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.moveTo(braceX, y + 18)
+        ctx.lineTo(braceX + ctx.measureText(matchingBraces.matchingToken.content).width, y + 18)
+        ctx.stroke()
+      }
+    }
+  }
+
+  private getBraceColumnInLogicalLine(
+    highlightedLine: HighlightedLine,
+    tokenIndex: number,
+  ): number {
+    let column = 0
+    for (let i = 0; i < tokenIndex; i++) {
+      column += highlightedLine.tokens[i].content.length
+    }
+    return column
+  }
+
+  public getCaretPositionFromCoordinates(
+    x: number,
+    y: number,
+  ): { line: number; column: number; columnIntent: number } {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return { line: 0, column: 0, columnIntent: 0 }
+
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    const wrappedLines = this.getWrappedLines(ctx)
+
+    // Debug: show wrapped lines structure
+    console.log(
+      'Wrapped lines:',
+      wrappedLines.map((w, i) => ({
+        visualIndex: i,
+        logicalLine: w.logicalLine,
+        startColumn: w.startColumn,
+        endColumn: w.endColumn,
+        text: w.text.substring(0, 20) + (w.text.length > 20 ? '...' : ''),
+      })),
+    )
+
+    // Adjust for scroll offset
+    const adjustedY = y + this.scrollY
+    const adjustedX = x + this.scrollX
+
+    // Calculate visual line number
+    const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
+    const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+
+    // Get the wrapped line
+    const wrappedLine = wrappedLines[clampedVisualLineIndex]
+    if (!wrappedLine) {
+      return { line: 0, column: 0, columnIntent: 0 }
+    }
+
+    // Calculate column position within the visual line
+    const visualColumn = this.getColumnFromX(adjustedX - this.padding, wrappedLine.text, ctx)
+
+    // Convert visual position to logical position
+    const logicalPosition = this.visualToLogicalPosition(
+      clampedVisualLineIndex,
+      visualColumn,
+      wrappedLines,
+    )
+
+    return {
+      line: logicalPosition.logicalLine,
+      column: logicalPosition.logicalColumn,
+      columnIntent: logicalPosition.logicalColumn,
+    }
+  }
+
+  public getCaretForVerticalMove(
+    direction: 'up' | 'down',
+    line: number,
+    columnIntent: number,
+  ): { line: number; column: number } {
+    if (!this.options.wordWrap) {
+      // Without word wrap, fall back to simple logical line movement
+      if (direction === 'down') {
+        if (line < this.inputState.lines.length - 1) {
+          const targetLine = this.inputState.lines[line + 1] || ''
+          return { line: line + 1, column: Math.min(columnIntent, targetLine.length) }
+        }
+      } else {
+        if (line > 0) {
+          const targetLine = this.inputState.lines[line - 1] || ''
+          return { line: line - 1, column: Math.min(columnIntent, targetLine.length) }
+        }
+      }
+      return { line, column: Math.min(columnIntent, (this.inputState.lines[line] || '').length) }
+    }
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx)
+      return { line, column: Math.min(columnIntent, (this.inputState.lines[line] || '').length) }
+
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    const wrappedLines = this.getWrappedLines(ctx)
+
+    // Current visual position (using actual current column, not columnIntent)
+    const currentColumn = Math.min(
+      this.inputState.caret.column,
+      (this.inputState.lines[line] || '').length,
+    )
+    const currentVisual = this.logicalToVisualPosition(line, currentColumn, wrappedLines)
+
+    let nextVisualLine: number
+    if (direction === 'down') {
+      nextVisualLine = currentVisual.visualLine + 1
+      if (nextVisualLine >= wrappedLines.length) {
+        return { line, column: currentColumn } // Already at last line
+      }
+    } else {
+      nextVisualLine = currentVisual.visualLine - 1
+      if (nextVisualLine < 0) {
+        return { line, column: currentColumn } // Already at first line
+      }
+    }
+
+    const currentWrapped = wrappedLines[currentVisual.visualLine]
+    const nextWrapped = wrappedLines[nextVisualLine]
+
+    // Use columnIntent to find the desired X position on the target line, then map to the target segment
+    const targetLogicalLineText = this.inputState.lines[nextWrapped.logicalLine] || ''
+    const clampedIntent = Math.min(Math.max(columnIntent, 0), targetLogicalLineText.length)
+    const desiredX = ctx.measureText(targetLogicalLineText.substring(0, clampedIntent)).width
+
+    // Map this X position to the target wrapped segment
+    const targetVisualColumn = this.getColumnFromX(desiredX, nextWrapped.text, ctx)
+    const logical = this.visualToLogicalPosition(nextVisualLine, targetVisualColumn, wrappedLines)
+    return { line: logical.logicalLine, column: logical.logicalColumn }
+  }
+
+  private getColumnFromX(x: number, line: string, ctx: CanvasRenderingContext2D): number {
+    if (x <= 0) return 0
+
+    // Measure text width to find the closest character position
+    let currentWidth = 0
+    for (let i = 0; i < line.length; i++) {
+      const charWidth = ctx.measureText(line[i]).width
+      const nextWidth = currentWidth + charWidth
+
+      // If x is closer to the middle of this character, return this position
+      if (x <= currentWidth + charWidth / 2) {
+        return i
+      }
+
+      currentWidth = nextWidth
+    }
+
+    // If we've gone through all characters, return the end of the line
+    return line.length
+  }
+
   public updateState(newState: InputState) {
+    // Invalidate wrapped lines cache if lines changed
+    if (this.inputState.lines !== newState.lines) {
+      this.wrappedLinesCache = null
+    }
     this.inputState = newState
     if (this.isActive) this.ensureCaretVisible()
     this.draw()
@@ -328,6 +874,8 @@ export class CanvasEditor {
   }
 
   public resize() {
+    // Invalidate wrapped lines cache on resize
+    this.wrappedLinesCache = null
     this.updateCanvasSize()
     if (this.isActive) this.ensureCaretVisible()
     this.draw()
@@ -357,7 +905,9 @@ export class CanvasEditor {
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
     const viewportHeight = this.canvas.height / dpr
-    const contentSize = this.getContentSize(ctx)
+    const contentSize = this.options.wordWrap
+      ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+      : this.getContentSize(ctx)
     const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
     const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
@@ -403,7 +953,8 @@ export class CanvasEditor {
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
     const viewportHeight = this.canvas.height / dpr
-    const content = this.getContentSize(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+    const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
     return {
       scrollX: this.scrollX,
       scrollY: this.scrollY,
@@ -452,7 +1003,9 @@ export class CanvasEditor {
       if (!ctx) return
       ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
 
-      const contentSize = this.getContentSize(ctx)
+      const contentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
 
       // Natural scrolling: use deltaX/deltaY; shift can swap intent
       const deltaX = e.deltaX || (e.shiftKey ? e.deltaY : 0)
@@ -523,12 +1076,42 @@ export class CanvasEditor {
     const viewportWidth = this.canvas.width / dpr
     const viewportHeight = this.canvas.height / dpr
 
-    // Compute caret content-space coordinates
-    const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
-    const caretText = caretLine.substring(0, this.inputState.caret.column)
-    const caretX = this.padding + ctx.measureText(caretText).width
-    const caretTop = this.padding + this.inputState.caret.line * this.lineHeight
-    const caretBottom = caretTop + this.lineHeight
+    let caretX: number, caretTop: number, caretBottom: number
+    let contentSize: { width: number; height: number }
+
+    if (this.options.wordWrap) {
+      // Get wrapped lines and convert logical position to visual position
+      const wrappedLines = this.getWrappedLines(ctx)
+      const visualPos = this.logicalToVisualPosition(
+        this.inputState.caret.line,
+        this.inputState.caret.column,
+        wrappedLines,
+      )
+
+      const wrappedLine = wrappedLines[visualPos.visualLine]
+      if (wrappedLine) {
+        const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
+        caretX = this.padding + ctx.measureText(caretText).width
+        caretTop = this.padding + visualPos.visualLine * this.lineHeight
+        caretBottom = caretTop + this.lineHeight
+      } else {
+        // Fallback
+        caretX = this.padding
+        caretTop = this.padding
+        caretBottom = caretTop + this.lineHeight
+      }
+
+      contentSize = this.getContentSizeWithWrapping(ctx, wrappedLines)
+    } else {
+      // Compute caret content-space coordinates (original logic)
+      const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
+      const caretText = caretLine.substring(0, this.inputState.caret.column)
+      caretX = this.padding + ctx.measureText(caretText).width
+      caretTop = this.padding + this.inputState.caret.line * this.lineHeight
+      caretBottom = caretTop + this.lineHeight
+
+      contentSize = this.getContentSize(ctx)
+    }
 
     // Margins so caret isn't flush to edge
     const margin = 16
@@ -551,7 +1134,6 @@ export class CanvasEditor {
     }
 
     // Clamp to content size
-    const contentSize = this.getContentSize(ctx)
     const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
     const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
@@ -602,6 +1184,13 @@ export class CanvasEditor {
     const width = this.canvas.width / (window.devicePixelRatio || 1)
     const height = this.canvas.height / (window.devicePixelRatio || 1)
 
+    // Configure text rendering
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    ctx.textBaseline = 'top'
+
+    // Get wrapped lines
+    const wrappedLines = this.getWrappedLines(ctx)
+
     // Cache syntax highlighting to avoid re-processing the same code
     const code = this.inputState.lines.join('\n')
     let highlightedCode: HighlightedLine[]
@@ -613,16 +1202,12 @@ export class CanvasEditor {
       this.highlightCache = { code, result: highlightedCode }
     }
 
-    // Configure text rendering
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
-    ctx.textBaseline = 'top'
-
     // Clear canvas
     ctx.fillStyle = '#1f2937' // Dark background
     ctx.fillRect(0, 0, width, height)
 
     // Publish metrics for consumers
-    const content = this.getContentSize(ctx)
+    const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
     this.publishScrollMetrics(ctx, width, height, content.width, content.height)
 
     // Apply scroll offset for content rendering
@@ -632,34 +1217,57 @@ export class CanvasEditor {
     // Draw selection background if exists
     if (this.inputState.selection) {
       ctx.fillStyle = '#e5e7eb'
-      drawSelection(ctx, this.inputState, this.padding, this.lineHeight)
+      this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines)
     }
 
-    // Draw highlighted code
-    highlightedCode.forEach((highlightedLine: HighlightedLine, index: number) => {
-      const y = this.padding + index * this.lineHeight
-      drawHighlightedLine(
-        ctx,
-        highlightedLine,
-        this.padding,
-        y,
-        index,
-        this.inputState,
-        highlightedCode,
-        this.padding,
-        this.lineHeight,
-      )
+    // Draw wrapped lines
+    wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
+      const y = this.padding + visualIndex * this.lineHeight
+
+      // Get syntax highlighting for this logical line
+      const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+      if (logicalHighlighted) {
+        // Extract tokens for this wrapped segment
+        const segmentTokens = this.extractTokensForSegment(
+          logicalHighlighted.tokens,
+          wrappedLine.startColumn,
+          wrappedLine.endColumn,
+        )
+
+        let currentX = this.padding
+        for (const token of segmentTokens) {
+          ctx.fillStyle = getTokenColor(token.type)
+          ctx.fillText(token.content, currentX, y)
+          currentX += ctx.measureText(token.content).width
+        }
+
+        // Draw brace matching for logical line if caret is on this logical line
+        if (this.inputState.caret.line === wrappedLine.logicalLine) {
+          this.drawBraceMatchingForWrappedLine(ctx, highlightedCode, wrappedLine, visualIndex, y)
+        }
+      } else {
+        // Fallback: draw plain text
+        ctx.fillStyle = '#ffffff'
+        ctx.fillText(wrappedLine.text, this.padding, y)
+      }
     })
 
     // Draw caret only if active
     if (this.isActive) {
-      const caretY = this.padding + this.inputState.caret.line * this.lineHeight - 3
-      const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
-      const caretText = caretLine.substring(0, this.inputState.caret.column)
-      const caretX = this.padding + ctx.measureText(caretText).width
+      const visualPos = this.logicalToVisualPosition(
+        this.inputState.caret.line,
+        this.inputState.caret.column,
+        wrappedLines,
+      )
+      const wrappedLine = wrappedLines[visualPos.visualLine]
+      if (wrappedLine) {
+        const caretY = this.padding + visualPos.visualLine * this.lineHeight - 3
+        const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
+        const caretX = this.padding + ctx.measureText(caretText).width
 
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
+      }
     }
 
     ctx.restore()
