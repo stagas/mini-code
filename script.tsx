@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { CodeEditor } from './src/CodeEditor.tsx'
+import { CodeEditor } from './src/index.ts'
 
 const App = () => {
   return (
