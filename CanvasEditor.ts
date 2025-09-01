@@ -779,6 +779,106 @@ export class CanvasEditor {
     }
   }
 
+  public getCaretForHorizontalMove(
+    direction: 'left' | 'right',
+    line: number,
+    column: number,
+  ): { line: number; column: number; columnIntent: number } | null {
+    if (!this.options.wordWrap) {
+      return null // Fall back to normal handling
+    }
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    const wrappedLines = this.getWrappedLines(ctx)
+
+    // Find current visual position
+    const currentVisual = this.logicalToVisualPosition(line, column, wrappedLines)
+    if (currentVisual.visualLine < 0 || currentVisual.visualLine >= wrappedLines.length) {
+      return null
+    }
+
+    const currentWrapped = wrappedLines[currentVisual.visualLine]
+    let nextVisualLine: number
+    let nextVisualColumn: number
+
+    if (direction === 'left') {
+      if (currentVisual.visualColumn > 0) {
+        // Move left within current segment
+        nextVisualLine = currentVisual.visualLine
+        nextVisualColumn = currentVisual.visualColumn - 1
+      } else if (currentVisual.visualLine > 0) {
+        // Move to end of previous segment
+        nextVisualLine = currentVisual.visualLine - 1
+        nextVisualColumn = wrappedLines[nextVisualLine].text.length
+      } else {
+        // At start of first segment, try to move to previous line
+        if (line > 0) {
+          const prevLine = line - 1
+          const prevLineText = this.inputState.lines[prevLine] || ''
+          return {
+            line: prevLine,
+            column: prevLineText.length,
+            columnIntent: prevLineText.length,
+          }
+        }
+        return null
+      }
+    } else {
+      // right
+      if (currentVisual.visualColumn < currentWrapped.text.length) {
+        // Move right within current segment
+        nextVisualLine = currentVisual.visualLine
+        nextVisualColumn = currentVisual.visualColumn + 1
+      } else if (currentVisual.visualLine < wrappedLines.length - 1) {
+        // Move to start of next segment
+        nextVisualLine = currentVisual.visualLine + 1
+        nextVisualColumn = 0
+      } else {
+        // At end of last segment, try to move to next line
+        if (line < this.inputState.lines.length - 1) {
+          return {
+            line: line + 1,
+            column: 0,
+            columnIntent: 0,
+          }
+        }
+        return null
+      }
+    }
+
+    // Convert visual position back to logical
+    const logical = this.visualToLogicalPosition(nextVisualLine, nextVisualColumn, wrappedLines)
+
+    // For horizontal movement, columnIntent should be the visual position within the current wrapped segment
+    // This ensures that when moving vertically later, we maintain the intended visual position
+    const targetWrapped = wrappedLines[nextVisualLine]
+    const visualColumnIntent = Math.min(nextVisualColumn, targetWrapped.text.length)
+
+    const result = {
+      line: logical.logicalLine,
+      column: logical.logicalColumn,
+      columnIntent: visualColumnIntent, // Use visual position, not absolute logical position
+    }
+
+    console.log('Horizontal move result:', {
+      direction,
+      currentVisual: { line: currentVisual.visualLine, column: currentVisual.visualColumn },
+      nextVisual: { line: nextVisualLine, column: nextVisualColumn },
+      targetWrapped: {
+        startColumn: targetWrapped.startColumn,
+        endColumn: targetWrapped.endColumn,
+        text: targetWrapped.text.substring(0, 20) + '...',
+      },
+      visualColumnIntent,
+      result,
+    })
+
+    return result
+  }
+
   public getCaretForVerticalMove(
     direction: 'up' | 'down',
     line: number,
@@ -830,14 +930,27 @@ export class CanvasEditor {
     const currentWrapped = wrappedLines[currentVisual.visualLine]
     const nextWrapped = wrappedLines[nextVisualLine]
 
-    // Use columnIntent to find the desired X position on the target line, then map to the target segment
-    const targetLogicalLineText = this.inputState.lines[nextWrapped.logicalLine] || ''
-    const clampedIntent = Math.min(Math.max(columnIntent, 0), targetLogicalLineText.length)
-    const desiredX = ctx.measureText(targetLogicalLineText.substring(0, clampedIntent)).width
+    // columnIntent now represents the visual position within a wrapped segment (0, 1, 2, etc.)
+    // We need to map this to the target wrapped segment
+    const clampedVisualIntent = Math.min(Math.max(columnIntent, 0), nextWrapped.text.length)
 
-    // Map this X position to the target wrapped segment
-    const targetVisualColumn = this.getColumnFromX(desiredX, nextWrapped.text, ctx)
-    const logical = this.visualToLogicalPosition(nextVisualLine, targetVisualColumn, wrappedLines)
+    console.log('Vertical move calculation:', {
+      columnIntent,
+      nextWrappedText: nextWrapped.text.substring(0, 50) + '...',
+      nextWrappedStart: nextWrapped.startColumn,
+      nextWrappedEnd: nextWrapped.endColumn,
+      clampedVisualIntent,
+    })
+
+    // Convert visual position to logical position within the target wrapped segment
+    const logical = this.visualToLogicalPosition(nextVisualLine, clampedVisualIntent, wrappedLines)
+
+    console.log('Vertical move result:', {
+      clampedVisualIntent,
+      logical,
+      finalResult: { line: logical.logicalLine, column: logical.logicalColumn },
+    })
+
     return { line: logical.logicalLine, column: logical.logicalColumn }
   }
 

@@ -369,7 +369,9 @@ export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
             e.preventDefault()
             const dir = e.key === 'ArrowUp' ? 'up' : 'down'
             const caret = inputStateRef.current.caret
+            console.log('Vertical movement - before:', { direction: dir, caret })
             const next = canvasEditorRef.current?.getCaretForVerticalMove(dir, caret.line, caret.columnIntent)
+            console.log('Vertical movement - result:', next)
             if (next && (next.line !== caret.line || next.column !== caret.column)) {
               const newState: InputState = {
                 ...inputStateRef.current,
@@ -381,6 +383,33 @@ export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
                       end: { line: next.line, column: next.column } })
                   : null,
               }
+              console.log('Vertical movement - new state:', newState.caret)
+              setInputState(newState)
+            }
+            else {
+              // If wrapped movement didn' work, fall back to normal arrow key handling
+              handleKeyDown(e)
+            }
+          }
+          else if (wordWrap && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+            e.preventDefault()
+            const dir = e.key === 'ArrowLeft' ? 'left' : 'right'
+            const caret = inputStateRef.current.caret
+            console.log('Horizontal movement - before:', { direction: dir, caret })
+            const next = canvasEditorRef.current?.getCaretForHorizontalMove(dir, caret.line, caret.column)
+            console.log('Horizontal movement - result:', next)
+            if (next) {
+              const newState: InputState = {
+                ...inputStateRef.current,
+                caret: { line: next.line, column: next.column, columnIntent: next.columnIntent },
+                selection: e.shiftKey
+                  ? (inputStateRef.current.selection
+                    ? { start: inputStateRef.current.selection.start, end: { line: next.line, column: next.column } }
+                    : { start: { line: caret.line, column: caret.column },
+                      end: { line: next.line, column: next.column } })
+                  : null,
+              }
+              console.log('Horizontal movement - new state:', newState.caret)
               setInputState(newState)
             }
             else {
