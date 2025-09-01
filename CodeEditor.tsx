@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { CanvasEditor, type CanvasEditorCallbacks } from './CanvasEditor.ts'
 import {
   type FunctionCallInfo,
@@ -41,6 +42,8 @@ export const CodeEditor = () => {
   const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
   const [popupPosition, setPopupPosition] = useState<{ x: number; y: number; showBelow: boolean }>({ x: 0, y: 0,
     showBelow: false })
+  const [isActive, setIsActive] = useState(false)
+  const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
 
   const inputHandlerRef = useRef<InputHandler | null>(null)
   const historyRef = useRef<History | null>(null)
@@ -75,15 +78,6 @@ export const CodeEditor = () => {
     inputStateRef.current = inputState
   }, [inputState])
 
-  // Ensure textarea gets initial focus but don't fight for focus with other editors
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-
-    // Only focus on initial mount, don't fight with other editors
-    textarea.focus()
-  }, [])
-
   // Handle clipboard events
   const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Let the browser handle the copy operation naturally
@@ -114,6 +108,21 @@ export const CodeEditor = () => {
   }, []) // Remove setInputState dependency since it's stable and we check if handler exists
 
   useEffect(() => {
+    const unsub = subscribeActiveEditor((activeId) => {
+      const active = activeId === editorIdRef.current
+      setIsActive(active)
+      canvasEditorRef.current?.setActive(active)
+    })
+    // Initialize active state on mount
+    const active = getActiveEditor() === editorIdRef.current
+    setIsActive(active)
+    canvasEditorRef.current?.setActive(active)
+    return () => {
+      unsub()
+    }
+  }, [])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -139,6 +148,9 @@ export const CodeEditor = () => {
     const callbacks: CanvasEditorCallbacks = {
       onFunctionCallChange: setFunctionCallInfo,
       onPopupPositionChange: setPopupPosition,
+      onScrollChange: (sx, sy) => {
+        mouseHandlerRef.current?.setScrollOffset(sx, sy)
+      },
     }
 
     canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks)
@@ -159,9 +171,10 @@ export const CodeEditor = () => {
 
     const handlePointerDown = (event: PointerEvent) => {
       event.preventDefault()
-      mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
-      // Focus this editor's textarea when user clicks on canvas
+      setActiveEditor(editorIdRef.current)
+      // Focus first to avoid flicker then process pointer so caret updates after focus
       textareaRef.current?.focus()
+      mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
     }
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -186,11 +199,12 @@ export const CodeEditor = () => {
   }, [])
 
   return (
-    <div ref={containerRef} className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full">
+    <div ref={containerRef} className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full"
+      onMouseDown={() => setActiveEditor(editorIdRef.current)}
+    >
       <canvas
         ref={canvasRef}
         className="absolute inset-0 outline-none"
-        tabIndex={0}
       />
       <textarea
         ref={textareaRef}
@@ -202,18 +216,23 @@ export const CodeEditor = () => {
           e.preventDefault()
           e.stopPropagation()
         }}
-        onKeyDown={handleKeyDown}
+        onKeyDown={(e) => {
+          setActiveEditor(editorIdRef.current)
+          handleKeyDown(e)
+        }}
         onCopy={handleCopy}
         onPaste={handlePaste}
         onCut={handleCut}
         onBlur={() => {
           // Allow natural focus changes between editors
         }}
-        onFocus={() => {}}
+        onFocus={() => {
+          setActiveEditor(editorIdRef.current)
+        }}
       />
 
       {/* Function signature popup */}
-      {functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (
+      {isActive && functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (
         <FunctionSignaturePopup
           signature={functionDefinitions[functionCallInfo.functionName]}
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}

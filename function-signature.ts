@@ -270,12 +270,19 @@ export const calculatePopupPosition = (
   lines: string[],
   canvasRect: DOMRect,
   popupHeight: number = 120, // Estimated popup height
+  scrollX: number = 0,
+  scrollY: number = 0,
 ): { x: number; y: number; showBelow: boolean } => {
   const line = lines[openParenPosition.line] || ''
   const textBeforeParen = line.substring(0, openParenPosition.column)
 
-  let x = padding + ctx.measureText(textBeforeParen).width
-  const lineY = padding + openParenPosition.line * lineHeight
+  // Content-space coordinates
+  const contentX = padding + ctx.measureText(textBeforeParen).width
+  const contentLineY = padding + openParenPosition.line * lineHeight
+
+  // Convert to viewport-space by subtracting scroll
+  let x = contentX - scrollX
+  const lineY = contentLineY - scrollY
 
   // Check if popup would exceed left/right boundaries
   const popupWidth = 400 // Estimated popup width

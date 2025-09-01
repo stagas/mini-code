@@ -261,6 +261,7 @@ const drawHighlightedLine = (
 export interface CanvasEditorCallbacks {
   onFunctionCallChange?: (callInfo: FunctionCallInfo | null) => void
   onPopupPositionChange?: (position: { x: number; y: number; showBelow: boolean }) => void
+  onScrollChange?: (scrollX: number, scrollY: number) => void
 }
 
 export class CanvasEditor {
@@ -269,10 +270,16 @@ export class CanvasEditor {
   private inputState: InputState
   private callbacks: CanvasEditorCallbacks
   private resizeHandler: (() => void) | null = null
+  private wheelHandler: ((e: WheelEvent) => void) | null = null
   private lastFunctionCallInfo: FunctionCallInfo | null = null
   private lastPopupPosition: { x: number; y: number; showBelow: boolean } | null = null
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
+  private scrollX = 0
+  private scrollY = 0
+  private readonly padding = 16
+  private readonly lineHeight = 20
+  private isActive = false
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -288,16 +295,33 @@ export class CanvasEditor {
     this.updateCanvasSize()
     this.draw()
     this.setupResize()
+    this.setupWheel()
+  }
+
+  public setActive(active: boolean) {
+    if (this.isActive === active) return
+    this.isActive = active
+    this.draw()
+    if (!this.isActive) {
+      // Clear popup position when deactivating
+      this.lastPopupPosition = null
+      this.callbacks.onFunctionCallChange?.(null)
+    } else {
+      this.ensureCaretVisible()
+      this.updateFunctionSignature()
+    }
   }
 
   public updateState(newState: InputState) {
     this.inputState = newState
+    if (this.isActive) this.ensureCaretVisible()
     this.draw()
     this.updateFunctionSignature()
   }
 
   public resize() {
     this.updateCanvasSize()
+    if (this.isActive) this.ensureCaretVisible()
     this.draw()
     this.updateFunctionSignature() // Need to update popup positions when canvas resizes
   }
@@ -306,6 +330,10 @@ export class CanvasEditor {
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler)
       this.resizeHandler = null
+    }
+    if (this.wheelHandler) {
+      this.canvas.removeEventListener('wheel', this.wheelHandler as EventListener)
+      this.wheelHandler = null
     }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect()
@@ -339,6 +367,107 @@ export class CanvasEditor {
     }
   }
 
+  private setupWheel() {
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+
+      const dpr = window.devicePixelRatio || 1
+      const viewportWidth = this.canvas.width / dpr
+      const viewportHeight = this.canvas.height / dpr
+
+      const ctx = this.canvas.getContext('2d')
+      if (!ctx) return
+      ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+
+      const contentSize = this.getContentSize(ctx)
+
+      // Natural scrolling: use deltaX/deltaY; shift can swap intent
+      const deltaX = e.deltaX || (e.shiftKey ? e.deltaY : 0)
+      const deltaY = e.deltaY
+
+      const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+      const nextScrollX = Math.min(Math.max(this.scrollX + deltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.scrollY + deltaY, 0), maxScrollY)
+
+      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+        this.scrollX = nextScrollX
+        this.scrollY = nextScrollY
+        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        this.draw()
+        this.updateFunctionSignature()
+      }
+    }
+
+    this.canvas.addEventListener('wheel', handleWheel, { passive: false })
+    this.wheelHandler = handleWheel
+  }
+
+  private getContentSize(ctx: CanvasRenderingContext2D): { width: number; height: number } {
+    let maxLineWidth = 0
+    for (let i = 0; i < this.inputState.lines.length; i++) {
+      const line = this.inputState.lines[i] || ''
+      const w = ctx.measureText(line).width
+      if (w > maxLineWidth) maxLineWidth = w
+    }
+    const width = this.padding + maxLineWidth + this.padding
+    const height = this.padding + this.inputState.lines.length * this.lineHeight + this.padding
+    return { width, height }
+  }
+
+  private ensureCaretVisible() {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+
+    const dpr = window.devicePixelRatio || 1
+    const viewportWidth = this.canvas.width / dpr
+    const viewportHeight = this.canvas.height / dpr
+
+    // Compute caret content-space coordinates
+    const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
+    const caretText = caretLine.substring(0, this.inputState.caret.column)
+    const caretX = this.padding + ctx.measureText(caretText).width
+    const caretTop = this.padding + this.inputState.caret.line * this.lineHeight
+    const caretBottom = caretTop + this.lineHeight
+
+    // Margins so caret isn't flush to edge
+    const margin = 16
+
+    let nextScrollX = this.scrollX
+    let nextScrollY = this.scrollY
+
+    // Horizontal scrolling
+    if (caretX < this.scrollX + margin) {
+      nextScrollX = Math.max(0, caretX - margin)
+    } else if (caretX > this.scrollX + viewportWidth - margin) {
+      nextScrollX = caretX - (viewportWidth - margin)
+    }
+
+    // Vertical scrolling
+    if (caretTop < this.scrollY + margin) {
+      nextScrollY = Math.max(0, caretTop - margin)
+    } else if (caretBottom > this.scrollY + viewportHeight - margin) {
+      nextScrollY = caretBottom - (viewportHeight - margin)
+    }
+
+    // Clamp to content size
+    const contentSize = this.getContentSize(ctx)
+    const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+    const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+    nextScrollX = Math.min(Math.max(nextScrollX, 0), maxScrollX)
+    nextScrollY = Math.min(Math.max(nextScrollY, 0), maxScrollY)
+
+    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+      this.scrollX = nextScrollX
+      this.scrollY = nextScrollY
+      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+    }
+  }
+
   private updateCanvasSize() {
     const rect = this.container.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
@@ -361,10 +490,10 @@ export class CanvasEditor {
     this.canvas.width = canvasWidth
     this.canvas.height = canvasHeight
 
-    // Scale the drawing context
+    // Scale the drawing context (reset first to avoid accumulation)
     const ctx = this.canvas.getContext('2d')
     if (ctx) {
-      ctx.scale(dpr, dpr)
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     }
   }
 
@@ -389,49 +518,54 @@ export class CanvasEditor {
 
     // Configure text rendering
     ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
-    ctx.fillStyle = '#e5e7eb' // Light gray text
     ctx.textBaseline = 'top'
 
     // Clear canvas
     ctx.fillStyle = '#1f2937' // Dark background
     ctx.fillRect(0, 0, width, height)
 
-    // Draw each line of code
-    const lineHeight = 20
-    const padding = 16
+    // Apply scroll offset for content rendering
+    ctx.save()
+    ctx.translate(-this.scrollX, -this.scrollY)
 
     // Draw selection background if exists
     if (this.inputState.selection) {
-      drawSelection(ctx, this.inputState, padding, lineHeight)
+      ctx.fillStyle = '#e5e7eb'
+      drawSelection(ctx, this.inputState, this.padding, this.lineHeight)
     }
 
     // Draw highlighted code
     highlightedCode.forEach((highlightedLine: HighlightedLine, index: number) => {
-      const y = padding + index * lineHeight
+      const y = this.padding + index * this.lineHeight
       drawHighlightedLine(
         ctx,
         highlightedLine,
-        padding,
+        this.padding,
         y,
         index,
         this.inputState,
         highlightedCode,
-        padding,
-        lineHeight,
+        this.padding,
+        this.lineHeight,
       )
     })
 
-    // Draw caret
-    const caretY = padding + this.inputState.caret.line * lineHeight - 3
-    const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
-    const caretText = caretLine.substring(0, this.inputState.caret.column)
-    const caretX = padding + ctx.measureText(caretText).width
+    // Draw caret only if active
+    if (this.isActive) {
+      const caretY = this.padding + this.inputState.caret.line * this.lineHeight - 3
+      const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
+      const caretText = caretLine.substring(0, this.inputState.caret.column)
+      const caretX = this.padding + ctx.measureText(caretText).width
 
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(caretX, caretY, 2, lineHeight - 2)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
+    }
+
+    ctx.restore()
   }
 
   private updateFunctionSignature() {
+    if (!this.isActive) return
     const callInfo = findFunctionCallContext(
       this.inputState.lines,
       this.inputState.caret.line,
@@ -449,16 +583,17 @@ export class CanvasEditor {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
         ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
-        const padding = 16
-        const lineHeight = 20
         const rect = this.canvas.getBoundingClientRect()
         const position = calculatePopupPosition(
           callInfo.openParenPosition,
-          padding,
-          lineHeight,
+          this.padding,
+          this.lineHeight,
           ctx,
           this.inputState.lines,
           rect,
+          120,
+          this.scrollX,
+          this.scrollY,
         )
 
         const newPopupPosition = {

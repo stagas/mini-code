@@ -11,6 +11,8 @@ export class MouseHandler {
   private lastClickPosition: CaretPosition | null = null
   private isWordSelection = false
   private isLineSelection = false
+  private scrollX = 0
+  private scrollY = 0
 
   constructor(canvas: HTMLCanvasElement, onStateChange: (state: InputState) => void) {
     this.canvas = canvas
@@ -18,10 +20,15 @@ export class MouseHandler {
     this.onStateChange = onStateChange
   }
 
+  setScrollOffset(x: number, y: number) {
+    this.scrollX = x
+    this.scrollY = y
+  }
+
   handlePointerDown(event: PointerEvent, currentState: InputState) {
     const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
+    const x = event.clientX - rect.left + this.scrollX
+    const y = event.clientY - rect.top + this.scrollY
 
     const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
 
@@ -96,8 +103,8 @@ export class MouseHandler {
     if (!this.isDragging || !this.dragStartPosition) return
 
     const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left
-    const y = event.clientY - rect.top
+    const x = event.clientX - rect.left + this.scrollX
+    const y = event.clientY - rect.top + this.scrollY
 
     const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
 
