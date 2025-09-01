@@ -752,18 +752,6 @@ export class CanvasEditor {
     ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
     const wrappedLines = this.getWrappedLines(ctx)
 
-    // Debug: show wrapped lines structure
-    console.log(
-      'Wrapped lines:',
-      wrappedLines.map((w, i) => ({
-        visualIndex: i,
-        logicalLine: w.logicalLine,
-        startColumn: w.startColumn,
-        endColumn: w.endColumn,
-        text: w.text.substring(0, 20) + (w.text.length > 20 ? '...' : ''),
-      })),
-    )
-
     // Adjust for scroll offset
     const adjustedY = y + this.scrollY
     const adjustedX = x + this.scrollX
