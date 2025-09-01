@@ -25,6 +25,8 @@ const findMatchingBrace = (
     tokenIndex: number
     token: Token
     position: number
+    isOpening: boolean
+    depth: number
   }[] = []
 
   for (let lineIndex = 0; lineIndex < highlightedCode.length; lineIndex++) {
@@ -32,15 +34,46 @@ const findMatchingBrace = (
     let currentColumn = 0
     for (let tokenIndex = 0; tokenIndex < line.tokens.length; tokenIndex++) {
       const token = line.tokens[tokenIndex]
-      if (token.type.startsWith('brace-') || token.type === 'brace-unmatched') {
+
+      // Check for opening braces
+      if (token.type.startsWith('brace-open-')) {
+        const depth = parseInt(token.type.split('-').pop() || '0')
         braces.push({
           char: token.content,
           line: lineIndex,
           tokenIndex,
           token,
           position: currentColumn,
+          isOpening: true,
+          depth,
         })
       }
+      // Check for closing braces
+      else if (token.type.startsWith('brace-close-')) {
+        const depth = parseInt(token.type.split('-').pop() || '0')
+        braces.push({
+          char: token.content,
+          line: lineIndex,
+          tokenIndex,
+          token,
+          position: currentColumn,
+          isOpening: false,
+          depth,
+        })
+      }
+      // Check for unmatched braces
+      else if (token.type === 'brace-unmatched') {
+        braces.push({
+          char: token.content,
+          line: lineIndex,
+          tokenIndex,
+          token,
+          position: currentColumn,
+          isOpening: false,
+          depth: -1, // Unmatched braces get depth -1
+        })
+      }
+
       currentColumn += token.length
     }
   }
@@ -63,12 +96,43 @@ const findMatchingBrace = (
     return globalPos
   }
 
-  // Find all matched brace pairs
+  // Find all matched brace pairs using the depth information
   const matchedPairs: { openIndex: number; closeIndex: number }[] = []
-  const stack: { char: string; index: number }[] = []
 
-  const getMatchingOpen = (char: string): string => {
-    switch (char) {
+  // Use a stack-based approach to match braces correctly
+  const stack: { char: string; index: number; depth: number }[] = []
+
+  for (let i = 0; i < braces.length; i++) {
+    const brace = braces[i]
+
+    if (brace.isOpening) {
+      // Opening brace - push to stack
+      stack.push({ char: brace.char, index: i, depth: brace.depth })
+    } else if (!brace.isOpening && brace.depth !== -1) {
+      // Closing brace - find matching opening
+      const expectedOpen = getMatchingOpenBrace(brace.char)
+
+      // Find the most recent matching opening brace
+      for (let j = stack.length - 1; j >= 0; j--) {
+        if (stack[j].char === expectedOpen) {
+          // Found matching pair
+          matchedPairs.push({
+            openIndex: stack[j].index,
+            closeIndex: i,
+          })
+
+          // Remove from stack
+          stack.splice(j, 1)
+          break
+        }
+      }
+    }
+    // Skip unmatched braces (depth === -1)
+  }
+
+  // Helper function to get matching opening brace
+  function getMatchingOpenBrace(closeChar: string): string {
+    switch (closeChar) {
       case '}':
         return '{'
       case ')':
@@ -77,32 +141,6 @@ const findMatchingBrace = (
         return '['
       default:
         return ''
-    }
-  }
-
-  for (let i = 0; i < braces.length; i++) {
-    const brace = braces[i]
-
-    if (brace.char === '{' || brace.char === '(' || brace.char === '[') {
-      // Opening brace
-      stack.push({ char: brace.char, index: i })
-    } else if (brace.char === '}' || brace.char === ')' || brace.char === ']') {
-      // Closing brace - find matching opening
-      const expectedOpen = getMatchingOpen(brace.char)
-
-      // Find the most recent matching opening brace
-      for (let j = stack.length - 1; j >= 0; j--) {
-        if (stack[j].char === expectedOpen) {
-          const openIndex = stack[j].index
-          const closeIndex = i
-
-          matchedPairs.push({ openIndex, closeIndex })
-
-          // Remove from stack
-          stack.splice(j, 1)
-          break
-        }
-      }
     }
   }
 
@@ -767,19 +805,6 @@ export class CanvasEditor {
       columnIntent: visualColumnIntent, // Use visual position, not absolute logical position
     }
 
-    console.log('Horizontal move result:', {
-      direction,
-      currentVisual: { line: currentVisual.visualLine, column: currentVisual.visualColumn },
-      nextVisual: { line: nextVisualLine, column: nextVisualColumn },
-      targetWrapped: {
-        startColumn: targetWrapped.startColumn,
-        endColumn: targetWrapped.endColumn,
-        text: targetWrapped.text.substring(0, 20) + '...',
-      },
-      visualColumnIntent,
-      result,
-    })
-
     return result
   }
 
@@ -838,22 +863,8 @@ export class CanvasEditor {
     // We need to map this to the target wrapped segment
     const clampedVisualIntent = Math.min(Math.max(columnIntent, 0), nextWrapped.text.length)
 
-    console.log('Vertical move calculation:', {
-      columnIntent,
-      nextWrappedText: nextWrapped.text.substring(0, 50) + '...',
-      nextWrappedStart: nextWrapped.startColumn,
-      nextWrappedEnd: nextWrapped.endColumn,
-      clampedVisualIntent,
-    })
-
     // Convert visual position to logical position within the target wrapped segment
     const logical = this.visualToLogicalPosition(nextVisualLine, clampedVisualIntent, wrappedLines)
-
-    console.log('Vertical move result:', {
-      clampedVisualIntent,
-      logical,
-      finalResult: { line: logical.logicalLine, column: logical.logicalColumn },
-    })
 
     return { line: logical.logicalLine, column: logical.logicalColumn }
   }
@@ -1294,10 +1305,8 @@ export class CanvasEditor {
           currentX += ctx.measureText(token.content).width
         }
 
-        // Draw brace matching for logical line if caret is on this logical line
-        if (this.inputState.caret.line === wrappedLine.logicalLine) {
-          this.drawBraceMatchingForWrappedLine(ctx, highlightedCode, wrappedLine, visualIndex, y)
-        }
+        // Draw brace matching for any line that might contain braces
+        this.drawBraceMatchingForWrappedLine(ctx, highlightedCode, wrappedLine, visualIndex, y)
       } else {
         // Fallback: draw plain text
         ctx.fillStyle = '#ffffff'
