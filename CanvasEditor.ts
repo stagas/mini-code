@@ -262,6 +262,14 @@ export interface CanvasEditorCallbacks {
   onFunctionCallChange?: (callInfo: FunctionCallInfo | null) => void
   onPopupPositionChange?: (position: { x: number; y: number; showBelow: boolean }) => void
   onScrollChange?: (scrollX: number, scrollY: number) => void
+  onScrollMetricsChange?: (metrics: {
+    scrollX: number
+    scrollY: number
+    viewportWidth: number
+    viewportHeight: number
+    contentWidth: number
+    contentHeight: number
+  }) => void
 }
 
 export class CanvasEditor {
@@ -341,6 +349,71 @@ export class CanvasEditor {
     }
   }
 
+  public setScroll(x: number | null, y: number | null) {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+
+    const dpr = window.devicePixelRatio || 1
+    const viewportWidth = this.canvas.width / dpr
+    const viewportHeight = this.canvas.height / dpr
+    const contentSize = this.getContentSize(ctx)
+    const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+    const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+    const nextScrollX = x === null ? this.scrollX : Math.min(Math.max(x, 0), maxScrollX)
+    const nextScrollY = y === null ? this.scrollY : Math.min(Math.max(y, 0), maxScrollY)
+
+    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+      this.scrollX = nextScrollX
+      this.scrollY = nextScrollY
+      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      this.publishScrollMetrics(
+        ctx,
+        viewportWidth,
+        viewportHeight,
+        contentSize.width,
+        contentSize.height,
+      )
+      this.draw()
+      this.updateFunctionSignature()
+    } else {
+      this.publishScrollMetrics(
+        ctx,
+        viewportWidth,
+        viewportHeight,
+        contentSize.width,
+        contentSize.height,
+      )
+    }
+  }
+
+  public getScrollMetrics(): {
+    scrollX: number
+    scrollY: number
+    viewportWidth: number
+    viewportHeight: number
+    contentWidth: number
+    contentHeight: number
+  } | null {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+
+    const dpr = window.devicePixelRatio || 1
+    const viewportWidth = this.canvas.width / dpr
+    const viewportHeight = this.canvas.height / dpr
+    const content = this.getContentSize(ctx)
+    return {
+      scrollX: this.scrollX,
+      scrollY: this.scrollY,
+      viewportWidth,
+      viewportHeight,
+      contentWidth: content.width,
+      contentHeight: content.height,
+    }
+  }
+
   private setupResize() {
     let resizeTimeout: number | null = null
 
@@ -395,6 +468,13 @@ export class CanvasEditor {
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        this.publishScrollMetrics(
+          ctx,
+          viewportWidth,
+          viewportHeight,
+          contentSize.width,
+          contentSize.height,
+        )
         this.draw()
         this.updateFunctionSignature()
       }
@@ -414,6 +494,23 @@ export class CanvasEditor {
     const width = this.padding + maxLineWidth + this.padding
     const height = this.padding + this.inputState.lines.length * this.lineHeight + this.padding
     return { width, height }
+  }
+
+  private publishScrollMetrics(
+    ctx: CanvasRenderingContext2D,
+    viewportWidth: number,
+    viewportHeight: number,
+    contentWidth: number,
+    contentHeight: number,
+  ) {
+    this.callbacks.onScrollMetricsChange?.({
+      scrollX: this.scrollX,
+      scrollY: this.scrollY,
+      viewportWidth,
+      viewportHeight,
+      contentWidth,
+      contentHeight,
+    })
   }
 
   private ensureCaretVisible() {
@@ -523,6 +620,10 @@ export class CanvasEditor {
     // Clear canvas
     ctx.fillStyle = '#1f2937' // Dark background
     ctx.fillRect(0, 0, width, height)
+
+    // Publish metrics for consumers
+    const content = this.getContentSize(ctx)
+    this.publishScrollMetrics(ctx, width, height, content.width, content.height)
 
     // Apply scroll offset for content rendering
     ctx.save()

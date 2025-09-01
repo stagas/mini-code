@@ -50,6 +50,15 @@ export const CodeEditor = () => {
   const mouseHandlerRef = useRef<MouseHandler | null>(null)
   const inputStateRef = useRef<InputState>(inputState)
 
+  const [scrollMetrics, setScrollMetrics] = useState<{
+    scrollX: number
+    scrollY: number
+    viewportWidth: number
+    viewportHeight: number
+    contentWidth: number
+    contentHeight: number
+  }>({ scrollX: 0, scrollY: 0, viewportWidth: 0, viewportHeight: 0, contentWidth: 0, contentHeight: 0 })
+
   // Custom setter that updates canvas editor
   const setInputState = useCallback((newState: InputState) => {
     setInputStateInternal(newState)
@@ -151,6 +160,7 @@ export const CodeEditor = () => {
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
       },
+      onScrollMetricsChange: (m) => setScrollMetrics(m),
     }
 
     canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks)
@@ -198,6 +208,110 @@ export const CodeEditor = () => {
     }
   }, [])
 
+  // Scrollbar dragging
+  const isDraggingVRef = useRef(false)
+  const isDraggingHRef = useRef(false)
+  const dragStartRef = useRef<{ x: number; y: number; scrollX: number; scrollY: number } | null>(null)
+  const moveListenerRef = useRef<((e: PointerEvent) => void) | null>(null)
+  const upListenerRef = useRef<(() => void) | null>(null)
+
+  const startVerticalDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    isDraggingVRef.current = true
+    dragStartRef.current = { x: e.clientX, y: e.clientY, scrollX: scrollMetrics.scrollX,
+      scrollY: scrollMetrics.scrollY }
+
+    const handleMove = (ev: PointerEvent) => {
+      if (!dragStartRef.current || !canvasEditorRef.current) return
+      const { y, scrollY } = dragStartRef.current
+      const trackHeight = Math.max(1, scrollMetrics.viewportHeight)
+      const contentScrollable = Math.max(1, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
+      const thumbHeight = Math.max(20,
+        (scrollMetrics.viewportHeight / Math.max(1, scrollMetrics.contentHeight)) * trackHeight)
+      const maxThumbTravel = Math.max(1, trackHeight - thumbHeight)
+      const dy = ev.clientY - y
+      const scrollDelta = (dy / maxThumbTravel) * contentScrollable
+      canvasEditorRef.current.setScroll(null, Math.round(scrollY + scrollDelta))
+    }
+    const handleUp = () => {
+      isDraggingVRef.current = false
+      dragStartRef.current = null
+      if (moveListenerRef.current) window.removeEventListener('pointermove', moveListenerRef.current)
+      if (upListenerRef.current) window.removeEventListener('pointerup', upListenerRef.current)
+      moveListenerRef.current = null
+      upListenerRef.current = null
+    }
+
+    moveListenerRef.current = handleMove
+    upListenerRef.current = handleUp
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+  }
+
+  const startHorizontalDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    isDraggingHRef.current = true
+    dragStartRef.current = { x: e.clientX, y: e.clientY, scrollX: scrollMetrics.scrollX,
+      scrollY: scrollMetrics.scrollY }
+
+    const handleMove = (ev: PointerEvent) => {
+      if (!dragStartRef.current || !canvasEditorRef.current) return
+      const { x, scrollX } = dragStartRef.current
+      const trackWidth = Math.max(1, scrollMetrics.viewportWidth)
+      const contentScrollable = Math.max(1, scrollMetrics.contentWidth - scrollMetrics.viewportWidth)
+      const thumbWidth = Math.max(20,
+        (scrollMetrics.viewportWidth / Math.max(1, scrollMetrics.contentWidth)) * trackWidth)
+      const maxThumbTravel = Math.max(1, trackWidth - thumbWidth)
+      const dx = ev.clientX - x
+      const scrollDelta = (dx / maxThumbTravel) * contentScrollable
+      canvasEditorRef.current.setScroll(Math.round(scrollX + scrollDelta), null)
+    }
+    const handleUp = () => {
+      isDraggingHRef.current = false
+      dragStartRef.current = null
+      if (moveListenerRef.current) window.removeEventListener('pointermove', moveListenerRef.current)
+      if (upListenerRef.current) window.removeEventListener('pointerup', upListenerRef.current)
+      moveListenerRef.current = null
+      upListenerRef.current = null
+    }
+
+    moveListenerRef.current = handleMove
+    upListenerRef.current = handleUp
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (moveListenerRef.current) window.removeEventListener('pointermove', moveListenerRef.current)
+      if (upListenerRef.current) window.removeEventListener('pointerup', upListenerRef.current)
+    }
+  }, [])
+
+  const showVBar = scrollMetrics.contentHeight > scrollMetrics.viewportHeight + 1
+  const showHBar = scrollMetrics.contentWidth > scrollMetrics.viewportWidth + 1
+
+  // Thumb sizes and positions
+  const vTrack = scrollMetrics.viewportHeight
+  const vThumbHeight = showVBar
+    ? Math.max(20, (scrollMetrics.viewportHeight / scrollMetrics.contentHeight) * vTrack)
+    : 0
+  const vMaxTravel = Math.max(1, vTrack - vThumbHeight)
+  const vThumbTop = showVBar
+    ? (scrollMetrics.scrollY / Math.max(1, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)) * vMaxTravel
+    : 0
+
+  const hTrack = scrollMetrics.viewportWidth
+  const hThumbWidth = showHBar
+    ? Math.max(20, (scrollMetrics.viewportWidth / scrollMetrics.contentWidth) * hTrack)
+    : 0
+  const hMaxTravel = Math.max(1, hTrack - hThumbWidth)
+  const hThumbLeft = showHBar
+    ? (scrollMetrics.scrollX / Math.max(1, scrollMetrics.contentWidth - scrollMetrics.viewportWidth)) * hMaxTravel
+    : 0
+
   return (
     <div ref={containerRef} className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full"
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
@@ -230,6 +344,46 @@ export const CodeEditor = () => {
           setActiveEditor(editorIdRef.current)
         }}
       />
+
+      {/* Scrollbars */}
+      {showVBar && (
+        <div className="absolute right-0 top-0 h-full w-2.5 bg-transparent z-40" onPointerDown={(e) => {
+          if ((e.target as HTMLElement).closest('[data-thumb]')) return
+          // Jump to position when clicking track
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+          const clickY = e.clientY - rect.top
+          const targetThumbTop = Math.max(0, Math.min(clickY - vThumbHeight / 2, vMaxTravel))
+          const scrollY = (targetThumbTop / vMaxTravel)
+            * Math.max(1, scrollMetrics.contentHeight - scrollMetrics.viewportHeight)
+          canvasEditorRef.current?.setScroll(null, Math.round(scrollY))
+        }}>
+          <div
+            className="absolute right-0 w-2.5 rounded bg-neutral-600 hover:bg-neutral-500 active:bg-neutral-400 cursor-pointer opacity-50"
+            style={{ height: vThumbHeight, top: vThumbTop }}
+            data-thumb
+            onPointerDown={startVerticalDrag}
+          />
+        </div>
+      )}
+
+      {showHBar && (
+        <div className="absolute left-0 bottom-0 w-full h-2.5 bg-transparent z-40" onPointerDown={(e) => {
+          if ((e.target as HTMLElement).closest('[data-thumb]')) return
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+          const clickX = e.clientX - rect.left
+          const targetThumbLeft = Math.max(0, Math.min(clickX - hThumbWidth / 2, hMaxTravel))
+          const scrollX = (targetThumbLeft / hMaxTravel)
+            * Math.max(1, scrollMetrics.contentWidth - scrollMetrics.viewportWidth)
+          canvasEditorRef.current?.setScroll(Math.round(scrollX), null)
+        }}>
+          <div
+            className="absolute bottom-0 h-2.5 rounded bg-neutral-600 hover:bg-neutral-500 active:bg-neutral-400 cursor-pointer opacity-50"
+            style={{ width: hThumbWidth, left: hThumbLeft }}
+            data-thumb
+            onPointerDown={startHorizontalDrag}
+          />
+        </div>
+      )}
 
       {/* Function signature popup */}
       {isActive && functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (
