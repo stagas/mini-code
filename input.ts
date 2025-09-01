@@ -1,4 +1,4 @@
-import { History } from './history'
+import { History } from './history.ts'
 
 /**
  * Input Handler with Debounced History
@@ -79,6 +79,11 @@ export class InputHandler {
   handleKeyDown(event: KeyboardEvent, currentState: InputState) {
     // Do nothing for modifier keys pressed alone
     if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
+      return
+    }
+
+    // Allow Ctrl+Shift+J to pass through (browser default)
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'j') {
       return
     }
 

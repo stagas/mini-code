@@ -299,7 +299,7 @@ export const calculatePopupPosition = (
     showBelow = false
   } else if (spaceBelow >= popupHeight) {
     // Show below - not enough space above but enough below
-    y = lineY + lineHeight + 5
+    y = lineY + lineHeight
     showBelow = true
   } else {
     // Not enough space in either direction, choose the side with more space
@@ -307,7 +307,7 @@ export const calculatePopupPosition = (
       y = lineY - 5
       showBelow = false
     } else {
-      y = lineY + lineHeight + 5
+      y = lineY + lineHeight
       showBelow = true
     }
   }

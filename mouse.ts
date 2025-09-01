@@ -1,4 +1,4 @@
-import type { InputState, CaretPosition } from './input'
+import type { CaretPosition, InputState } from './input.ts'
 
 export class MouseHandler {
   private canvas: HTMLCanvasElement

@@ -1,5 +1,5 @@
 import React from 'react'
-import { FunctionParameter, FunctionSignature } from './function-signature'
+import { FunctionParameter, FunctionSignature } from './function-signature.ts'
 
 interface FunctionSignaturePopupProps {
   signature: FunctionSignature
@@ -16,8 +16,22 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
 }) => {
   if (!visible) return null
 
+  // Find the effective parameter index for rest parameters
+  const getEffectiveParameterIndex = (argIndex: number): number => {
+    // Find the last rest parameter before or at the current argument index
+    for (let i = signature.parameters.length - 1; i >= 0; i--) {
+      const param = signature.parameters[i]
+      if (param.name.startsWith('...') && i <= argIndex) {
+        return i
+      }
+    }
+    return argIndex
+  }
+
+  const effectiveParameterIndex = getEffectiveParameterIndex(currentArgumentIndex)
+
   const renderParameter = (param: FunctionParameter, index: number, isLast: boolean) => {
-    const isActive = index === currentArgumentIndex
+    const isActive = index === effectiveParameterIndex
     const paramText = `${param.name}${param.type ? `: ${param.type}` : ''}`
 
     return (
@@ -39,7 +53,7 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
 
   return (
     <div
-      className="fixed z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-lg"
+      className="fixed z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-lg pointer-events-none"
       style={{
         left: position.x,
         top: position.y,
@@ -70,27 +84,27 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
           )}
 
           {/* Current parameter details */}
-          {signature.parameters[currentArgumentIndex] && (
+          {signature.parameters[effectiveParameterIndex] && (
             <div className="mt-2 pt-2 border-t border-gray-700">
               <div className="text-xs">
                 <span className="text-blue-400 font-semibold">
-                  {signature.parameters[currentArgumentIndex].name}
+                  {signature.parameters[effectiveParameterIndex].name}
                 </span>
-                {signature.parameters[currentArgumentIndex].type && (
+                {signature.parameters[effectiveParameterIndex].type && (
                   <>
                     <span className="text-gray-500">:</span>
                     <span className="text-yellow-400">
-                      {signature.parameters[currentArgumentIndex].type}
+                      {signature.parameters[effectiveParameterIndex].type}
                     </span>
                   </>
                 )}
-                {signature.parameters[currentArgumentIndex].optional && (
+                {signature.parameters[effectiveParameterIndex].optional && (
                   <span className="text-gray-500 ml-1">(optional)</span>
                 )}
               </div>
-              {signature.parameters[currentArgumentIndex].description && (
+              {signature.parameters[effectiveParameterIndex].description && (
                 <div className="text-gray-400 text-xs mt-1 leading-relaxed">
-                  {signature.parameters[currentArgumentIndex].description}
+                  {signature.parameters[effectiveParameterIndex].description}
                 </div>
               )}
             </div>
