@@ -13,6 +13,7 @@ export class MouseHandler {
   private isLineSelection = false
   private scrollX = 0
   private scrollY = 0
+  private wordWrapCoordinateConverter: ((x: number, y: number) => CaretPosition) | null = null
 
   constructor(canvas: HTMLCanvasElement, onStateChange: (state: InputState) => void) {
     this.canvas = canvas
@@ -25,12 +26,32 @@ export class MouseHandler {
     this.scrollY = y
   }
 
+  setWordWrapCoordinateConverter(converter: ((x: number, y: number) => CaretPosition) | null) {
+    this.wordWrapCoordinateConverter = converter
+  }
+
   handlePointerDown(event: PointerEvent, currentState: InputState) {
     const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left + this.scrollX
-    const y = event.clientY - rect.top + this.scrollY
+    let x: number, y: number
 
-    const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+    if (this.wordWrapCoordinateConverter) {
+      // For word wrap mode, don't add scroll offset since CanvasEditor handles it
+      x = event.clientX - rect.left
+      y = event.clientY - rect.top
+    } else {
+      // For normal mode, add scroll offset
+      x = event.clientX - rect.left + this.scrollX
+      y = event.clientY - rect.top + this.scrollY
+    }
+
+    let caretPosition: CaretPosition
+    if (this.wordWrapCoordinateConverter) {
+      // Use word wrap coordinate conversion
+      caretPosition = this.wordWrapCoordinateConverter(x, y)
+    } else {
+      // Use normal coordinate conversion
+      caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+    }
 
     // Handle click counting for double/triple click
     const now = Date.now()
@@ -103,10 +124,26 @@ export class MouseHandler {
     if (!this.isDragging || !this.dragStartPosition) return
 
     const rect = this.canvas.getBoundingClientRect()
-    const x = event.clientX - rect.left + this.scrollX
-    const y = event.clientY - rect.top + this.scrollY
+    let x: number, y: number
 
-    const caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+    if (this.wordWrapCoordinateConverter) {
+      // For word wrap mode, don't add scroll offset since CanvasEditor handles it
+      x = event.clientX - rect.left
+      y = event.clientY - rect.top
+    } else {
+      // For normal mode, add scroll offset
+      x = event.clientX - rect.left + this.scrollX
+      y = event.clientY - rect.top + this.scrollY
+    }
+
+    let caretPosition: CaretPosition
+    if (this.wordWrapCoordinateConverter) {
+      // Use word wrap coordinate conversion
+      caretPosition = this.wordWrapCoordinateConverter(x, y)
+    } else {
+      // Use normal coordinate conversion
+      caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+    }
 
     const newState = { ...currentState }
 

@@ -190,23 +190,15 @@ export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
       textareaRef.current?.focus()
 
       if (wordWrap && canvasEditorRef.current) {
-        // Use CanvasEditor's coordinate conversion for word wrapping
-        const rect = canvas.getBoundingClientRect()
-        const x = event.clientX - rect.left
-        const y = event.clientY - rect.top
-        const position = canvasEditorRef.current.getCaretPositionFromCoordinates(x, y)
-
-        const newState: InputState = {
-          ...inputStateRef.current,
-          caret: position,
-          selection: null,
+        // Set up word wrap coordinate converter for MouseHandler
+        const wordWrapConverter = (x: number, y: number) => {
+          // CanvasEditor expects raw coordinates and will add scroll offset internally
+          return canvasEditorRef.current!.getCaretPositionFromCoordinates(x, y)
         }
+        mouseHandlerRef.current?.setWordWrapCoordinateConverter(wordWrapConverter)
 
-        if (inputHandlerRef.current) {
-          inputHandlerRef.current.saveBeforeStateToHistory(inputStateRef.current)
-          inputHandlerRef.current.saveAfterStateToHistory(newState)
-        }
-        setInputState(newState)
+        // Let MouseHandler handle everything (including double/triple clicks)
+        mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
       else {
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
@@ -215,14 +207,7 @@ export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
 
     const handlePointerMove = (event: PointerEvent) => {
       event.preventDefault()
-      if (wordWrap && canvasEditorRef.current) {
-        // TODO: Handle selection with word wrap
-        // For now, just use normal mouse handler
-        mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
-      }
-      else {
-        mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
-      }
+      mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
     }
 
     const handlePointerUp = (event: PointerEvent) => {

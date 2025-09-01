@@ -22,6 +22,14 @@ const drawSelection = (
   const normalizedEnd =
     start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
+  // Don't draw selection if start === end (zero-length selection)
+  if (
+    normalizedStart.line === normalizedEnd.line &&
+    normalizedStart.column === normalizedEnd.column
+  ) {
+    return
+  }
+
   ctx.fillStyle = 'rgba(255, 255, 255, 0.2)' // Semi-transparent white selection
 
   const selectionPadding = 4 // Padding on the right for each selected line
@@ -547,6 +555,14 @@ export class CanvasEditor {
       start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
     const normalizedEnd =
       start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+
+    // Don't draw selection if start === end (zero-length selection)
+    if (
+      normalizedStart.line === normalizedEnd.line &&
+      normalizedStart.column === normalizedEnd.column
+    ) {
+      return
+    }
 
     const selectionPadding = 4
 
