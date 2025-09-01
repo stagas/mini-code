@@ -1,9 +1,9 @@
 import { createRoot } from 'react-dom/client'
-import { CodeEditor } from './CodeEditor.tsx'
+import { CodeEditor } from './src/CodeEditor.tsx'
 
 const App = () => {
   return (
-    <div className="flex flex-row gap-2 w-[100dvw] h-[100dvh] p-2">
+    <div className="flex flex-row gap-[1px] w-[100dvw] h-[100dvh]">
       <CodeEditor wordWrap gutter />
       <CodeEditor />
     </div>

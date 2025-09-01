@@ -222,6 +222,10 @@ export class CanvasEditor {
   private readonly lineHeight = 20
   private isActive = false
 
+  private setFont(ctx: CanvasRenderingContext2D) {
+    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+  }
+
   private getGutterWidth(): number {
     if (!this.options.gutter) return 0
 
@@ -230,7 +234,7 @@ export class CanvasEditor {
 
     // Get canvas context to measure actual character width
     const ctx = this.canvas.getContext('2d')!
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
     const charWidth = ctx.measureText('0').width
     // Calculate width needed for line numbers + some padding
     return maxLineNumber * charWidth + 2
@@ -679,6 +683,52 @@ export class CanvasEditor {
     return column
   }
 
+  private adjustScrollAfterResize(
+    oldWidth: number,
+    oldHeight: number,
+    newWidth: number,
+    newHeight: number,
+  ) {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+
+    this.setFont(ctx)
+
+    // Get content size with new dimensions
+    const contentSize = this.options.wordWrap
+      ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+      : this.getContentSize(ctx)
+
+    // Calculate new maximum scroll values
+    const maxScrollX = Math.max(0, contentSize.width - newWidth)
+    const maxScrollY = Math.max(0, contentSize.height - newHeight)
+
+    // Adjust horizontal scroll to keep content visible
+    if (newWidth < oldWidth) {
+      // Canvas got narrower - adjust scroll to keep right edge visible
+      const rightEdge = this.scrollX + oldWidth
+      if (rightEdge > newWidth) {
+        this.scrollX = Math.max(0, rightEdge - newWidth)
+      }
+    }
+
+    // Adjust vertical scroll to keep content visible
+    if (newHeight < oldHeight) {
+      // Canvas got shorter - adjust scroll to keep bottom edge visible
+      const bottomEdge = this.scrollY + oldHeight
+      if (bottomEdge > newHeight) {
+        this.scrollY = Math.max(0, bottomEdge - newHeight)
+      }
+    }
+
+    // Clamp scroll values to new maximums
+    this.scrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
+    this.scrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
+
+    // Notify about scroll changes
+    this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+  }
+
   public getCaretPositionFromCoordinates(
     x: number,
     y: number,
@@ -686,7 +736,7 @@ export class CanvasEditor {
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return { line: 0, column: 0, columnIntent: 0 }
 
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
     const wrappedLines = this.getWrappedLines(ctx)
 
     // Adjust for scroll offset
@@ -733,7 +783,7 @@ export class CanvasEditor {
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return null
 
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
     const wrappedLines = this.getWrappedLines(ctx)
 
     // Find current visual position
@@ -833,7 +883,7 @@ export class CanvasEditor {
     if (!ctx)
       return { line, column: Math.min(columnIntent, (this.inputState.lines[line] || '').length) }
 
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
     const wrappedLines = this.getWrappedLines(ctx)
 
     // Current visual position (using actual current column, not columnIntent)
@@ -904,7 +954,20 @@ export class CanvasEditor {
   public resize() {
     // Invalidate wrapped lines cache on resize
     this.wrappedLinesCache = null
+
+    // Store old dimensions before updating
+    const oldWidth = this.canvas.width / (window.devicePixelRatio || 1)
+    const oldHeight = this.canvas.height / (window.devicePixelRatio || 1)
+
     this.updateCanvasSize()
+
+    // Get new dimensions
+    const newWidth = this.canvas.width / (window.devicePixelRatio || 1)
+    const newHeight = this.canvas.height / (window.devicePixelRatio || 1)
+
+    // Adjust scroll position to keep content properly visible after resize
+    this.adjustScrollAfterResize(oldWidth, oldHeight, newWidth, newHeight)
+
     if (this.isActive) this.ensureCaretVisible()
     this.draw()
     this.updateFunctionSignature() // Need to update popup positions when canvas resizes
@@ -928,7 +991,7 @@ export class CanvasEditor {
   public setScroll(x: number | null, y: number | null) {
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
@@ -976,7 +1039,7 @@ export class CanvasEditor {
   } | null {
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return null
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
@@ -1029,7 +1092,7 @@ export class CanvasEditor {
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) return
-      ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+      this.setFont(ctx)
 
       const contentSize = this.options.wordWrap
         ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
@@ -1099,7 +1162,7 @@ export class CanvasEditor {
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
 
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
@@ -1216,7 +1279,7 @@ export class CanvasEditor {
     const height = this.canvas.height / (window.devicePixelRatio || 1)
 
     // Configure text rendering
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    this.setFont(ctx)
     ctx.textBaseline = 'top'
 
     // Get wrapped lines
@@ -1241,6 +1304,22 @@ export class CanvasEditor {
     const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
     this.publishScrollMetrics(ctx, width, height, content.width, content.height)
 
+    // Draw gutter if enabled (before scroll transform so it stays fixed)
+    if (this.options.gutter) {
+      const gutterWidth = this.getGutterWidth()
+      ctx.fillStyle = '#374151' // Darker gray for gutter background
+      // Extend gutter to full canvas height, not just content height
+      ctx.fillRect(0, 0, this.padding + gutterWidth, height)
+
+      // Draw gutter separator line
+      ctx.strokeStyle = '#4b5563'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(this.padding + gutterWidth - 1, 0)
+      ctx.lineTo(this.padding + gutterWidth - 1, height)
+      ctx.stroke()
+    }
+
     // Apply scroll offset for content rendering
     ctx.save()
     ctx.translate(-this.scrollX, -this.scrollY)
@@ -1249,21 +1328,6 @@ export class CanvasEditor {
     if (this.inputState.selection) {
       ctx.fillStyle = '#555'
       this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines)
-    }
-
-    // Draw gutter if enabled
-    if (this.options.gutter) {
-      const gutterWidth = this.getGutterWidth()
-      ctx.fillStyle = '#374151' // Darker gray for gutter background
-      ctx.fillRect(0, 0, this.padding + gutterWidth, content.height)
-
-      // Draw gutter separator line
-      ctx.strokeStyle = '#4b5563'
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(this.padding + gutterWidth - 1, 0)
-      ctx.lineTo(this.padding + gutterWidth - 1, content.height)
-      ctx.stroke()
     }
 
     // Draw wrapped lines
@@ -1353,7 +1417,7 @@ export class CanvasEditor {
     if (callInfo) {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
-        ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+        this.setFont(ctx)
         const rect = this.canvas.getBoundingClientRect()
 
         let position: { x: number; y: number; showBelow: boolean }

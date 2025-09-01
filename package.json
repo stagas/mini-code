@@ -1,8 +1,8 @@
 {
-  "name": "viteonly",
+  "name": "react-code",
   "version": "1.0.0",
-  "description": "A simple Vite only starter kit for React",
-  "main": "script.tsx",
+  "description": "A canvas based React code editor",
+  "main": "index.ts",
   "scripts": {
     "dev": "vite --open",
     "build": "vite build"
