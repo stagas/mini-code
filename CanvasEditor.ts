@@ -6,72 +6,6 @@ import {
 } from './function-signature.ts'
 import type { InputState } from './input.ts'
 
-const drawSelection = (
-  ctx: CanvasRenderingContext2D,
-  inputState: InputState,
-  textPadding: number,
-  lineHeight: number,
-) => {
-  if (!inputState.selection) return
-
-  const { start, end } = inputState.selection
-
-  // Normalize selection (ensure start comes before end)
-  const normalizedStart =
-    start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-  const normalizedEnd =
-    start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
-
-  // Don't draw selection if start === end (zero-length selection)
-  if (
-    normalizedStart.line === normalizedEnd.line &&
-    normalizedStart.column === normalizedEnd.column
-  ) {
-    return
-  }
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.2)' // Semi-transparent white selection
-
-  const selectionPadding = 4 // Padding on the right for each selected line
-
-  if (normalizedStart.line === normalizedEnd.line) {
-    // Single line selection
-    const line = inputState.lines[normalizedStart.line] || ''
-    const startText = line.substring(0, normalizedStart.column)
-    const selectedText = line.substring(normalizedStart.column, normalizedEnd.column)
-
-    const startX = textPadding + ctx.measureText(startText).width
-    const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-    const y = textPadding + normalizedStart.line * lineHeight - 3
-
-    ctx.fillRect(startX, y, selectedWidth, lineHeight - 2)
-  } else {
-    // Multi-line selection
-    for (let lineIndex = normalizedStart.line; lineIndex <= normalizedEnd.line; lineIndex++) {
-      const line = inputState.lines[lineIndex] || ''
-      const y = textPadding + lineIndex * lineHeight - 3
-
-      if (lineIndex === normalizedStart.line) {
-        // First line: from start column to end of line
-        const startText = line.substring(0, normalizedStart.column)
-        const selectedText = line.substring(normalizedStart.column)
-        const startX = textPadding + ctx.measureText(startText).width
-        const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-        ctx.fillRect(startX, y, selectedWidth, lineHeight - 2)
-      } else if (lineIndex === normalizedEnd.line) {
-        // Last line: from start of line to end column
-        const selectedText = line.substring(0, normalizedEnd.column)
-        const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-        ctx.fillRect(textPadding, y, selectedWidth, lineHeight - 2)
-      } else {
-        // Middle lines: entire line
-        const selectedWidth = ctx.measureText(line).width + selectionPadding
-        ctx.fillRect(textPadding, y, selectedWidth, lineHeight - 2)
-      }
-    }
-  }
-}
-
 const findMatchingBrace = (
   highlightedCode: HighlightedLine[],
   cursorLine: number,
@@ -203,66 +137,6 @@ const findMatchingBrace = (
     matchingLine: closeBrace.line,
     matchingTokenIndex: closeBrace.tokenIndex,
     matchingToken: closeBrace.token,
-  }
-}
-
-const drawHighlightedLine = (
-  ctx: CanvasRenderingContext2D,
-  highlightedLine: HighlightedLine,
-  x: number,
-  y: number,
-  lineIndex: number,
-  inputState: InputState,
-  highlightedCode: HighlightedLine[],
-  textPadding: number,
-  lineHeight: number,
-) => {
-  let currentX = x
-
-  for (const token of highlightedLine.tokens) {
-    ctx.fillStyle = getTokenColor(token.type)
-    ctx.fillText(token.content, currentX, y)
-    currentX += ctx.measureText(token.content).width
-  }
-
-  // Check for matching braces at cursor position
-  const matchingBraces = findMatchingBrace(
-    highlightedCode,
-    inputState.caret.line,
-    inputState.caret.column,
-  )
-  if (matchingBraces) {
-    // Underline opening brace
-    if (matchingBraces.line === lineIndex) {
-      let braceX = textPadding
-      for (let i = 0; i < matchingBraces.tokenIndex; i++) {
-        braceX += ctx.measureText(highlightedCode[matchingBraces.line].tokens[i].content).width
-      }
-
-      ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      ctx.moveTo(braceX, y + 18)
-      ctx.lineTo(braceX + ctx.measureText(matchingBraces.token.content).width, y + 18)
-      ctx.stroke()
-    }
-
-    // Underline closing brace
-    if (matchingBraces.matchingLine === lineIndex) {
-      let braceX = textPadding
-      for (let i = 0; i < matchingBraces.matchingTokenIndex; i++) {
-        braceX += ctx.measureText(
-          highlightedCode[matchingBraces.matchingLine].tokens[i].content,
-        ).width
-      }
-
-      ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      ctx.moveTo(braceX, y + 18)
-      ctx.lineTo(braceX + ctx.measureText(matchingBraces.matchingToken.content).width, y + 18)
-      ctx.stroke()
-    }
   }
 }
 
@@ -1349,7 +1223,7 @@ export class CanvasEditor {
 
     // Draw selection background if exists
     if (this.inputState.selection) {
-      ctx.fillStyle = '#e5e7eb'
+      ctx.fillStyle = '#555'
       this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines)
     }
 
