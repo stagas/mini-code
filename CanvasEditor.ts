@@ -9,7 +9,7 @@ import type { InputState } from './input.ts'
 const drawSelection = (
   ctx: CanvasRenderingContext2D,
   inputState: InputState,
-  padding: number,
+  textPadding: number,
   lineHeight: number,
 ) => {
   if (!inputState.selection) return
@@ -40,33 +40,33 @@ const drawSelection = (
     const startText = line.substring(0, normalizedStart.column)
     const selectedText = line.substring(normalizedStart.column, normalizedEnd.column)
 
-    const startX = padding + ctx.measureText(startText).width
+    const startX = textPadding + ctx.measureText(startText).width
     const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-    const y = padding + normalizedStart.line * lineHeight - 3
+    const y = textPadding + normalizedStart.line * lineHeight - 3
 
     ctx.fillRect(startX, y, selectedWidth, lineHeight - 2)
   } else {
     // Multi-line selection
     for (let lineIndex = normalizedStart.line; lineIndex <= normalizedEnd.line; lineIndex++) {
       const line = inputState.lines[lineIndex] || ''
-      const y = padding + lineIndex * lineHeight - 3
+      const y = textPadding + lineIndex * lineHeight - 3
 
       if (lineIndex === normalizedStart.line) {
         // First line: from start column to end of line
         const startText = line.substring(0, normalizedStart.column)
         const selectedText = line.substring(normalizedStart.column)
-        const startX = padding + ctx.measureText(startText).width
+        const startX = textPadding + ctx.measureText(startText).width
         const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
         ctx.fillRect(startX, y, selectedWidth, lineHeight - 2)
       } else if (lineIndex === normalizedEnd.line) {
         // Last line: from start of line to end column
         const selectedText = line.substring(0, normalizedEnd.column)
         const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-        ctx.fillRect(padding, y, selectedWidth, lineHeight - 2)
+        ctx.fillRect(textPadding, y, selectedWidth, lineHeight - 2)
       } else {
         // Middle lines: entire line
         const selectedWidth = ctx.measureText(line).width + selectionPadding
-        ctx.fillRect(padding, y, selectedWidth, lineHeight - 2)
+        ctx.fillRect(textPadding, y, selectedWidth, lineHeight - 2)
       }
     }
   }
@@ -214,7 +214,7 @@ const drawHighlightedLine = (
   lineIndex: number,
   inputState: InputState,
   highlightedCode: HighlightedLine[],
-  padding: number,
+  textPadding: number,
   lineHeight: number,
 ) => {
   let currentX = x
@@ -234,7 +234,7 @@ const drawHighlightedLine = (
   if (matchingBraces) {
     // Underline opening brace
     if (matchingBraces.line === lineIndex) {
-      let braceX = padding
+      let braceX = textPadding
       for (let i = 0; i < matchingBraces.tokenIndex; i++) {
         braceX += ctx.measureText(highlightedCode[matchingBraces.line].tokens[i].content).width
       }
@@ -249,7 +249,7 @@ const drawHighlightedLine = (
 
     // Underline closing brace
     if (matchingBraces.matchingLine === lineIndex) {
-      let braceX = padding
+      let braceX = textPadding
       for (let i = 0; i < matchingBraces.matchingTokenIndex; i++) {
         braceX += ctx.measureText(
           highlightedCode[matchingBraces.matchingLine].tokens[i].content,
@@ -282,6 +282,7 @@ export interface CanvasEditorCallbacks {
 
 export interface CanvasEditorOptions {
   wordWrap?: boolean
+  gutter?: boolean
 }
 
 interface WrappedLine {
@@ -307,7 +308,12 @@ export class CanvasEditor {
   private scrollY = 0
   private readonly padding = 16
   private readonly lineHeight = 20
+  private readonly gutterWidth = 40 // Space for line numbers
   private isActive = false
+
+  private getTextPadding(): number {
+    return this.options.gutter ? this.padding + this.gutterWidth + 8 : this.padding
+  }
   private wrappedLinesCache: {
     code: string
     viewportWidth: number
@@ -359,7 +365,8 @@ export class CanvasEditor {
     }
 
     const viewportWidth = this.canvas.width / (window.devicePixelRatio || 1)
-    const maxWidth = Math.max(100, viewportWidth - this.padding * 2)
+    const textPadding = this.getTextPadding()
+    const maxWidth = Math.max(100, viewportWidth - textPadding - this.padding)
 
     // Check cache
     if (this.wrappedLinesCache) {
@@ -536,7 +543,8 @@ export class CanvasEditor {
       const w = ctx.measureText(wrappedLine.text).width
       if (w > maxLineWidth) maxLineWidth = w
     }
-    const width = this.padding + maxLineWidth + this.padding
+    const textPadding = this.getTextPadding()
+    const width = textPadding + maxLineWidth + this.padding
     const height = this.padding + wrappedLines.length * this.lineHeight + this.padding
     return { width, height }
   }
@@ -588,7 +596,8 @@ export class CanvasEditor {
           endVisual.visualColumn,
         )
 
-        const startX = this.padding + ctx.measureText(startText).width
+        const textPadding = this.getTextPadding()
+        const startX = textPadding + ctx.measureText(startText).width
         const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
         const y = this.padding + startVisual.visualLine * this.lineHeight - 3
 
@@ -596,6 +605,7 @@ export class CanvasEditor {
       }
     } else {
       // Multi-visual-line selection
+      const textPadding = this.getTextPadding()
       for (
         let visualLine = startVisual.visualLine;
         visualLine <= endVisual.visualLine;
@@ -610,18 +620,18 @@ export class CanvasEditor {
           // First visual line: from start column to end of visual line
           const startText = wrappedLine.text.substring(0, startVisual.visualColumn)
           const selectedText = wrappedLine.text.substring(startVisual.visualColumn)
-          const startX = this.padding + ctx.measureText(startText).width
+          const startX = textPadding + ctx.measureText(startText).width
           const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
           ctx.fillRect(startX, y, selectedWidth, this.lineHeight - 2)
         } else if (visualLine === endVisual.visualLine) {
           // Last visual line: from start of visual line to end column
           const selectedText = wrappedLine.text.substring(0, endVisual.visualColumn)
           const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-          ctx.fillRect(this.padding, y, selectedWidth, this.lineHeight - 2)
+          ctx.fillRect(textPadding, y, selectedWidth, this.lineHeight - 2)
         } else {
           // Middle visual lines: entire visual line
           const selectedWidth = ctx.measureText(wrappedLine.text).width + selectionPadding
-          ctx.fillRect(this.padding, y, selectedWidth, this.lineHeight - 2)
+          ctx.fillRect(textPadding, y, selectedWidth, this.lineHeight - 2)
         }
       }
     }
@@ -695,8 +705,9 @@ export class CanvasEditor {
         matchingBraces.tokenIndex,
       )
       if (braceColumn >= wrappedLine.startColumn && braceColumn < wrappedLine.endColumn) {
+        const textPadding = this.getTextPadding()
         const braceX =
-          this.padding +
+          textPadding +
           ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
             .width
 
@@ -716,8 +727,9 @@ export class CanvasEditor {
         matchingBraces.matchingTokenIndex,
       )
       if (braceColumn >= wrappedLine.startColumn && braceColumn < wrappedLine.endColumn) {
+        const textPadding = this.getTextPadding()
         const braceX =
-          this.padding +
+          textPadding +
           ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
             .width
 
@@ -767,7 +779,8 @@ export class CanvasEditor {
     }
 
     // Calculate column position within the visual line
-    const visualColumn = this.getColumnFromX(adjustedX - this.padding, wrappedLine.text, ctx)
+    const textPadding = this.getTextPadding()
+    const visualColumn = this.getColumnFromX(adjustedX - textPadding, wrappedLine.text, ctx)
 
     // Convert visual position to logical position
     const logicalPosition = this.visualToLogicalPosition(
@@ -1161,7 +1174,8 @@ export class CanvasEditor {
       const w = ctx.measureText(line).width
       if (w > maxLineWidth) maxLineWidth = w
     }
-    const width = this.padding + maxLineWidth + this.padding
+    const textPadding = this.getTextPadding()
+    const width = textPadding + maxLineWidth + this.padding
     const height = this.padding + this.inputState.lines.length * this.lineHeight + this.padding
     return { width, height }
   }
@@ -1205,15 +1219,16 @@ export class CanvasEditor {
         wrappedLines,
       )
 
+      const textPadding = this.getTextPadding()
       const wrappedLine = wrappedLines[visualPos.visualLine]
       if (wrappedLine) {
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
-        caretX = this.padding + ctx.measureText(caretText).width
+        caretX = textPadding + ctx.measureText(caretText).width
         caretTop = this.padding + visualPos.visualLine * this.lineHeight
         caretBottom = caretTop + this.lineHeight
       } else {
         // Fallback
-        caretX = this.padding
+        caretX = textPadding
         caretTop = this.padding
         caretBottom = caretTop + this.lineHeight
       }
@@ -1221,9 +1236,10 @@ export class CanvasEditor {
       contentSize = this.getContentSizeWithWrapping(ctx, wrappedLines)
     } else {
       // Compute caret content-space coordinates (original logic)
+      const textPadding = this.getTextPadding()
       const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
       const caretText = caretLine.substring(0, this.inputState.caret.column)
-      caretX = this.padding + ctx.measureText(caretText).width
+      caretX = textPadding + ctx.measureText(caretText).width
       caretTop = this.padding + this.inputState.caret.line * this.lineHeight
       caretBottom = caretTop + this.lineHeight
 
@@ -1337,9 +1353,40 @@ export class CanvasEditor {
       this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines)
     }
 
+    // Draw gutter if enabled
+    if (this.options.gutter) {
+      ctx.fillStyle = '#374151' // Darker gray for gutter background
+      ctx.fillRect(0, 0, this.padding + this.gutterWidth, content.height)
+
+      // Draw gutter separator line
+      ctx.strokeStyle = '#4b5563'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(this.padding + this.gutterWidth - 1, 0)
+      ctx.lineTo(this.padding + this.gutterWidth - 1, content.height)
+      ctx.stroke()
+    }
+
     // Draw wrapped lines
+    const textPadding = this.getTextPadding()
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
       const y = this.padding + visualIndex * this.lineHeight
+
+      // Draw line number in gutter if enabled
+      if (this.options.gutter) {
+        const lineNumber = wrappedLine.logicalLine + 1
+        // Only show line number on the first visual line for each logical line
+        const isFirstVisualLine =
+          visualIndex === 0 ||
+          (visualIndex > 0 && wrappedLines[visualIndex - 1].logicalLine !== wrappedLine.logicalLine)
+
+        if (isFirstVisualLine) {
+          ctx.fillStyle = '#9ca3af' // Light gray for line numbers
+          ctx.textAlign = 'right'
+          ctx.fillText(lineNumber.toString(), this.padding + this.gutterWidth - 8, y)
+          ctx.textAlign = 'left' // Reset text alignment
+        }
+      }
 
       // Get syntax highlighting for this logical line
       const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
@@ -1351,7 +1398,7 @@ export class CanvasEditor {
           wrappedLine.endColumn,
         )
 
-        let currentX = this.padding
+        let currentX = textPadding
         for (const token of segmentTokens) {
           ctx.fillStyle = getTokenColor(token.type)
           ctx.fillText(token.content, currentX, y)
@@ -1365,7 +1412,7 @@ export class CanvasEditor {
       } else {
         // Fallback: draw plain text
         ctx.fillStyle = '#ffffff'
-        ctx.fillText(wrappedLine.text, this.padding, y)
+        ctx.fillText(wrappedLine.text, textPadding, y)
       }
     })
 
@@ -1380,7 +1427,7 @@ export class CanvasEditor {
       if (wrappedLine) {
         const caretY = this.padding + visualPos.visualLine * this.lineHeight - 3
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
-        const caretX = this.padding + ctx.measureText(caretText).width
+        const caretX = textPadding + ctx.measureText(caretText).width
 
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
@@ -1425,8 +1472,9 @@ export class CanvasEditor {
           // Calculate position based on visual line
           const wrappedLine = wrappedLines[visualPos.visualLine]
           if (wrappedLine) {
+            const textPadding = this.getTextPadding()
             const textBeforeParen = wrappedLine.text.substring(0, visualPos.visualColumn)
-            const contentX = this.padding + ctx.measureText(textBeforeParen).width
+            const contentX = textPadding + ctx.measureText(textBeforeParen).width
             const contentLineY = this.padding + visualPos.visualLine * this.lineHeight
 
             // Convert to viewport coordinates
@@ -1470,9 +1518,10 @@ export class CanvasEditor {
             position = { x: finalX, y, showBelow }
           } else {
             // Fallback to normal positioning
+            const textPadding = this.getTextPadding()
             position = calculatePopupPosition(
               callInfo.openParenPosition,
-              this.padding,
+              textPadding,
               this.lineHeight,
               ctx,
               this.inputState.lines,
@@ -1484,9 +1533,10 @@ export class CanvasEditor {
           }
         } else {
           // For normal mode, use the existing calculation
+          const textPadding = this.getTextPadding()
           position = calculatePopupPosition(
             callInfo.openParenPosition,
-            this.padding,
+            textPadding,
             this.lineHeight,
             ctx,
             this.inputState.lines,

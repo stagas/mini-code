@@ -12,9 +12,10 @@ import { MouseHandler } from './mouse.ts'
 
 interface CodeEditorProps {
   wordWrap?: boolean
+  gutter?: boolean
 }
 
-export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
+export const CodeEditor = ({ wordWrap = false, gutter = false }: CodeEditorProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -167,7 +168,7 @@ export const CodeEditor = ({ wordWrap = false }: CodeEditorProps) => {
       onScrollMetricsChange: (m) => setScrollMetrics(m),
     }
 
-    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, { wordWrap })
+    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, { wordWrap, gutter })
 
     return () => {
       canvasEditorRef.current?.destroy()
