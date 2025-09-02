@@ -2,7 +2,7 @@
   "name": "react-code",
   "version": "1.0.0",
   "description": "A canvas based React code editor",
-  "main": "index.ts",
+  "main": "src/index.ts",
   "scripts": {
     "dev": "vite --open",
     "build": "vite build"
