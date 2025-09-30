@@ -1,4 +1,3 @@
-import React from 'react'
 import { FunctionParameter, FunctionSignature } from './function-signature.ts'
 
 interface FunctionSignaturePopupProps {
@@ -8,12 +7,12 @@ interface FunctionSignaturePopupProps {
   visible: boolean
 }
 
-const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
+const FunctionSignaturePopup = ({
   signature,
   currentArgumentIndex,
   position,
   visible,
-}) => {
+}: FunctionSignaturePopupProps) => {
   if (!visible) return null
 
   // Find the effective parameter index for rest parameters
@@ -32,7 +31,7 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
 
   const renderParameter = (param: FunctionParameter, index: number, isLast: boolean) => {
     const isActive = index === effectiveParameterIndex
-    const paramText = `${param.name}${param.type ? `: ${param.type}` : ''}`
+    const paramText = `${param.name}${param.optional ? '?' : ''}${param.type ? `: ${param.type}` : ''}`
 
     return (
       <span key={index}>
@@ -55,8 +54,8 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
     <div
       className="fixed z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-w-lg pointer-events-none"
       style={{
-        left: position.x,
-        top: position.y,
+        left: `${position.x}px`,
+        top: `${position.y}px`,
         transform: position.showBelow ? 'translateY(0%)' : 'translateY(-100%)',
       }}
     >
@@ -89,6 +88,7 @@ const FunctionSignaturePopup: React.FC<FunctionSignaturePopupProps> = ({
               <div className="text-xs">
                 <span className="text-blue-400 font-semibold">
                   {signature.parameters[effectiveParameterIndex].name}
+                  {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
                 </span>
                 {signature.parameters[effectiveParameterIndex].type && (
                   <>

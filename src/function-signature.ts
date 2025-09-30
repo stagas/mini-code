@@ -260,7 +260,7 @@ export const findFunctionCallContext = (
 }
 
 /**
- * Calculates the screen position for the popup relative to the canvas
+ * Calculates the screen position for the popup relative to the page viewport
  */
 export const calculatePopupPosition = (
   openParenPosition: { line: number; column: number },
@@ -280,14 +280,22 @@ export const calculatePopupPosition = (
   const contentX = padding + ctx.measureText(textBeforeParen).width
   const contentLineY = padding + openParenPosition.line * lineHeight
 
-  // Convert to viewport-space by subtracting scroll
-  let x = contentX - scrollX
-  const lineY = contentLineY - scrollY
+  // Convert to canvas-relative viewport coordinates
+  const canvasX = contentX - scrollX
+  const canvasY = contentLineY - scrollY
+
+  // Convert to page coordinates
+  let x = canvasRect.left + canvasX
+  const lineY = canvasRect.top + canvasY
+
+  // Use full viewport dimensions for boundary checks
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const popupWidth = 400 // Estimated popup width
 
   // Check if popup would exceed left/right boundaries
-  const popupWidth = 400 // Estimated popup width
-  if (x + popupWidth > canvasRect.width) {
-    x = canvasRect.width - popupWidth - 10 // 10px margin from right edge
+  if (x + popupWidth > viewportWidth) {
+    x = viewportWidth - popupWidth - 10 // 10px margin from right edge
   }
   if (x < 10) {
     x = 10 // 10px margin from left edge
@@ -295,7 +303,7 @@ export const calculatePopupPosition = (
 
   // Check if popup would exceed top boundary
   const spaceAbove = lineY
-  const spaceBelow = canvasRect.height - lineY - lineHeight
+  const spaceBelow = viewportHeight - lineY - lineHeight
 
   let y: number
   let showBelow: boolean

@@ -1,4 +1,11 @@
-import { highlightCode, type HighlightedLine, type Token, getTokenColor } from './syntax.ts'
+import {
+  highlightCode,
+  type HighlightedLine,
+  type Token,
+  getTokenColor,
+  type Theme,
+  defaultTheme,
+} from './syntax.ts'
 import {
   findFunctionCallContext,
   calculatePopupPosition,
@@ -195,6 +202,7 @@ export interface CanvasEditorCallbacks {
 export interface CanvasEditorOptions {
   wordWrap?: boolean
   gutter?: boolean
+  theme?: Theme
 }
 
 interface WrappedLine {
@@ -221,9 +229,20 @@ export class CanvasEditor {
   private readonly padding = 16
   private readonly lineHeight = 20
   private isActive = false
+  private signatureEnabled = true
+  private scrollbarWidth = 10
+  private scrollMetrics = {
+    viewportWidth: 0,
+    viewportHeight: 0,
+    contentWidth: 0,
+    contentHeight: 0,
+  }
+  private hoveredScrollbar: 'vertical' | 'horizontal' | null = null
+  private lastDpr = window.devicePixelRatio || 1
 
   private setFont(ctx: CanvasRenderingContext2D) {
-    ctx.font = '14px "JetBrains Mono", "Fira Code", "Consolas", monospace'
+    const theme = this.options.theme || defaultTheme
+    ctx.font = theme.font
   }
 
   private getGutterWidth(): number {
@@ -617,6 +636,7 @@ export class CanvasEditor {
     wrappedLine: WrappedLine,
     visualIndex: number,
     y: number,
+    theme: Theme,
   ) {
     // Find matching braces at cursor position
     const matchingBraces = findMatchingBrace(
@@ -640,7 +660,7 @@ export class CanvasEditor {
           ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
             .width
 
-        ctx.strokeStyle = '#ffffff'
+        ctx.strokeStyle = theme.braceMatch
         ctx.lineWidth = 2
         ctx.beginPath()
         ctx.moveTo(braceX, y + 18)
@@ -662,7 +682,7 @@ export class CanvasEditor {
           ctx.measureText(wrappedLine.text.substring(0, braceColumn - wrappedLine.startColumn))
             .width
 
-        ctx.strokeStyle = '#ffffff'
+        ctx.strokeStyle = theme.braceMatch
         ctx.lineWidth = 2
         ctx.beginPath()
         ctx.moveTo(braceX, y + 18)
@@ -1060,13 +1080,27 @@ export class CanvasEditor {
     let resizeTimeout: number | null = null
 
     const handleResize = () => {
-      if (resizeTimeout) {
-        clearTimeout(resizeTimeout)
-      }
+      // Check if DPR changed (e.g., browser zoom)
+      const currentDpr = window.devicePixelRatio || 1
+      const dprChanged = Math.abs(currentDpr - this.lastDpr) > 0.01
 
-      resizeTimeout = setTimeout(() => {
+      if (dprChanged) {
+        // DPR changed - update immediately without throttle
+        this.lastDpr = currentDpr
+        if (resizeTimeout) {
+          clearTimeout(resizeTimeout)
+          resizeTimeout = null
+        }
         this.resize()
-      }, 16) // ~60fps throttle
+      } else {
+        // Normal resize - throttle
+        if (resizeTimeout) {
+          clearTimeout(resizeTimeout)
+        }
+        resizeTimeout = setTimeout(() => {
+          this.resize()
+        }, 16) // ~60fps throttle
+      }
     }
 
     window.addEventListener('resize', handleResize)
@@ -1148,6 +1182,7 @@ export class CanvasEditor {
     contentWidth: number,
     contentHeight: number,
   ) {
+    this.scrollMetrics = { viewportWidth, viewportHeight, contentWidth, contentHeight }
     this.callbacks.onScrollMetricsChange?.({
       scrollX: this.scrollX,
       scrollY: this.scrollY,
@@ -1250,20 +1285,25 @@ export class CanvasEditor {
     const canvasWidth = Math.round(displayWidth * dpr)
     const canvasHeight = Math.round(displayHeight * dpr)
 
-    // Check if size actually changed to avoid unnecessary operations
-    if (this.canvas.width === canvasWidth && this.canvas.height === canvasHeight) {
-      return // No size change, skip update
-    }
-
     // Set display size to match container precisely
     this.canvas.style.width = `${displayWidth}px`
     this.canvas.style.height = `${displayHeight}px`
+
+    // Check if size actually changed to avoid unnecessary operations
+    if (this.canvas.width === canvasWidth && this.canvas.height === canvasHeight) {
+      // Size didn't change, but we still need to update the transform in case DPR changed
+      const ctx = this.canvas.getContext('2d')
+      if (ctx) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      }
+      return
+    }
 
     // Set actual size in memory (scaled for DPR)
     this.canvas.width = canvasWidth
     this.canvas.height = canvasHeight
 
-    // Scale the drawing context (reset first to avoid accumulation)
+    // Scale the drawing context
     const ctx = this.canvas.getContext('2d')
     if (ctx) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -1288,16 +1328,17 @@ export class CanvasEditor {
     // Cache syntax highlighting to avoid re-processing the same code
     const code = this.inputState.lines.join('\n')
     let highlightedCode: HighlightedLine[]
+    const theme = this.options.theme || defaultTheme
 
     if (this.highlightCache && this.highlightCache.code === code) {
       highlightedCode = this.highlightCache.result
     } else {
-      highlightedCode = highlightCode(code, 'javascript')
+      highlightedCode = highlightCode(code, 'javascript', theme)
       this.highlightCache = { code, result: highlightedCode }
     }
 
     // Clear canvas
-    ctx.fillStyle = '#1f2937' // Dark background
+    ctx.fillStyle = theme.background
     ctx.fillRect(0, 0, width, height)
 
     // Publish metrics for consumers
@@ -1307,12 +1348,12 @@ export class CanvasEditor {
     // Draw gutter if enabled (before scroll transform so it stays fixed)
     if (this.options.gutter) {
       const gutterWidth = this.getGutterWidth()
-      ctx.fillStyle = '#374151' // Darker gray for gutter background
+      ctx.fillStyle = theme.gutterBackground
       // Extend gutter to full canvas height, not just content height
       ctx.fillRect(0, 0, this.padding + gutterWidth, height)
 
       // Draw gutter separator line
-      ctx.strokeStyle = '#4b5563'
+      ctx.strokeStyle = theme.gutterBorder
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(this.padding + gutterWidth - 1, 0)
@@ -1326,7 +1367,7 @@ export class CanvasEditor {
 
     // Draw selection background if exists
     if (this.inputState.selection) {
-      ctx.fillStyle = '#555'
+      ctx.fillStyle = theme.selection
       this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines)
     }
 
@@ -1345,7 +1386,7 @@ export class CanvasEditor {
 
         if (isFirstVisualLine) {
           const gutterWidth = this.getGutterWidth()
-          ctx.fillStyle = '#9ca3af' // Light gray for line numbers
+          ctx.fillStyle = theme.gutterText
           ctx.textAlign = 'right'
           ctx.fillText(lineNumber.toString(), this.padding + gutterWidth - 8, y)
           ctx.textAlign = 'left' // Reset text alignment
@@ -1364,16 +1405,23 @@ export class CanvasEditor {
 
         let currentX = textPadding
         for (const token of segmentTokens) {
-          ctx.fillStyle = getTokenColor(token.type)
+          ctx.fillStyle = getTokenColor(token.type, theme)
           ctx.fillText(token.content, currentX, y)
           currentX += ctx.measureText(token.content).width
         }
 
         // Draw brace matching for any line that might contain braces
-        this.drawBraceMatchingForWrappedLine(ctx, highlightedCode, wrappedLine, visualIndex, y)
+        this.drawBraceMatchingForWrappedLine(
+          ctx,
+          highlightedCode,
+          wrappedLine,
+          visualIndex,
+          y,
+          theme,
+        )
       } else {
         // Fallback: draw plain text
-        ctx.fillStyle = '#ffffff'
+        ctx.fillStyle = theme.colors.default
         ctx.fillText(wrappedLine.text, textPadding, y)
       }
     })
@@ -1391,16 +1439,69 @@ export class CanvasEditor {
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
         const caretX = textPadding + ctx.measureText(caretText).width
 
-        ctx.fillStyle = '#ffffff'
+        ctx.fillStyle = theme.caret
         ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
       }
     }
 
     ctx.restore()
+
+    // Draw scrollbars (after restore so they're not affected by scroll transform)
+    this.drawScrollbars(ctx, width, height, theme)
+  }
+
+  private drawScrollbars(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    theme: Theme,
+  ) {
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+
+    const showVBar = contentHeight > viewportHeight + 1
+    const showHBar = contentWidth > viewportWidth + 1
+
+    // Vertical scrollbar
+    if (showVBar) {
+      const trackHeight = height
+      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const maxTravel = trackHeight - thumbHeight
+      const thumbTop = (this.scrollY / Math.max(1, contentHeight - viewportHeight)) * maxTravel
+
+      // Draw track (optional, currently transparent)
+      if (theme.scrollbarTrack !== 'transparent') {
+        ctx.fillStyle = theme.scrollbarTrack
+        ctx.fillRect(width - this.scrollbarWidth, 0, this.scrollbarWidth, height)
+      }
+
+      // Draw thumb
+      ctx.fillStyle =
+        this.hoveredScrollbar === 'vertical' ? theme.scrollbarThumbHover : theme.scrollbarThumb
+      ctx.fillRect(width - this.scrollbarWidth, thumbTop, this.scrollbarWidth, thumbHeight)
+    }
+
+    // Horizontal scrollbar
+    if (showHBar) {
+      const trackWidth = width
+      const thumbWidth = Math.max(20, (viewportWidth / contentWidth) * trackWidth)
+      const maxTravel = trackWidth - thumbWidth
+      const thumbLeft = (this.scrollX / Math.max(1, contentWidth - viewportWidth)) * maxTravel
+
+      // Draw track (optional, currently transparent)
+      if (theme.scrollbarTrack !== 'transparent') {
+        ctx.fillStyle = theme.scrollbarTrack
+        ctx.fillRect(0, height - this.scrollbarWidth, width, this.scrollbarWidth)
+      }
+
+      // Draw thumb
+      ctx.fillStyle =
+        this.hoveredScrollbar === 'horizontal' ? theme.scrollbarThumbHover : theme.scrollbarThumb
+      ctx.fillRect(thumbLeft, height - this.scrollbarWidth, thumbWidth, this.scrollbarWidth)
+    }
   }
 
   private updateFunctionSignature() {
-    if (!this.isActive) return
+    if (!this.isActive || !this.signatureEnabled) return
     const callInfo = findFunctionCallContext(
       this.inputState.lines,
       this.inputState.caret.line,
@@ -1411,7 +1512,7 @@ export class CanvasEditor {
     const callInfoChanged = !this.areCallInfosEqual(this.lastFunctionCallInfo, callInfo)
     if (callInfoChanged) {
       this.lastFunctionCallInfo = callInfo
-      this.callbacks.onFunctionCallChange?.(callInfo)
+      this.callbacks.onFunctionCallChange?.(this.signatureEnabled ? callInfo : null)
     }
 
     if (callInfo) {
@@ -1439,24 +1540,33 @@ export class CanvasEditor {
             const contentX = textPadding + ctx.measureText(textBeforeParen).width
             const contentLineY = this.padding + visualPos.visualLine * this.lineHeight
 
-            // Convert to viewport coordinates
-            const x = contentX - this.scrollX
-            const lineY = contentLineY - this.scrollY
+            // Convert to canvas-relative viewport coordinates
+            const canvasX = contentX - this.scrollX
+            const canvasY = contentLineY - this.scrollY
 
-            // Check boundaries and calculate final position
+            // Convert to page coordinates
+            const x = rect.left + canvasX
+            const lineY = rect.top + canvasY
+
+            // Check boundaries and calculate final position using full viewport
             const popupWidth = 400
             const popupHeight = 120
 
+            const viewportWidth = window.innerWidth
+            const viewportHeight = window.innerHeight
+            const availableWidth = viewportWidth
+            const availableHeight = viewportHeight
+
             let finalX = x
-            if (x + popupWidth > rect.width) {
-              finalX = rect.width - popupWidth - 10
+            if (x + popupWidth > availableWidth) {
+              finalX = availableWidth - popupWidth - 10
             }
             if (finalX < 10) {
               finalX = 10
             }
 
             const spaceAbove = lineY
-            const spaceBelow = rect.height - lineY - this.lineHeight
+            const spaceBelow = availableHeight - lineY - this.lineHeight
 
             let y: number
             let showBelow: boolean
@@ -1475,6 +1585,61 @@ export class CanvasEditor {
                 y = lineY + this.lineHeight
                 showBelow = true
               }
+            }
+
+            // Avoid covering the caret line: adjust relative to caret visual line
+            const caretVisual = this.logicalToVisualPosition(
+              this.inputState.caret.line,
+              this.inputState.caret.column,
+              wrappedLines,
+            )
+            const caretLineY =
+              rect.top + this.padding + caretVisual.visualLine * this.lineHeight - this.scrollY
+
+            if (showBelow) {
+              // Popup spans [y, y + popupHeight]
+              const popupTop = y
+              const popupBottom = y + popupHeight
+              const caretTop = caretLineY
+              const caretBottom = caretLineY + this.lineHeight
+              const overlapsCaret = popupTop < caretBottom && popupBottom > caretTop
+              if (overlapsCaret) {
+                // Prefer moving above caret if possible
+                const candidateY = caretTop - popupHeight - 4
+                if (candidateY >= 0) {
+                  y = candidateY
+                  showBelow = false
+                } else {
+                  // Otherwise, push below caret
+                  y = caretBottom
+                }
+              }
+            } else {
+              // Above mode: baseline y is popup bottom; spans [y - popupHeight, y]
+              const popupTop = y - popupHeight
+              const popupBottom = y
+              const caretTop = caretLineY
+              const caretBottom = caretLineY + this.lineHeight
+              const overlapsCaret = popupTop < caretBottom && popupBottom > caretTop
+              if (overlapsCaret) {
+                // Prefer moving below caret if space allows
+                const candidateY = caretBottom
+                if (candidateY + popupHeight <= availableHeight) {
+                  y = candidateY
+                  showBelow = true
+                } else {
+                  // Otherwise, pull just above caret
+                  y = Math.max(popupHeight, caretTop - 4)
+                }
+              }
+            }
+
+            // Clamp y to available viewport to avoid cut off
+            if (!showBelow) {
+              // Popup is rendered with translateY(-100%), so ensure its top stays within viewport
+              if (y < popupHeight) y = popupHeight
+            } else {
+              if (y + popupHeight > availableHeight) y = Math.max(0, availableHeight - popupHeight)
             }
 
             position = { x: finalX, y, showBelow }
@@ -1510,8 +1675,8 @@ export class CanvasEditor {
         }
 
         const newPopupPosition = {
-          x: rect.left + position.x,
-          y: rect.top + position.y,
+          x: position.x,
+          y: position.y,
           showBelow: position.showBelow,
         }
 
@@ -1548,5 +1713,120 @@ export class CanvasEditor {
     if (a === null || b === null) return false
 
     return a.x === b.x && a.y === b.y && a.showBelow === b.showBelow
+  }
+
+  public checkScrollbarHover(x: number, y: number): 'vertical' | 'horizontal' | null {
+    const dpr = window.devicePixelRatio || 1
+    const width = this.canvas.width / dpr
+    const height = this.canvas.height / dpr
+
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+
+    const showVBar = contentHeight > viewportHeight + 1
+    const showHBar = contentWidth > viewportWidth + 1
+
+    // Check vertical scrollbar
+    if (showVBar && x >= width - this.scrollbarWidth && x <= width) {
+      return 'vertical'
+    }
+
+    // Check horizontal scrollbar
+    if (showHBar && y >= height - this.scrollbarWidth && y <= height) {
+      return 'horizontal'
+    }
+
+    return null
+  }
+
+  public setScrollbarHover(scrollbar: 'vertical' | 'horizontal' | null) {
+    if (this.hoveredScrollbar !== scrollbar) {
+      this.hoveredScrollbar = scrollbar
+      this.draw()
+    }
+  }
+
+  public handleScrollbarClick(x: number, y: number, scrollbar: 'vertical' | 'horizontal'): boolean {
+    const dpr = window.devicePixelRatio || 1
+    const width = this.canvas.width / dpr
+    const height = this.canvas.height / dpr
+
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+
+    if (scrollbar === 'vertical') {
+      const trackHeight = height
+      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const maxTravel = trackHeight - thumbHeight
+      const thumbTop = (this.scrollY / Math.max(1, contentHeight - viewportHeight)) * maxTravel
+
+      // Check if clicking on thumb
+      if (y >= thumbTop && y <= thumbTop + thumbHeight) {
+        return true // Indicates thumb clicked (will be handled by drag)
+      }
+
+      // Click on track - jump to position
+      const targetThumbTop = Math.max(0, Math.min(y - thumbHeight / 2, maxTravel))
+      const scrollY = (targetThumbTop / maxTravel) * Math.max(1, contentHeight - viewportHeight)
+      this.setScroll(null, Math.round(scrollY))
+      return false
+    } else {
+      const trackWidth = width
+      const thumbWidth = Math.max(20, (viewportWidth / contentWidth) * trackWidth)
+      const maxTravel = trackWidth - thumbWidth
+      const thumbLeft = (this.scrollX / Math.max(1, contentWidth - viewportWidth)) * maxTravel
+
+      // Check if clicking on thumb
+      if (x >= thumbLeft && x <= thumbLeft + thumbWidth) {
+        return true // Indicates thumb clicked (will be handled by drag)
+      }
+
+      // Click on track - jump to position
+      const targetThumbLeft = Math.max(0, Math.min(x - thumbWidth / 2, maxTravel))
+      const scrollX = (targetThumbLeft / maxTravel) * Math.max(1, contentWidth - viewportWidth)
+      this.setScroll(Math.round(scrollX), null)
+      return false
+    }
+  }
+
+  public handleScrollbarDrag(dx: number, dy: number, scrollbar: 'vertical' | 'horizontal') {
+    const dpr = window.devicePixelRatio || 1
+    const width = this.canvas.width / dpr
+    const height = this.canvas.height / dpr
+
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+
+    if (scrollbar === 'vertical') {
+      const trackHeight = height
+      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const maxTravel = Math.max(1, trackHeight - thumbHeight)
+      const contentScrollable = Math.max(1, contentHeight - viewportHeight)
+      const scrollDelta = (dy / maxTravel) * contentScrollable
+      this.setScroll(null, Math.max(0, Math.min(this.scrollY + scrollDelta, contentScrollable)))
+    } else {
+      const trackWidth = width
+      const thumbWidth = Math.max(20, (viewportWidth / contentWidth) * trackWidth)
+      const maxTravel = Math.max(1, trackWidth - thumbWidth)
+      const contentScrollable = Math.max(1, contentWidth - viewportWidth)
+      const scrollDelta = (dx / maxTravel) * contentScrollable
+      this.setScroll(Math.max(0, Math.min(this.scrollX + scrollDelta, contentScrollable)), null)
+    }
+  }
+
+  public setSignatureEnabled(enabled: boolean) {
+    if (this.signatureEnabled !== enabled) {
+      this.signatureEnabled = enabled
+      if (!enabled) {
+        this.lastFunctionCallInfo = null
+        this.callbacks.onFunctionCallChange?.(null)
+      } else {
+        this.updateFunctionSignature()
+      }
+    }
+  }
+
+  public hideSignaturePopup() {
+    if (this.lastFunctionCallInfo !== null) {
+      this.lastFunctionCallInfo = null
+      this.callbacks.onFunctionCallChange?.(null)
+    }
   }
 }

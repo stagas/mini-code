@@ -1,5 +1,5 @@
 {
-  "name": "react-code",
+  "name": "mini-code",
   "version": "1.0.0",
   "description": "A canvas based React code editor",
   "main": "src/index.ts",
@@ -13,9 +13,7 @@
   "type": "module",
   "dependencies": {
     "@types/prismjs": "^1.26.5",
-    "prismjs": "^1.30.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "prismjs": "^1.30.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.12",

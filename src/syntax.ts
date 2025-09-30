@@ -4,27 +4,62 @@ import 'prismjs/components/prism-typescript'
 import 'prismjs/components/prism-jsx'
 import 'prismjs/components/prism-tsx'
 
-// Color scheme for syntax highlighting
-const colors = {
-  keyword: '#ff79c6', // pink
-  string: '#f1fa8c', // yellow
-  number: '#bd93f9', // purple
-  function: '#50fa7b', // green
-  comment: '#6272a4', // gray
-  operator: '#ff79c6', // pink
-  punctuation: '#f8f8f2', // light gray
-  default: '#f8f8f2', // light gray
+export interface Theme {
+  colors: {
+    keyword: string
+    string: string
+    number: string
+    function: string
+    comment: string
+    operator: string
+    punctuation: string
+    default: string
+  }
+  rainbowColors: string[]
+  errorColor: string
+  background: string
+  gutterBackground: string
+  gutterBorder: string
+  gutterText: string
+  selection: string
+  caret: string
+  braceMatch: string
+  scrollbarTrack: string
+  scrollbarThumb: string
+  scrollbarThumbHover: string
+  font: string
 }
 
-// Rainbow colors for braces
-const rainbowColors = [
-  '#f1fa8c', // yellow
-  '#bd93f9', // purple
-  '#8be9fd', // blue
-]
-
-// Error color for unmatched braces
-const errorColor = '#ff5555' // red
+// Default color scheme for syntax highlighting
+export const defaultTheme: Theme = {
+  colors: {
+    keyword: '#ff79c6', // pink
+    string: '#f1fa8c', // yellow
+    number: '#bd93f9', // purple
+    function: '#50fa7b', // green
+    comment: '#6272a4', // gray
+    operator: '#ff79c6', // pink
+    punctuation: '#f8f8f2', // light gray
+    default: '#f8f8f2', // light gray
+  },
+  rainbowColors: [
+    '#f1fa8c', // yellow
+    '#bd93f9', // purple
+    '#8be9fd', // blue
+  ],
+  errorColor: '#ff5555', // red
+  background: '#1f2937', // dark gray
+  gutterBackground: '#374151', // darker gray
+  gutterBorder: '#4b5563', // medium gray
+  gutterText: '#9ca3af', // light gray
+  selection: '#555555', // gray
+  caret: '#ffffff', // white
+  braceMatch: '#ffffff', // white
+  scrollbarTrack: 'transparent', // transparent track
+  scrollbarThumb: '#4b5563', // medium gray thumb
+  scrollbarThumbHover: '#6b7280', // lighter gray on hover
+  font: '11pt "JetBrains Mono", "Fira Code", "Consolas", monospace',
+}
 
 export interface Token {
   type: string
@@ -55,7 +90,11 @@ const flattenTokens = (tokens: (string | Prism.Token)[]): Token[] => {
   return result
 }
 
-export const highlightCode = (code: string, language: string = 'javascript'): HighlightedLine[] => {
+export const highlightCode = (
+  code: string,
+  language: string = 'javascript',
+  theme: Theme = defaultTheme,
+): HighlightedLine[] => {
   try {
     const lines = code.split('\n')
     const highlightedLines: HighlightedLine[] = []
@@ -75,7 +114,12 @@ export const highlightCode = (code: string, language: string = 'javascript'): Hi
       // Highlight each line independently
       const tokens = Prism.tokenize(line, Prism.languages[language] || Prism.languages.javascript)
       const flatTokens = flattenTokens(tokens)
-      const tokensWithBraces = addRainbowBraces(flatTokens, globalBraceDepth, globalBraceStack)
+      const tokensWithBraces = addRainbowBraces(
+        flatTokens,
+        globalBraceDepth,
+        globalBraceStack,
+        theme,
+      )
 
       // Update global brace depth for next line
       for (const token of tokensWithBraces) {
@@ -106,6 +150,7 @@ const addRainbowBraces = (
   tokens: Token[],
   startDepth: number,
   globalBraceStack: { char: string; depth: number }[],
+  theme: Theme,
 ): Token[] => {
   const result: Token[] = []
   let currentDepth = startDepth
@@ -133,7 +178,7 @@ const addRainbowBraces = (
         // Opening brace
         braceStack.push({ char, depth: currentDepth })
         result.push({
-          type: `brace-open-${currentDepth % rainbowColors.length}`,
+          type: `brace-open-${currentDepth % theme.rainbowColors.length}`,
           content: char,
           length: char.length,
         })
@@ -152,7 +197,7 @@ const addRainbowBraces = (
             braceStack.pop()
             currentDepth = Math.max(0, currentDepth - 1)
             result.push({
-              type: `brace-close-${matchedDepth % rainbowColors.length}`,
+              type: `brace-close-${matchedDepth % theme.rainbowColors.length}`,
               content: char,
               length: char.length,
             })
@@ -184,37 +229,37 @@ const addRainbowBraces = (
   return result
 }
 
-export const getTokenColor = (type: string): string => {
+export const getTokenColor = (type: string, theme: Theme = defaultTheme): string => {
   // Handle unmatched braces
   if (type === 'brace-unmatched') {
-    return errorColor
+    return theme.errorColor
   }
 
   // Handle rainbow brace types
   if (type.startsWith('brace-open-') || type.startsWith('brace-close-')) {
     const depth = parseInt(type.split('-').pop() || '0')
-    return rainbowColors[depth]
+    return theme.rainbowColors[depth]
   }
 
   switch (type) {
     case 'keyword':
     case 'operator':
-      return colors.keyword
+      return theme.colors.keyword
     case 'string':
     case 'string-property':
-      return colors.string
+      return theme.colors.string
     case 'number':
-      return colors.number
+      return theme.colors.number
     case 'function':
     case 'function-variable':
-      return colors.function
+      return theme.colors.function
     case 'comment':
     case 'comment-line':
     case 'comment-block':
-      return colors.comment
+      return theme.colors.comment
     case 'punctuation':
-      return colors.punctuation
+      return theme.colors.punctuation
     default:
-      return colors.default
+      return theme.colors.default
   }
 }
