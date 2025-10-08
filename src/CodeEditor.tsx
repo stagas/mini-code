@@ -160,8 +160,9 @@ export const CodeEditor = ({
     if (autocompleteInfo && autocompleteInfo.suggestions.length > 0) {
       if (e.key === 'Tab') {
         e.preventDefault()
-        // Cycle through suggestions
-        setAutocompleteSelectedIndex(prev => (prev + 1) % autocompleteInfo.suggestions.length)
+        const len = autocompleteInfo.suggestions.length
+        // Cycle through suggestions (Shift+Tab goes backwards)
+        setAutocompleteSelectedIndex(prev => (prev + (e.shiftKey ? len - 1 : 1)) % len)
         return
       }
 
