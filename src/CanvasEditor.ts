@@ -187,7 +187,7 @@ const findMatchingBrace = (
 
 export interface CanvasEditorCallbacks {
   onFunctionCallChange?: (callInfo: FunctionCallInfo | null) => void
-  onPopupPositionChange?: (position: { x: number; y: number; showBelow: boolean }) => void
+  onPopupPositionChange?: (position: { x: number; y: number }) => void
   onScrollChange?: (scrollX: number, scrollY: number) => void
   onScrollMetricsChange?: (metrics: {
     scrollX: number
@@ -221,7 +221,10 @@ export class CanvasEditor {
   private resizeHandler: (() => void) | null = null
   private wheelHandler: ((e: WheelEvent) => void) | null = null
   private lastFunctionCallInfo: FunctionCallInfo | null = null
-  private lastPopupPosition: { x: number; y: number; showBelow: boolean } | null = null
+  private lastPopupPosition: {
+    x: number
+    y: number
+  } | null = null
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
   private scrollX = 0
@@ -239,10 +242,101 @@ export class CanvasEditor {
   }
   private hoveredScrollbar: 'vertical' | 'horizontal' | null = null
   private lastDpr = window.devicePixelRatio || 1
+  private popupDimensions = { width: 400, height: 300 }
 
   private setFont(ctx: CanvasRenderingContext2D) {
     const theme = this.options.theme || defaultTheme
     ctx.font = theme.font
+  }
+
+  // Draw a custom right arrow for the ligature sequence "|>" with given color and width reservation
+  private drawArrowLigature(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    color: string,
+    reservedWidth: number,
+  ) {
+    // Draw an equilateral triangle (all sides equal) pointing right, centered vertically
+    const side = reservedWidth
+    const height = (Math.sqrt(3) / 2) * side
+    const centerY = y + this.lineHeight / 2 - 3.5
+    const centerX = x + reservedWidth
+
+    // Calculate triangle vertices
+    // Tip (rightmost point)
+    const tipX = centerX + side / 2
+    const tipY = centerY
+    // Bottom left
+    const blX = centerX - side / 2
+    const blY = centerY + height / 2
+    // Top left
+    const tlX = centerX - side / 2
+    const tlY = centerY - height / 2
+
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.25
+    ctx.lineJoin = 'miter'
+    ctx.beginPath()
+    ctx.moveTo(tipX, tipY)
+    ctx.lineTo(blX, blY)
+    ctx.lineTo(tlX, tlY)
+    ctx.closePath()
+    ctx.stroke()
+  }
+
+  // Stream through tokens and render text replacing cross-token "|>" with a custom arrow
+  private drawTokensWithCustomLigatures(
+    ctx: CanvasRenderingContext2D,
+    tokens: Token[],
+    startX: number,
+    y: number,
+    theme: Theme,
+  ): number {
+    let currentX = startX
+    let pendingSkipNextLeading = false
+
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const token = tokens[ti]
+      const color = getTokenColor(token.type, theme)
+      const text = token.content
+
+      // Determine start index, consume pending skip now and reset immediately
+      let i = pendingSkipNextLeading ? 1 : 0
+      pendingSkipNextLeading = false
+
+      for (; i < text.length; i++) {
+        const ch = text[i]
+        const nextCharInSame = i + 1 < text.length ? text[i + 1] : null
+        const nextCharAcross =
+          i + 1 >= text.length && ti + 1 < tokens.length ? tokens[ti + 1].content[0] : null
+
+        if (ch === '|' && (nextCharInSame === '>' || nextCharAcross === '>')) {
+          const reserved = ctx.measureText('|>').width
+          this.drawArrowLigature(ctx, currentX, y, color, reserved / 2)
+          currentX += reserved
+
+          if (nextCharInSame === '>') {
+            // Consume the '>' in the same token
+            i++
+            continue
+          }
+
+          // We will skip exactly the first character of the next token (the '>')
+          pendingSkipNextLeading = true
+          break
+        }
+
+        ctx.fillStyle = color
+        ctx.fillText(ch, currentX, y)
+        currentX += ctx.measureText(ch).width
+      }
+
+      // If we finished the token without hitting a cross-token ligature, ensure no skip carries over
+      // (pendingSkipNextLeading is already false unless we broke on a ligature)
+    }
+
+    return currentX
   }
 
   private getGutterWidth(): number {
@@ -327,10 +421,21 @@ export class CanvasEditor {
       }
     }
 
+    // Get syntax highlighting for token-aware wrapping
+    const code = this.inputState.lines.join('\n')
+    const theme = this.options.theme || defaultTheme
+    let highlightedCode: HighlightedLine[]
+    if (this.highlightCache && this.highlightCache.code === code) {
+      highlightedCode = this.highlightCache.result
+    } else {
+      highlightedCode = highlightCode(code, 'javascript', theme)
+    }
+
     const wrappedLines: WrappedLine[] = []
 
     for (let lineIndex = 0; lineIndex < this.inputState.lines.length; lineIndex++) {
       const line = this.inputState.lines[lineIndex] || ''
+      const tokens = highlightedCode[lineIndex]?.tokens || []
 
       if (line.length === 0) {
         // Empty line
@@ -345,10 +450,11 @@ export class CanvasEditor {
 
       let startColumn = 0
       while (startColumn < line.length) {
+        // Try to fit as much as possible
         let endColumn = line.length
         let testText = line.substring(startColumn, endColumn)
 
-        // If this segment fits, use it all
+        // If everything fits, use it all
         if (ctx.measureText(testText).width <= maxWidth) {
           wrappedLines.push({
             logicalLine: lineIndex,
@@ -376,30 +482,67 @@ export class CanvasEditor {
           }
         }
 
-        // Try to break at word boundary if possible
-        const segmentText = line.substring(startColumn, bestEnd)
-        const lastSpaceIndex = segmentText.lastIndexOf(' ')
+        // Try to break at better boundaries (in order of preference):
+        // 1. Token boundary
+        // 2. Word boundary (space)
+        // 3. Character boundary
+        let finalEnd = bestEnd
 
-        if (lastSpaceIndex > 0 && bestEnd < line.length) {
-          // Break at word boundary
-          endColumn = startColumn + lastSpaceIndex
+        // Find token boundaries within the segment
+        let currentColumn = 0
+        let lastTokenBoundary = -1
+        let lastSpaceBoundary = -1
+
+        for (const token of tokens) {
+          const tokenStart = currentColumn
+          const tokenEnd = currentColumn + token.content.length
+
+          // Check if this token boundary is before our bestEnd and after startColumn
+          if (tokenEnd <= bestEnd && tokenEnd > startColumn) {
+            lastTokenBoundary = tokenEnd
+          }
+
+          // Look for spaces within this token if it overlaps our segment
+          if (tokenStart < bestEnd && tokenEnd > startColumn) {
+            const overlapStart = Math.max(tokenStart, startColumn)
+            const overlapEnd = Math.min(tokenEnd, bestEnd)
+            const segmentWithinToken = token.content.substring(
+              overlapStart - tokenStart,
+              overlapEnd - tokenStart,
+            )
+            const lastSpace = segmentWithinToken.lastIndexOf(' ')
+            if (lastSpace >= 0) {
+              lastSpaceBoundary = overlapStart + lastSpace + 1
+            }
+          }
+
+          currentColumn = tokenEnd
+        }
+
+        // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth)
+        const tokenBoundaryDistance = lastTokenBoundary > 0 ? bestEnd - lastTokenBoundary : Infinity
+        const spaceBoundaryDistance = lastSpaceBoundary > 0 ? bestEnd - lastSpaceBoundary : Infinity
+
+        if (
+          lastTokenBoundary > startColumn &&
+          tokenBoundaryDistance < maxWidth * 0.2 &&
+          bestEnd < line.length
+        ) {
+          finalEnd = lastTokenBoundary
+        } else if (lastSpaceBoundary > startColumn && bestEnd < line.length) {
+          finalEnd = lastSpaceBoundary
         } else {
-          // Break at character boundary
-          endColumn = bestEnd
+          finalEnd = bestEnd
         }
 
         wrappedLines.push({
           logicalLine: lineIndex,
-          text: line.substring(startColumn, endColumn),
+          text: line.substring(startColumn, finalEnd),
           startColumn,
-          endColumn,
+          endColumn: finalEnd,
         })
 
-        startColumn = endColumn
-        // Skip whitespace at the start of the next wrapped line
-        while (startColumn < line.length && line[startColumn] === ' ') {
-          startColumn++
-        }
+        startColumn = finalEnd
       }
     }
 
@@ -822,20 +965,30 @@ export class CanvasEditor {
         nextVisualLine = currentVisual.visualLine
         nextVisualColumn = currentVisual.visualColumn - 1
       } else if (currentVisual.visualLine > 0) {
-        // Move to end of previous segment
-        nextVisualLine = currentVisual.visualLine - 1
-        nextVisualColumn = wrappedLines[nextVisualLine].text.length
-      } else {
-        // At start of first segment, try to move to previous line
-        if (line > 0) {
-          const prevLine = line - 1
-          const prevLineText = this.inputState.lines[prevLine] || ''
-          return {
-            line: prevLine,
-            column: prevLineText.length,
-            columnIntent: prevLineText.length,
+        const prevWrapped = wrappedLines[currentVisual.visualLine - 1]
+        // Check if we're at the start of a wrapped segment (not first segment of logical line)
+        if (prevWrapped.logicalLine === currentWrapped.logicalLine) {
+          // Move to end of previous segment of same logical line
+          // Use length - 1 to land ON the last character, not after it
+          // (otherwise conversion back to logical would snap to next segment start)
+          nextVisualLine = currentVisual.visualLine - 1
+          nextVisualColumn = Math.max(0, prevWrapped.text.length - 1)
+        } else {
+          // We're at the start of the first segment of this logical line
+          // Move to end of previous logical line
+          if (line > 0) {
+            const prevLine = line - 1
+            const prevLineText = this.inputState.lines[prevLine] || ''
+            return {
+              line: prevLine,
+              column: prevLineText.length,
+              columnIntent: prevLineText.length,
+            }
           }
+          return null
         }
+      } else {
+        // At start of first visual line
         return null
       }
     } else {
@@ -882,21 +1035,9 @@ export class CanvasEditor {
     direction: 'up' | 'down',
     line: number,
     columnIntent: number,
-  ): { line: number; column: number } {
+  ): { line: number; column: number } | null {
     if (!this.options.wordWrap) {
-      // Without word wrap, fall back to simple logical line movement
-      if (direction === 'down') {
-        if (line < this.inputState.lines.length - 1) {
-          const targetLine = this.inputState.lines[line + 1] || ''
-          return { line: line + 1, column: Math.min(columnIntent, targetLine.length) }
-        }
-      } else {
-        if (line > 0) {
-          const targetLine = this.inputState.lines[line - 1] || ''
-          return { line: line - 1, column: Math.min(columnIntent, targetLine.length) }
-        }
-      }
-      return { line, column: Math.min(columnIntent, (this.inputState.lines[line] || '').length) }
+      return null // Fall back to normal handling
     }
 
     const ctx = this.canvas.getContext('2d')
@@ -1404,11 +1545,7 @@ export class CanvasEditor {
         )
 
         let currentX = textPadding
-        for (const token of segmentTokens) {
-          ctx.fillStyle = getTokenColor(token.type, theme)
-          ctx.fillText(token.content, currentX, y)
-          currentX += ctx.measureText(token.content).width
-        }
+        currentX = this.drawTokensWithCustomLigatures(ctx, segmentTokens, currentX, y, theme)
 
         // Draw brace matching for any line that might contain braces
         this.drawBraceMatchingForWrappedLine(
@@ -1420,9 +1557,14 @@ export class CanvasEditor {
           theme,
         )
       } else {
-        // Fallback: draw plain text
-        ctx.fillStyle = theme.colors.default
-        ctx.fillText(wrappedLine.text, textPadding, y)
+        // Fallback: draw plain text with custom ligatures across a single token
+        this.drawTokensWithCustomLigatures(
+          ctx,
+          [{ type: 'plain', content: wrappedLine.text, length: wrappedLine.text.length }],
+          textPadding,
+          y,
+          theme,
+        )
       }
     })
 
@@ -1520,172 +1662,72 @@ export class CanvasEditor {
       if (ctx) {
         this.setFont(ctx)
         const rect = this.canvas.getBoundingClientRect()
+        const textPadding = this.getTextPadding()
 
-        let position: { x: number; y: number; showBelow: boolean }
-
+        // For word wrap mode, calculate visual line positions
+        let preCalculatedContentY: number | undefined
+        let preCalculatedCaretContentY: number | undefined
+        let preCalculatedContentX: number | undefined
+        let preCalculatedCaretContentX: number | undefined
         if (this.options.wordWrap) {
-          // For word wrap mode, calculate position using wrapped line positioning
           const wrappedLines = this.getWrappedLines(ctx)
           const visualPos = this.logicalToVisualPosition(
             callInfo.openParenPosition.line,
             callInfo.openParenPosition.column,
             wrappedLines,
           )
+          preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
 
-          // Calculate position based on visual line
+          // Calculate X position based on wrapped line segment
           const wrappedLine = wrappedLines[visualPos.visualLine]
           if (wrappedLine) {
-            const textPadding = this.getTextPadding()
-            const textBeforeParen = wrappedLine.text.substring(0, visualPos.visualColumn)
-            const contentX = textPadding + ctx.measureText(textBeforeParen).width
-            const contentLineY = this.padding + visualPos.visualLine * this.lineHeight
-
-            // Convert to canvas-relative viewport coordinates
-            const canvasX = contentX - this.scrollX
-            const canvasY = contentLineY - this.scrollY
-
-            // Convert to page coordinates
-            const x = rect.left + canvasX
-            const lineY = rect.top + canvasY
-
-            // Check boundaries and calculate final position using full viewport
-            const popupWidth = 400
-            const popupHeight = 120
-
-            const viewportWidth = window.innerWidth
-            const viewportHeight = window.innerHeight
-            const availableWidth = viewportWidth
-            const availableHeight = viewportHeight
-
-            let finalX = x
-            if (x + popupWidth > availableWidth) {
-              finalX = availableWidth - popupWidth - 10
-            }
-            if (finalX < 10) {
-              finalX = 10
-            }
-
-            const spaceAbove = lineY
-            const spaceBelow = availableHeight - lineY - this.lineHeight
-
-            let y: number
-            let showBelow: boolean
-
-            if (spaceAbove >= popupHeight) {
-              y = lineY - 5
-              showBelow = false
-            } else if (spaceBelow >= popupHeight) {
-              y = lineY + this.lineHeight
-              showBelow = true
-            } else {
-              if (spaceAbove > spaceBelow) {
-                y = lineY - 5
-                showBelow = false
-              } else {
-                y = lineY + this.lineHeight
-                showBelow = true
-              }
-            }
-
-            // Avoid covering the caret line: adjust relative to caret visual line
-            const caretVisual = this.logicalToVisualPosition(
-              this.inputState.caret.line,
-              this.inputState.caret.column,
-              wrappedLines,
-            )
-            const caretLineY =
-              rect.top + this.padding + caretVisual.visualLine * this.lineHeight - this.scrollY
-
-            if (showBelow) {
-              // Popup spans [y, y + popupHeight]
-              const popupTop = y
-              const popupBottom = y + popupHeight
-              const caretTop = caretLineY
-              const caretBottom = caretLineY + this.lineHeight
-              const overlapsCaret = popupTop < caretBottom && popupBottom > caretTop
-              if (overlapsCaret) {
-                // Prefer moving above caret if possible
-                const candidateY = caretTop - popupHeight - 4
-                if (candidateY >= 0) {
-                  y = candidateY
-                  showBelow = false
-                } else {
-                  // Otherwise, push below caret
-                  y = caretBottom
-                }
-              }
-            } else {
-              // Above mode: baseline y is popup bottom; spans [y - popupHeight, y]
-              const popupTop = y - popupHeight
-              const popupBottom = y
-              const caretTop = caretLineY
-              const caretBottom = caretLineY + this.lineHeight
-              const overlapsCaret = popupTop < caretBottom && popupBottom > caretTop
-              if (overlapsCaret) {
-                // Prefer moving below caret if space allows
-                const candidateY = caretBottom
-                if (candidateY + popupHeight <= availableHeight) {
-                  y = candidateY
-                  showBelow = true
-                } else {
-                  // Otherwise, pull just above caret
-                  y = Math.max(popupHeight, caretTop - 4)
-                }
-              }
-            }
-
-            // Clamp y to available viewport to avoid cut off
-            if (!showBelow) {
-              // Popup is rendered with translateY(-100%), so ensure its top stays within viewport
-              if (y < popupHeight) y = popupHeight
-            } else {
-              if (y + popupHeight > availableHeight) y = Math.max(0, availableHeight - popupHeight)
-            }
-
-            position = { x: finalX, y, showBelow }
-          } else {
-            // Fallback to normal positioning
-            const textPadding = this.getTextPadding()
-            position = calculatePopupPosition(
-              callInfo.openParenPosition,
-              textPadding,
-              this.lineHeight,
-              ctx,
-              this.inputState.lines,
-              rect,
-              120,
-              this.scrollX,
-              this.scrollY,
-            )
+            const textBeforeParenInSegment = wrappedLine.text.substring(0, visualPos.visualColumn)
+            preCalculatedContentX = textPadding + ctx.measureText(textBeforeParenInSegment).width
           }
-        } else {
-          // For normal mode, use the existing calculation
-          const textPadding = this.getTextPadding()
-          position = calculatePopupPosition(
-            callInfo.openParenPosition,
-            textPadding,
-            this.lineHeight,
-            ctx,
-            this.inputState.lines,
-            rect,
-            120,
-            this.scrollX,
-            this.scrollY,
+
+          const caretVisualPos = this.logicalToVisualPosition(
+            this.inputState.caret.line,
+            this.inputState.caret.column,
+            wrappedLines,
           )
+          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight
+
+          // Calculate caret X position based on wrapped line segment
+          const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
+          if (caretWrappedLine) {
+            const textBeforeCaretInSegment = caretWrappedLine.text.substring(
+              0,
+              caretVisualPos.visualColumn,
+            )
+            preCalculatedCaretContentX =
+              textPadding + ctx.measureText(textBeforeCaretInSegment).width
+          }
         }
+
+        const position = calculatePopupPosition(
+          callInfo.openParenPosition,
+          textPadding,
+          this.lineHeight,
+          ctx,
+          this.inputState.lines,
+          rect,
+          this.scrollX,
+          this.scrollY,
+          this.inputState.caret,
+          preCalculatedContentY,
+          preCalculatedCaretContentY,
+          preCalculatedContentX,
+          preCalculatedCaretContentX,
+        )
 
         const newPopupPosition = {
           x: position.x,
           y: position.y,
-          showBelow: position.showBelow,
         }
 
-        // Only update popup position if it actually changed
-        const positionChanged = !this.arePositionsEqual(this.lastPopupPosition, newPopupPosition)
-        if (positionChanged) {
-          this.lastPopupPosition = newPopupPosition
-          this.callbacks.onPopupPositionChange?.(newPopupPosition)
-        }
+        // Always update popup position so it can recalculate dynamically
+        this.lastPopupPosition = newPopupPosition
+        this.callbacks.onPopupPositionChange?.(newPopupPosition)
       }
     } else if (this.lastPopupPosition !== null) {
       // Clear popup position when there's no call info
@@ -1706,13 +1748,13 @@ export class CanvasEditor {
   }
 
   private arePositionsEqual(
-    a: { x: number; y: number; showBelow: boolean } | null,
-    b: { x: number; y: number; showBelow: boolean } | null,
+    a: { x: number; y: number } | null,
+    b: { x: number; y: number } | null,
   ): boolean {
     if (a === null && b === null) return true
     if (a === null || b === null) return false
 
-    return a.x === b.x && a.y === b.y && a.showBelow === b.showBelow
+    return a.x === b.x && a.y === b.y
   }
 
   public checkScrollbarHover(x: number, y: number): 'vertical' | 'horizontal' | null {
@@ -1827,6 +1869,20 @@ export class CanvasEditor {
     if (this.lastFunctionCallInfo !== null) {
       this.lastFunctionCallInfo = null
       this.callbacks.onFunctionCallChange?.(null)
+    }
+  }
+
+  public setPopupDimensions(width: number, height: number) {
+    const widthChanged = Math.abs(this.popupDimensions.width - width) > 2
+    const heightChanged = Math.abs(this.popupDimensions.height - height) > 2
+    const significantChange = widthChanged || heightChanged
+
+    this.popupDimensions = { width, height }
+
+    // Recalculate position if dimensions changed significantly
+    // This handles the case where constraining X causes text wrap and increased height
+    if (significantChange && this.isActive) {
+      this.updateFunctionSignature()
     }
   }
 }

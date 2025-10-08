@@ -260,7 +260,8 @@ export const findFunctionCallContext = (
 }
 
 /**
- * Calculates the screen position for the popup relative to the page viewport
+ * Calculates the base screen position for the popup at the caret position
+ * The popup will then measure itself and adjust its position dynamically
  */
 export const calculatePopupPosition = (
   openParenPosition: { line: number; column: number },
@@ -269,63 +270,36 @@ export const calculatePopupPosition = (
   ctx: CanvasRenderingContext2D,
   lines: string[],
   canvasRect: DOMRect,
-  popupHeight: number = 120, // Estimated popup height
   scrollX: number = 0,
   scrollY: number = 0,
-): { x: number; y: number; showBelow: boolean } => {
-  const line = lines[openParenPosition.line] || ''
-  const textBeforeParen = line.substring(0, openParenPosition.column)
+  caretPosition?: { line: number; column: number },
+  preCalculatedContentY?: number,
+  preCalculatedCaretContentY?: number,
+  preCalculatedContentX?: number,
+  preCalculatedCaretContentX?: number,
+): { x: number; y: number } => {
+  // Always position at caret if available, otherwise at opening paren
+  const targetPosition = caretPosition ?? openParenPosition
+  const targetLine = lines[targetPosition.line] || ''
+  const textBeforeTarget = targetLine.substring(0, targetPosition.column)
 
-  // Content-space coordinates
-  const contentX = padding + ctx.measureText(textBeforeParen).width
-  const contentLineY = padding + openParenPosition.line * lineHeight
+  // Content-space coordinates - use caret position if available
+  const contentX =
+    preCalculatedCaretContentX ??
+    preCalculatedContentX ??
+    padding + ctx.measureText(textBeforeTarget).width
+  const contentLineY =
+    preCalculatedCaretContentY ??
+    preCalculatedContentY ??
+    padding + targetPosition.line * lineHeight
 
   // Convert to canvas-relative viewport coordinates
   const canvasX = contentX - scrollX
   const canvasY = contentLineY - scrollY
 
   // Convert to page coordinates
-  let x = canvasRect.left + canvasX
-  const lineY = canvasRect.top + canvasY
+  const x = canvasRect.left + canvasX
+  const y = canvasRect.top + canvasY // Position at line top, let popup decide above/below
 
-  // Use full viewport dimensions for boundary checks
-  const viewportWidth = window.innerWidth
-  const viewportHeight = window.innerHeight
-  const popupWidth = 400 // Estimated popup width
-
-  // Check if popup would exceed left/right boundaries
-  if (x + popupWidth > viewportWidth) {
-    x = viewportWidth - popupWidth - 10 // 10px margin from right edge
-  }
-  if (x < 10) {
-    x = 10 // 10px margin from left edge
-  }
-
-  // Check if popup would exceed top boundary
-  const spaceAbove = lineY
-  const spaceBelow = viewportHeight - lineY - lineHeight
-
-  let y: number
-  let showBelow: boolean
-
-  if (spaceAbove >= popupHeight) {
-    // Show above - there's enough space
-    y = lineY - 5
-    showBelow = false
-  } else if (spaceBelow >= popupHeight) {
-    // Show below - not enough space above but enough below
-    y = lineY + lineHeight
-    showBelow = true
-  } else {
-    // Not enough space in either direction, choose the side with more space
-    if (spaceAbove > spaceBelow) {
-      y = lineY - 5
-      showBelow = false
-    } else {
-      y = lineY + lineHeight
-      showBelow = true
-    }
-  }
-
-  return { x, y, showBelow }
+  return { x, y }
 }

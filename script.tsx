@@ -1,4 +1,5 @@
-import { render, useState } from 'mini-jsx'
+import { useState } from 'react'
+import { createRoot } from 'react-dom/client'
 import { CodeEditor } from './src/index.ts'
 
 const defaultCode = `function fibonacci(n) {
@@ -11,11 +12,11 @@ for (let i = 0; i < 10; i++) {
   console.log(fibonacci(i));
 }
 
-// Try typing these function calls to see the popup:
-// Math.max(
-// setTimeout(
-// Array.from(
-// console.log(`
+// Place cursor between the parentheses to see the popup:
+Math.max()
+setTimeout()
+Array.from()
+console.log()`
 
 const App = () => {
   const [value1, setValue1] = useState(defaultCode)
@@ -29,4 +30,4 @@ const App = () => {
   )
 }
 
-render(<App />, document.getElementById('root')!)
+createRoot(document.getElementById('root')!).render(<App />)

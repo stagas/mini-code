@@ -13,11 +13,13 @@
   "type": "module",
   "dependencies": {
     "@types/prismjs": "^1.26.5",
-    "prismjs": "^1.30.0"
+    "prismjs": "^1.30.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@types/react": "^19.1.12",
-    "@types/react-dom": "^19.1.9",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
     "vite": "^7.1.3"
   }
 }

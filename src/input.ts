@@ -29,6 +29,19 @@ export interface InputState {
   lines: string[]
 }
 
+export interface MovementCallbacks {
+  getCaretForHorizontalMove?: (
+    direction: 'left' | 'right',
+    line: number,
+    column: number,
+  ) => { line: number; column: number; columnIntent: number } | null
+  getCaretForVerticalMove?: (
+    direction: 'up' | 'down',
+    line: number,
+    columnIntent: number,
+  ) => { line: number; column: number } | null
+}
+
 export function getSelectedText(inputState: InputState): string {
   if (!inputState.selection) return ''
 
@@ -70,13 +83,23 @@ export function getSelectedText(inputState: InputState): string {
 export class InputHandler {
   private onStateChange: (state: InputState) => void
   private history: History
+  private movementCallbacks: MovementCallbacks
 
-  constructor(onStateChange: (state: InputState) => void, history: History) {
+  constructor(
+    onStateChange: (state: InputState) => void,
+    history: History,
+    movementCallbacks: MovementCallbacks = {},
+  ) {
     this.onStateChange = onStateChange
     this.history = history
+    this.movementCallbacks = movementCallbacks
   }
 
-  handleKeyDown(event: KeyboardEvent, currentState: InputState) {
+  setMovementCallbacks(callbacks: MovementCallbacks) {
+    this.movementCallbacks = callbacks
+  }
+
+  handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
     // Do nothing for modifier keys pressed alone
     if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
       return
@@ -366,6 +389,22 @@ export class InputHandler {
   }
 
   private moveCaretLeft(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForHorizontalMove) {
+      const result = this.movementCallbacks.getCaretForHorizontalMove(
+        'left',
+        state.caret.line,
+        state.caret.column,
+      )
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        state.caret.columnIntent = result.columnIntent
+        return
+      }
+    }
+
+    // Default logical movement
     if (state.caret.column > 0) {
       state.caret.column--
       state.caret.columnIntent = state.caret.column
@@ -377,6 +416,22 @@ export class InputHandler {
   }
 
   private moveCaretRight(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForHorizontalMove) {
+      const result = this.movementCallbacks.getCaretForHorizontalMove(
+        'right',
+        state.caret.line,
+        state.caret.column,
+      )
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        state.caret.columnIntent = result.columnIntent
+        return
+      }
+    }
+
+    // Default logical movement
     const currentLine = state.lines[state.caret.line] || ''
     if (state.caret.column < currentLine.length) {
       state.caret.column++
@@ -389,6 +444,21 @@ export class InputHandler {
   }
 
   private moveCaretUp(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForVerticalMove) {
+      const result = this.movementCallbacks.getCaretForVerticalMove(
+        'up',
+        state.caret.line,
+        state.caret.columnIntent,
+      )
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        return
+      }
+    }
+
+    // Default logical movement
     if (state.caret.line > 0) {
       state.caret.line--
       const targetLine = state.lines[state.caret.line] || ''
@@ -397,6 +467,21 @@ export class InputHandler {
   }
 
   private moveCaretDown(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForVerticalMove) {
+      const result = this.movementCallbacks.getCaretForVerticalMove(
+        'down',
+        state.caret.line,
+        state.caret.columnIntent,
+      )
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        return
+      }
+    }
+
+    // Default logical movement
     if (state.caret.line < state.lines.length - 1) {
       state.caret.line++
       const targetLine = state.lines[state.caret.line] || ''
@@ -767,11 +852,7 @@ export class InputHandler {
     const normalizedEnd =
       start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
-    // If the start is at column 0, don't include that line in indentation
-    const firstLineToIndent =
-      normalizedStart.column === 0 && normalizedEnd.line > normalizedStart.line
-        ? normalizedStart.line + 1
-        : normalizedStart.line
+    const firstLineToIndent = normalizedStart.line
 
     // If the end is at column 0, don't include that line in indentation
     const lastLineToIndent =
@@ -818,11 +899,7 @@ export class InputHandler {
     const normalizedEnd =
       start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
-    // If the start is at column 0, don't include that line in unindentation
-    const firstLineToUnindent =
-      normalizedStart.column === 0 && normalizedEnd.line > normalizedStart.line
-        ? normalizedStart.line + 1
-        : normalizedStart.line
+    const firstLineToUnindent = normalizedStart.line
 
     // If the end is at column 0, don't include that line in unindentation
     const lastLineToUnindent =
@@ -1100,7 +1177,7 @@ export class InputHandler {
     })
   }
 
-  handlePasteEvent(event: ClipboardEvent, currentState: InputState) {
+  handlePasteEvent(event: React.ClipboardEvent<HTMLTextAreaElement>, currentState: InputState) {
     event.preventDefault()
 
     const text = event.clipboardData?.getData('text/plain')

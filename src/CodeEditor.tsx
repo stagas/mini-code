@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'mini-jsx'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { CanvasEditor, type CanvasEditorCallbacks } from './CanvasEditor.ts'
 import {
@@ -21,10 +21,14 @@ interface CodeEditorProps {
   functionDefinitions?: Record<string, FunctionSignature>
 }
 
-export const CodeEditor = (
-  { value, setValue, wordWrap = false, gutter = false, theme, functionDefinitions = defaultFunctionDefinitions }:
-    CodeEditorProps,
-) => {
+export const CodeEditor = ({
+  value,
+  setValue,
+  wordWrap = false,
+  gutter = false,
+  theme,
+  functionDefinitions = defaultFunctionDefinitions,
+}: CodeEditorProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -38,8 +42,11 @@ export const CodeEditor = (
 
   // Function signature popup state
   const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
-  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number; showBelow: boolean }>({ x: 0, y: 0,
-    showBelow: false })
+  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [popupDimensions, setPopupDimensions] = useState<{ width: number; height: number }>({
+    width: 400,
+    height: 120,
+  })
   const [isActive, setIsActive] = useState(false)
   const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
 
@@ -55,14 +62,24 @@ export const CodeEditor = (
     viewportHeight: number
     contentWidth: number
     contentHeight: number
-  }>({ scrollX: 0, scrollY: 0, viewportWidth: 0, viewportHeight: 0, contentWidth: 0, contentHeight: 0 })
+  }>({
+    scrollX: 0,
+    scrollY: 0,
+    viewportWidth: 0,
+    viewportHeight: 0,
+    contentWidth: 0,
+    contentHeight: 0,
+  })
 
   // Custom setter that updates canvas editor
-  const setInputState = useCallback((newState: InputState) => {
-    setInputStateInternal(newState)
-    inputStateRef.current = newState
-    setValue(newState.lines.join('\n'))
-  }, [setValue])
+  const setInputState = useCallback(
+    (newState: InputState) => {
+      setInputStateInternal(newState)
+      inputStateRef.current = newState
+      setValue(newState.lines.join('\n'))
+    },
+    [setValue],
+  )
 
   // Update textarea content when input state changes
   useEffect(() => {
@@ -102,20 +119,20 @@ export const CodeEditor = (
   }, [value])
 
   // Handle clipboard events
-  const handleCopy = (e: ClipboardEvent) => {
+  const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Let the browser handle the copy operation naturally
     // The textarea already contains the selected text
   }
 
-  const handlePaste = (e: ClipboardEvent) => {
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     inputHandlerRef.current?.handlePasteEvent(e, inputState)
   }
 
-  const handleCut = (e: ClipboardEvent) => {
+  const handleCut = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     inputHandlerRef.current?.handleCut(inputState)
   }
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') {
       // Hide signature popup
       canvasEditorRef.current?.hideSignaturePopup()
@@ -136,15 +153,18 @@ export const CodeEditor = (
   }, []) // Remove setInputState dependency since it's stable and we check if handler exists
 
   useEffect(() => {
-    const unsub = subscribeActiveEditor((activeId) => {
+    const unsub = subscribeActiveEditor(activeId => {
       const active = activeId === editorIdRef.current
       setIsActive(active)
       canvasEditorRef.current?.setActive(active)
     })
-    // Initialize active state on mount
-    const active = getActiveEditor() === editorIdRef.current
-    setIsActive(active)
-    canvasEditorRef.current?.setActive(active)
+
+    // Initialize active state - if no editor is active, make this one active
+    const currentActive = getActiveEditor()
+    if (currentActive === null) {
+      setActiveEditor(editorIdRef.current)
+    }
+
     return () => {
       unsub()
     }
@@ -155,7 +175,7 @@ export const CodeEditor = (
     if (!canvas) return
 
     // Initialize mouse handler with a wrapper that saves selection changes to history
-    mouseHandlerRef.current = new MouseHandler(canvas, (newState) => {
+    mouseHandlerRef.current = new MouseHandler(canvas, newState => {
       // Save selection changes to history
       if (inputHandlerRef.current) {
         // Save the current state before the change
@@ -179,10 +199,28 @@ export const CodeEditor = (
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
       },
-      onScrollMetricsChange: (m) => setScrollMetrics(m),
+      onScrollMetricsChange: m => setScrollMetrics(m),
     }
 
-    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, { wordWrap, gutter, theme })
+    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, {
+      wordWrap,
+      gutter,
+      theme,
+    })
+
+    // Set initial active state
+    const currentActive = getActiveEditor() === editorIdRef.current
+    canvasEditorRef.current.setActive(currentActive)
+
+    // Wire up word-wrap-aware movement to the input handler
+    if (inputHandlerRef.current) {
+      inputHandlerRef.current.setMovementCallbacks({
+        getCaretForHorizontalMove: (direction, line, column) =>
+          canvasEditorRef.current?.getCaretForHorizontalMove(direction, line, column) ?? null,
+        getCaretForVerticalMove: (direction, line, columnIntent) =>
+          canvasEditorRef.current?.getCaretForVerticalMove(direction, line, columnIntent) ?? null,
+      })
+    }
 
     return () => {
       canvasEditorRef.current?.destroy()
@@ -230,8 +268,7 @@ export const CodeEditor = (
 
         // Let MouseHandler handle everything (including double/triple clicks)
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
-      }
-      else {
+      } else {
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
     }
@@ -285,24 +322,24 @@ export const CodeEditor = (
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
 
   return (
-    <div ref={containerRef} className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full"
+    <div
+      ref={containerRef}
+      className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full"
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
     >
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 outline-none"
-      />
+      <canvas ref={canvasRef} className="absolute inset-0 outline-none" />
       <textarea
         ref={textareaRef}
-        className="absolute inset-0 opacity-0 z-50 pointer-events-none"
+        className="absolute inset-0 opacity-0 z-50"
         spellCheck={false}
         autoCorrect="off"
         tabIndex={0}
-        onContextMenu={(e) => {
+        style={{ pointerEvents: 'none' }}
+        onContextMenu={e => {
           e.preventDefault()
           e.stopPropagation()
         }}
-        onKeyDown={(e) => {
+        onKeyDown={e => {
           setActiveEditor(editorIdRef.current)
 
           // Handle Alt+Arrow combinations for line moving (bypass word wrap logic)
@@ -315,49 +352,68 @@ export const CodeEditor = (
             e.preventDefault()
             const dir = e.key === 'ArrowUp' ? 'up' : 'down'
             const caret = inputStateRef.current.caret
-            const next = canvasEditorRef.current?.getCaretForVerticalMove(dir, caret.line, caret.columnIntent)
+            const next = canvasEditorRef.current?.getCaretForVerticalMove(
+              dir,
+              caret.line,
+              caret.columnIntent,
+            )
             if (next && (next.line !== caret.line || next.column !== caret.column)) {
               const newState: InputState = {
                 ...inputStateRef.current,
                 caret: { line: next.line, column: next.column, columnIntent: caret.columnIntent },
                 selection: e.shiftKey
-                  ? (inputStateRef.current.selection
-                    ? { start: inputStateRef.current.selection.start, end: { line: next.line, column: next.column } }
-                    : { start: { line: caret.line, column: caret.column },
-                      end: { line: next.line, column: next.column } })
+                  ? inputStateRef.current.selection
+                    ? {
+                        start: inputStateRef.current.selection.start,
+                        end: { line: next.line, column: next.column },
+                      }
+                    : {
+                        start: { line: caret.line, column: caret.column },
+                        end: { line: next.line, column: next.column },
+                      }
                   : null,
               }
               setInputState(newState)
-            }
-            else {
+            } else {
               // If wrapped movement didn' work, fall back to normal arrow key handling
               handleKeyDown(e)
             }
-          }
-          else if (wordWrap && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+          } else if (
+            wordWrap &&
+            !e.ctrlKey &&
+            !e.metaKey &&
+            (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+          ) {
             e.preventDefault()
             const dir = e.key === 'ArrowLeft' ? 'left' : 'right'
             const caret = inputStateRef.current.caret
-            const next = canvasEditorRef.current?.getCaretForHorizontalMove(dir, caret.line, caret.column)
+            const next = canvasEditorRef.current?.getCaretForHorizontalMove(
+              dir,
+              caret.line,
+              caret.column,
+            )
             if (next) {
               const newState: InputState = {
                 ...inputStateRef.current,
                 caret: { line: next.line, column: next.column, columnIntent: next.columnIntent },
                 selection: e.shiftKey
-                  ? (inputStateRef.current.selection
-                    ? { start: inputStateRef.current.selection.start, end: { line: next.line, column: next.column } }
-                    : { start: { line: caret.line, column: caret.column },
-                      end: { line: next.line, column: next.column } })
+                  ? inputStateRef.current.selection
+                    ? {
+                        start: inputStateRef.current.selection.start,
+                        end: { line: next.line, column: next.column },
+                      }
+                    : {
+                        start: { line: caret.line, column: caret.column },
+                        end: { line: next.line, column: next.column },
+                      }
                   : null,
               }
               setInputState(newState)
-            }
-            else {
+            } else {
               // If wrapped movement didn't work, fall back to normal arrow key handling
               handleKeyDown(e)
             }
-          }
-          else {
+          } else {
             handleKeyDown(e)
           }
         }}
@@ -379,6 +435,10 @@ export const CodeEditor = (
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}
           position={popupPosition}
           visible={true}
+          onDimensionsChange={(width, height) => {
+            setPopupDimensions({ width, height })
+            canvasEditorRef.current?.setPopupDimensions(width, height)
+          }}
         />
       )}
     </div>
