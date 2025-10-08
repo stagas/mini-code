@@ -144,6 +144,7 @@ export const CodeEditor = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    canvasEditorRef.current?.setAutocompleteInputSource('keyboard')
     if (e.key === 'Escape') {
       // Hide autocomplete first, then signature popup
       if (autocompleteInfo) {
@@ -307,6 +308,7 @@ export const CodeEditor = ({
     const handlePointerDown = (event: PointerEvent) => {
       event.preventDefault()
       setActiveEditor(editorIdRef.current)
+      canvasEditorRef.current?.setAutocompleteInputSource('mouse')
 
       const rect = canvas.getBoundingClientRect()
       const x = event.clientX - rect.left
@@ -503,6 +505,32 @@ export const CodeEditor = ({
           selectedIndex={autocompleteSelectedIndex}
           position={autocompletePosition}
           visible={true}
+          onHover={index => setAutocompleteSelectedIndex(index)}
+          onSelect={index => {
+            const selectedSuggestion = autocompleteInfo.suggestions[index]
+            const line = inputStateRef.current.lines[inputStateRef.current.caret.line]
+            const newLine =
+              line.substring(0, autocompleteInfo.startColumn) +
+              selectedSuggestion +
+              line.substring(autocompleteInfo.endColumn)
+
+            const newLines = [...inputStateRef.current.lines]
+            newLines[inputStateRef.current.caret.line] = newLine
+
+            const newState: InputState = {
+              ...inputStateRef.current,
+              lines: newLines,
+              caret: {
+                line: inputStateRef.current.caret.line,
+                column: autocompleteInfo.startColumn + selectedSuggestion.length,
+                columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
+              },
+            }
+
+            setInputState(newState)
+            canvasEditorRef.current?.hideAutocomplete()
+            setAutocompleteSelectedIndex(0)
+          }}
         />
       )}
 

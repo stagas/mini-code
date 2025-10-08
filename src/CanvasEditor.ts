@@ -238,6 +238,7 @@ export class CanvasEditor {
     x: number
     y: number
   } | null = null
+  private autocompleteInputSource: 'keyboard' | 'mouse' = 'keyboard'
   private functionDefinitions: Record<string, any> = {}
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
@@ -1901,8 +1902,17 @@ export class CanvasEditor {
     }
   }
 
+  public setAutocompleteInputSource(source: 'keyboard' | 'mouse') {
+    this.autocompleteInputSource = source
+    if (source === 'mouse') {
+      // Ensure popup is hidden when interacting with mouse
+      this.hideAutocomplete()
+    }
+  }
+
   private updateAutocomplete() {
     if (!this.isActive) return
+    if (this.autocompleteInputSource !== 'keyboard') return
 
     const wordInfo = findCurrentWord(
       this.inputState.lines,

@@ -18,18 +18,25 @@ export const findCurrentWord = (
   const line = lines[cursorLine]
   if (!line) return null
 
-  // Identifier characters: letters, numbers, $, _, and .
-  const isIdentifierChar = (char: string) => /[a-zA-Z0-9$_.]/.test(char)
+  // Identifier segment characters (per segment): letters, numbers, $, _
+  // Dot is treated as a segment delimiter for the current word
+  const isSegmentChar = (char: string) => /[a-zA-Z0-9$_]/.test(char)
 
-  // Find start of word (scan backwards from cursor)
+  // Find start of word segment (scan backwards until a non-segment char OR a dot)
   let startColumn = cursorColumn
-  while (startColumn > 0 && isIdentifierChar(line[startColumn - 1])) {
+  while (startColumn > 0) {
+    const prevChar = line[startColumn - 1]
+    if (prevChar === '.') break
+    if (!isSegmentChar(prevChar)) break
     startColumn--
   }
 
-  // Find end of word (scan forwards from cursor)
+  // Find end of word segment (scan forwards until a non-segment char OR a dot)
   let endColumn = cursorColumn
-  while (endColumn < line.length && isIdentifierChar(line[endColumn])) {
+  while (endColumn < line.length) {
+    const ch = line[endColumn]
+    if (ch === '.') break
+    if (!isSegmentChar(ch)) break
     endColumn++
   }
 
