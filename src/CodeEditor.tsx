@@ -6,7 +6,9 @@ import {
   functionDefinitions as defaultFunctionDefinitions,
   type FunctionSignature,
 } from './function-signature.ts'
+import { type AutocompleteInfo } from './autocomplete.ts'
 import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
+import AutocompletePopup from './AutocompletePopup.tsx'
 import { History } from './history.ts'
 import { getSelectedText, InputHandler, type InputState } from './input.ts'
 import { MouseHandler } from './mouse.ts'
@@ -47,6 +49,15 @@ export const CodeEditor = ({
     width: 400,
     height: 120,
   })
+
+  // Autocomplete state
+  const [autocompleteInfo, setAutocompleteInfo] = useState<AutocompleteInfo | null>(null)
+  const [autocompletePosition, setAutocompletePosition] = useState<{ x: number; y: number }>({
+    x: 0,
+    y: 0,
+  })
+  const [autocompleteSelectedIndex, setAutocompleteSelectedIndex] = useState(0)
+
   const [isActive, setIsActive] = useState(false)
   const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
 
@@ -134,12 +145,63 @@ export const CodeEditor = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') {
-      // Hide signature popup
+      // Hide autocomplete first, then signature popup
+      if (autocompleteInfo) {
+        canvasEditorRef.current?.hideAutocomplete()
+        setAutocompleteSelectedIndex(0)
+        e.preventDefault()
+        return
+      }
       canvasEditorRef.current?.hideSignaturePopup()
       return
     }
+
+    // Handle autocomplete interactions
+    if (autocompleteInfo && autocompleteInfo.suggestions.length > 0) {
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        // Cycle through suggestions
+        setAutocompleteSelectedIndex(prev => (prev + 1) % autocompleteInfo.suggestions.length)
+        return
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        // Accept selected suggestion
+        const selectedSuggestion = autocompleteInfo.suggestions[autocompleteSelectedIndex]
+        const line = inputState.lines[inputState.caret.line]
+        const newLine =
+          line.substring(0, autocompleteInfo.startColumn) +
+          selectedSuggestion +
+          line.substring(autocompleteInfo.endColumn)
+
+        const newLines = [...inputState.lines]
+        newLines[inputState.caret.line] = newLine
+
+        const newState: InputState = {
+          ...inputState,
+          lines: newLines,
+          caret: {
+            line: inputState.caret.line,
+            column: autocompleteInfo.startColumn + selectedSuggestion.length,
+            columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
+          },
+        }
+
+        setInputState(newState)
+        canvasEditorRef.current?.hideAutocomplete()
+        setAutocompleteSelectedIndex(0)
+        return
+      }
+    }
+
     inputHandlerRef.current?.handleKeyDown(e, inputState)
   }
+
+  // Reset selected index when autocomplete info changes
+  useEffect(() => {
+    setAutocompleteSelectedIndex(0)
+  }, [autocompleteInfo])
 
   useEffect(() => {
     // Initialize history only once
@@ -196,6 +258,8 @@ export const CodeEditor = ({
     const callbacks: CanvasEditorCallbacks = {
       onFunctionCallChange: setFunctionCallInfo,
       onPopupPositionChange: setPopupPosition,
+      onAutocompleteChange: setAutocompleteInfo,
+      onAutocompletePositionChange: setAutocompletePosition,
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
       },
@@ -207,6 +271,9 @@ export const CodeEditor = ({
       gutter,
       theme,
     })
+
+    // Set function definitions for autocomplete
+    canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
 
     // Set initial active state
     const currentActive = getActiveEditor() === editorIdRef.current
@@ -427,6 +494,16 @@ export const CodeEditor = ({
           setActiveEditor(editorIdRef.current)
         }}
       />
+
+      {/* Autocomplete popup */}
+      {isActive && autocompleteInfo && (
+        <AutocompletePopup
+          suggestions={autocompleteInfo.suggestions}
+          selectedIndex={autocompleteSelectedIndex}
+          position={autocompletePosition}
+          visible={true}
+        />
+      )}
 
       {/* Function signature popup */}
       {isActive && functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (

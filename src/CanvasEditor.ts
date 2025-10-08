@@ -11,6 +11,12 @@ import {
   calculatePopupPosition,
   type FunctionCallInfo,
 } from './function-signature.ts'
+import {
+  findCurrentWord,
+  getAutocompleteSuggestions,
+  calculateAutocompletePosition,
+  type AutocompleteInfo,
+} from './autocomplete.ts'
 import type { InputState } from './input.ts'
 
 const findMatchingBrace = (
@@ -188,6 +194,8 @@ const findMatchingBrace = (
 export interface CanvasEditorCallbacks {
   onFunctionCallChange?: (callInfo: FunctionCallInfo | null) => void
   onPopupPositionChange?: (position: { x: number; y: number }) => void
+  onAutocompleteChange?: (autocompleteInfo: AutocompleteInfo | null) => void
+  onAutocompletePositionChange?: (position: { x: number; y: number }) => void
   onScrollChange?: (scrollX: number, scrollY: number) => void
   onScrollMetricsChange?: (metrics: {
     scrollX: number
@@ -225,6 +233,12 @@ export class CanvasEditor {
     x: number
     y: number
   } | null = null
+  private lastAutocompleteInfo: AutocompleteInfo | null = null
+  private lastAutocompletePosition: {
+    x: number
+    y: number
+  } | null = null
+  private functionDefinitions: Record<string, any> = {}
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
   private scrollX = 0
@@ -389,8 +403,11 @@ export class CanvasEditor {
       // Clear popup position when deactivating
       this.lastPopupPosition = null
       this.callbacks.onFunctionCallChange?.(null)
+      this.lastAutocompleteInfo = null
+      this.callbacks.onAutocompleteChange?.(null)
     } else {
       this.ensureCaretVisible()
+      this.updateAutocomplete()
       this.updateFunctionSignature()
     }
   }
@@ -1109,6 +1126,7 @@ export class CanvasEditor {
     this.inputState = newState
     if (this.isActive) this.ensureCaretVisible()
     this.draw()
+    this.updateAutocomplete()
     this.updateFunctionSignature()
   }
 
@@ -1870,6 +1888,128 @@ export class CanvasEditor {
       this.lastFunctionCallInfo = null
       this.callbacks.onFunctionCallChange?.(null)
     }
+  }
+
+  public setFunctionDefinitions(definitions: Record<string, any>) {
+    this.functionDefinitions = definitions
+  }
+
+  public hideAutocomplete() {
+    if (this.lastAutocompleteInfo !== null) {
+      this.lastAutocompleteInfo = null
+      this.callbacks.onAutocompleteChange?.(null)
+    }
+  }
+
+  private updateAutocomplete() {
+    if (!this.isActive) return
+
+    const wordInfo = findCurrentWord(
+      this.inputState.lines,
+      this.inputState.caret.line,
+      this.inputState.caret.column,
+    )
+
+    if (!wordInfo) {
+      if (this.lastAutocompleteInfo !== null) {
+        this.lastAutocompleteInfo = null
+        this.callbacks.onAutocompleteChange?.(null)
+      }
+      return
+    }
+
+    const suggestions = getAutocompleteSuggestions(
+      wordInfo.word,
+      this.inputState.lines,
+      this.functionDefinitions,
+    )
+
+    const autocompleteInfo: AutocompleteInfo | null =
+      suggestions.length > 0
+        ? {
+            word: wordInfo.word,
+            startColumn: wordInfo.startColumn,
+            endColumn: wordInfo.endColumn,
+            suggestions,
+          }
+        : null
+
+    // Only update if changed
+    const changed = !this.areAutocompleteInfosEqual(this.lastAutocompleteInfo, autocompleteInfo)
+    if (changed) {
+      this.lastAutocompleteInfo = autocompleteInfo
+      this.callbacks.onAutocompleteChange?.(autocompleteInfo)
+    }
+
+    if (autocompleteInfo) {
+      const ctx = this.canvas.getContext('2d')
+      if (ctx) {
+        this.setFont(ctx)
+        const rect = this.canvas.getBoundingClientRect()
+
+        let preCalculatedCaretContentY: number | undefined
+        let preCalculatedCaretContentX: number | undefined
+        if (this.options.wordWrap) {
+          const wrappedLines = this.getWrappedLines(ctx)
+          const caretVisualPos = this.logicalToVisualPosition(
+            this.inputState.caret.line,
+            this.inputState.caret.column,
+            wrappedLines,
+          )
+          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight
+          const textPadding = this.getTextPadding()
+          const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
+          if (caretWrappedLine) {
+            const textBeforeCaretInSegment = caretWrappedLine.text.substring(
+              0,
+              caretVisualPos.visualColumn,
+            )
+            preCalculatedCaretContentX =
+              textPadding + ctx.measureText(textBeforeCaretInSegment).width
+          }
+        }
+
+        const position = calculateAutocompletePosition(
+          this.inputState.caret.line,
+          this.inputState.caret.column,
+          this.padding,
+          this.lineHeight,
+          ctx,
+          this.inputState.lines,
+          rect,
+          this.scrollX,
+          this.scrollY,
+          preCalculatedCaretContentY,
+          preCalculatedCaretContentX,
+        )
+
+        const newPosition = {
+          x: position.x,
+          y: position.y,
+        }
+
+        this.lastAutocompletePosition = newPosition
+        this.callbacks.onAutocompletePositionChange?.(newPosition)
+      }
+    } else if (this.lastAutocompletePosition !== null) {
+      this.lastAutocompletePosition = null
+    }
+  }
+
+  private areAutocompleteInfosEqual(
+    a: AutocompleteInfo | null,
+    b: AutocompleteInfo | null,
+  ): boolean {
+    if (a === null && b === null) return true
+    if (a === null || b === null) return false
+
+    return (
+      a.word === b.word &&
+      a.startColumn === b.startColumn &&
+      a.endColumn === b.endColumn &&
+      a.suggestions.length === b.suggestions.length &&
+      a.suggestions.every((s, i) => s === b.suggestions[i])
+    )
   }
 
   public setPopupDimensions(width: number, height: number) {
