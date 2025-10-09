@@ -79,24 +79,24 @@ const AutocompletePopup = ({
       }
     }
 
-    // VERTICAL: Prefer below, fallback to above
+    // VERTICAL: Prefer above, fallback to below
     const spaceAbove = position.y - margin
     const spaceBelow = viewportHeight - (position.y + lineHeight) - margin
 
-    if (spaceBelow >= popupHeight) {
-      // Show below
-      finalY = position.y + lineHeight + spacing
-    } else if (spaceAbove >= popupHeight) {
+    if (spaceAbove >= popupHeight) {
       // Show above
       finalY = position.y - popupHeight - spacing
+    } else if (spaceBelow >= popupHeight) {
+      // Show below
+      finalY = position.y + lineHeight + spacing
     } else {
       // Doesn't fit either way - use side with more space and constrain height
-      if (spaceBelow > spaceAbove) {
+      if (spaceAbove >= spaceBelow) {
+        finalY = Math.max(margin, position.y - popupHeight - spacing)
+        maxHeight = spaceAbove
+      } else {
         finalY = position.y + lineHeight + spacing
         maxHeight = spaceBelow
-      } else {
-        finalY = margin
-        maxHeight = spaceAbove
       }
     }
   }

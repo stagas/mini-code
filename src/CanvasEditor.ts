@@ -406,11 +406,8 @@ export class CanvasEditor {
     this.isActive = active
     this.draw()
     if (!this.isActive) {
-      // Clear popup position when deactivating
-      this.lastPopupPosition = null
-      this.callbacks.onFunctionCallChange?.(null)
-      this.lastAutocompleteInfo = null
-      this.callbacks.onAutocompleteChange?.(null)
+      // Don't clear state when deactivating - just hide via rendering
+      // This allows popups to reappear when reactivating without recalculation
     } else {
       this.ensureCaretVisible()
       this.updateAutocomplete()
@@ -1283,8 +1280,6 @@ export class CanvasEditor {
 
   private setupWheel() {
     const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
       const viewportHeight = this.canvas.height / dpr
@@ -1298,14 +1293,23 @@ export class CanvasEditor {
         : this.getContentSize(ctx)
 
       // Natural scrolling: use deltaX/deltaY; shift can swap intent
-      const deltaX = e.deltaX || (e.shiftKey ? e.deltaY : 0)
-      const deltaY = e.deltaY
+      const effectiveDeltaX = e.deltaX || (e.shiftKey ? e.deltaY : 0)
+      const effectiveDeltaY = e.shiftKey ? 0 : e.deltaY
 
       const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
       const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
-      const nextScrollX = Math.min(Math.max(this.scrollX + deltaX, 0), maxScrollX)
-      const nextScrollY = Math.min(Math.max(this.scrollY + deltaY, 0), maxScrollY)
+      // Only prevent default if we can actually scroll in the intended direction
+      const canScrollHorizontally = effectiveDeltaX !== 0 && maxScrollX > 0
+      const canScrollVertically = effectiveDeltaY !== 0 && maxScrollY > 0
+      if (!(canScrollHorizontally || canScrollVertically)) {
+        return
+      }
+
+      e.preventDefault()
+
+      const nextScrollX = Math.min(Math.max(this.scrollX + effectiveDeltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.scrollY + effectiveDeltaY, 0), maxScrollY)
 
       if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
         this.scrollX = nextScrollX
@@ -1571,15 +1575,17 @@ export class CanvasEditor {
         let currentX = textPadding
         currentX = this.drawTokensWithCustomLigatures(ctx, segmentTokens, currentX, y, theme)
 
-        // Draw brace matching for any line that might contain braces
-        this.drawBraceMatchingForWrappedLine(
-          ctx,
-          highlightedCode,
-          wrappedLine,
-          visualIndex,
-          y,
-          theme,
-        )
+        // Draw brace matching for any line that might contain braces (only when active)
+        if (this.isActive) {
+          this.drawBraceMatchingForWrappedLine(
+            ctx,
+            highlightedCode,
+            wrappedLine,
+            visualIndex,
+            y,
+            theme,
+          )
+        }
       } else {
         // Fallback: draw plain text with custom ligatures across a single token
         this.drawTokensWithCustomLigatures(

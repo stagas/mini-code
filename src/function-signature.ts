@@ -125,6 +125,47 @@ export const findFunctionCallContext = (
   // Join all lines to work with a single string
   const code = lines.join('\n')
 
+  // Check if cursor is on a function name followed by opening parenthesis
+  const beforeCursor = code.substring(0, cursorGlobalPos)
+  const afterCursor = code.substring(cursorGlobalPos)
+
+  // Find word boundaries around cursor
+  const beforeMatch = beforeCursor.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)$/)
+  const afterMatch = afterCursor.match(/^([a-zA-Z0-9_$.]*)/)
+
+  if (beforeMatch || afterMatch) {
+    const wordStart = beforeMatch ? cursorGlobalPos - beforeMatch[1].length : cursorGlobalPos
+    const wordEnd = afterMatch ? cursorGlobalPos + afterMatch[1].length : cursorGlobalPos
+    const currentWord = code.substring(wordStart, wordEnd)
+
+    // Check if there's an opening parenthesis right after this word (with optional whitespace)
+    const afterWord = code.substring(wordEnd).match(/^\s*\(/)
+    if (afterWord) {
+      const openParenPos = wordEnd + afterWord[0].length - 1
+
+      // Convert global position back to line/column
+      let remainingPos = openParenPos
+      let openLine = 0
+      let openColumn = 0
+
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const lineLength = lines[lineIndex].length
+        if (remainingPos <= lineLength) {
+          openLine = lineIndex
+          openColumn = remainingPos
+          break
+        }
+        remainingPos -= lineLength + 1
+      }
+
+      return {
+        functionName: currentWord,
+        currentArgumentIndex: 0,
+        openParenPosition: { line: openLine, column: openColumn },
+      }
+    }
+  }
+
   // Find all parentheses and their positions
   const parens: { char: string; position: number; line: number; column: number }[] = []
 

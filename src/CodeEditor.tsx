@@ -267,14 +267,26 @@ export const CodeEditor = ({
       canvasEditorRef.current?.setActive(active)
     })
 
-    // Initialize active state - if no editor is active, make this one active
-    const currentActive = getActiveEditor()
-    if (currentActive === null) {
-      setActiveEditor(editorIdRef.current)
+    // Handle clicks outside the canvas to blur it
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as Node
+      const canvas = canvasRef.current
+      const container = containerRef.current
+
+      // Check if click is outside this editor's canvas/container
+      if (canvas && container && !container.contains(target)) {
+        // Only deactivate if this editor is currently active
+        if (getActiveEditor() === editorIdRef.current) {
+          setActiveEditor(null)
+        }
+      }
     }
+
+    document.addEventListener('mousedown', handleDocumentClick)
 
     return () => {
       unsub()
+      document.removeEventListener('mousedown', handleDocumentClick)
     }
   }, [])
 
