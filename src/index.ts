@@ -5,3 +5,4 @@ export {
   type FunctionParameter,
   functionDefinitions,
 } from './function-signature.ts'
+export { type EditorError } from './ErrorPopup.tsx'

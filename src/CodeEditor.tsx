@@ -9,6 +9,7 @@ import {
 import { type AutocompleteInfo } from './autocomplete.ts'
 import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
 import AutocompletePopup from './AutocompletePopup.tsx'
+import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
 import { History } from './history.ts'
 import { getSelectedText, InputHandler, type InputState } from './input.ts'
 import { MouseHandler } from './mouse.ts'
@@ -21,6 +22,8 @@ interface CodeEditorProps {
   gutter?: boolean
   theme?: Theme
   functionDefinitions?: Record<string, FunctionSignature>
+  errors?: EditorError[]
+  canvasRef?: React.RefObject<HTMLCanvasElement>
 }
 
 export const CodeEditor = ({
@@ -30,8 +33,11 @@ export const CodeEditor = ({
   gutter = false,
   theme,
   functionDefinitions = defaultFunctionDefinitions,
+  errors = [],
+  canvasRef: extCanvasRef,
 }: CodeEditorProps) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const ownCanvasRef = useRef<HTMLCanvasElement>(null)
+  const canvasRef = extCanvasRef ?? ownCanvasRef
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasEditorRef = useRef<CanvasEditor | null>(null)
@@ -57,6 +63,10 @@ export const CodeEditor = ({
     y: 0,
   })
   const [autocompleteSelectedIndex, setAutocompleteSelectedIndex] = useState(0)
+
+  // Error popup state
+  const [hoveredError, setHoveredError] = useState<EditorError | null>(null)
+  const [errorPosition, setErrorPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
 
   const [isActive, setIsActive] = useState(false)
   const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
@@ -205,6 +215,11 @@ export const CodeEditor = ({
     setAutocompleteSelectedIndex(0)
   }, [autocompleteInfo])
 
+  // Update errors in canvas editor
+  useEffect(() => {
+    canvasEditorRef.current?.setErrors(errors)
+  }, [errors])
+
   useEffect(() => {
     // Initialize history only once
     if (!historyRef.current) {
@@ -266,6 +281,8 @@ export const CodeEditor = ({
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
       },
       onScrollMetricsChange: m => setScrollMetrics(m),
+      onErrorHover: setHoveredError,
+      onErrorPositionChange: setErrorPosition,
     }
 
     canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, {
@@ -276,6 +293,9 @@ export const CodeEditor = ({
 
     // Set function definitions for autocomplete
     canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
+
+    // Set errors
+    canvasEditorRef.current.setErrors(errors)
 
     // Set initial active state
     const currentActive = getActiveEditor() === editorIdRef.current
@@ -362,6 +382,10 @@ export const CodeEditor = ({
       // Update scrollbar hover state
       const scrollbar = canvasEditorRef.current?.checkScrollbarHover(x, y)
       canvasEditorRef.current?.setScrollbarHover(scrollbar || null)
+
+      // Check for error hover
+      const error = canvasEditorRef.current?.checkErrorHover(x, y)
+      canvasEditorRef.current?.updateErrorHover(error || null)
 
       mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
     }
@@ -546,6 +570,11 @@ export const CodeEditor = ({
             canvasEditorRef.current?.setPopupDimensions(width, height)
           }}
         />
+      )}
+
+      {/* Error popup */}
+      {isActive && hoveredError && (
+        <ErrorPopup error={hoveredError} position={errorPosition} visible={true} />
       )}
     </div>
   )

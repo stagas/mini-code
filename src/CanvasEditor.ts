@@ -18,6 +18,7 @@ import {
   type AutocompleteInfo,
 } from './autocomplete.ts'
 import type { InputState } from './input.ts'
+import type { EditorError } from './ErrorPopup.tsx'
 
 const findMatchingBrace = (
   highlightedCode: HighlightedLine[],
@@ -205,6 +206,8 @@ export interface CanvasEditorCallbacks {
     contentWidth: number
     contentHeight: number
   }) => void
+  onErrorHover?: (error: EditorError | null) => void
+  onErrorPositionChange?: (position: { x: number; y: number }) => void
 }
 
 export interface CanvasEditorOptions {
@@ -258,6 +261,8 @@ export class CanvasEditor {
   private hoveredScrollbar: 'vertical' | 'horizontal' | null = null
   private lastDpr = window.devicePixelRatio || 1
   private popupDimensions = { width: 400, height: 300 }
+  private errors: EditorError[] = []
+  private hoveredError: EditorError | null = null
 
   private setFont(ctx: CanvasRenderingContext2D) {
     const theme = this.options.theme || defaultTheme
@@ -1587,6 +1592,11 @@ export class CanvasEditor {
       }
     })
 
+    // Draw error squiggles
+    if (this.errors.length > 0) {
+      this.drawErrorSquiggles(ctx, wrappedLines, theme)
+    }
+
     // Draw caret only if active
     if (this.isActive) {
       const visualPos = this.logicalToVisualPosition(
@@ -2033,6 +2043,196 @@ export class CanvasEditor {
     // This handles the case where constraining X causes text wrap and increased height
     if (significantChange && this.isActive) {
       this.updateFunctionSignature()
+    }
+  }
+
+  public setErrors(errors: EditorError[]) {
+    this.errors = errors
+    this.draw()
+  }
+
+  public checkErrorHover(x: number, y: number): EditorError | null {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+
+    this.setFont(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+    const textPadding = this.getTextPadding()
+
+    const adjustedY = y + this.scrollY
+    const adjustedX = x + this.scrollX
+
+    const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
+    const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+
+    const wrappedLine = wrappedLines[clampedVisualLineIndex]
+    if (!wrappedLine) return null
+
+    const visualColumn = this.getColumnFromX(adjustedX - textPadding, wrappedLine.text, ctx)
+    const logicalPosition = this.visualToLogicalPosition(
+      clampedVisualLineIndex,
+      visualColumn,
+      wrappedLines,
+    )
+
+    for (const error of this.errors) {
+      if (
+        error.line === logicalPosition.logicalLine &&
+        logicalPosition.logicalColumn >= error.startColumn &&
+        logicalPosition.logicalColumn < error.endColumn
+      ) {
+        return error
+      }
+    }
+
+    return null
+  }
+
+  public updateErrorHover(error: EditorError | null) {
+    if (this.hoveredError !== error) {
+      this.hoveredError = error
+      this.callbacks.onErrorHover?.(error)
+
+      if (error) {
+        const ctx = this.canvas.getContext('2d')
+        if (ctx) {
+          this.setFont(ctx)
+          const rect = this.canvas.getBoundingClientRect()
+          const textPadding = this.getTextPadding()
+
+          let preCalculatedContentY: number | undefined
+          let preCalculatedContentX: number | undefined
+
+          if (this.options.wordWrap) {
+            const wrappedLines = this.getWrappedLines(ctx)
+            const visualPos = this.logicalToVisualPosition(
+              error.line,
+              error.startColumn,
+              wrappedLines,
+            )
+            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+
+            const wrappedLine = wrappedLines[visualPos.visualLine]
+            if (wrappedLine) {
+              const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
+              preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+            }
+          } else {
+            preCalculatedContentY = this.padding + error.line * this.lineHeight
+            const line = this.inputState.lines[error.line] || ''
+            const textBeforeError = line.substring(0, error.startColumn)
+            preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+          }
+
+          const viewportX = preCalculatedContentX! - this.scrollX + rect.left
+          const viewportY = preCalculatedContentY! - this.scrollY + rect.top
+
+          this.callbacks.onErrorPositionChange?.({
+            x: viewportX,
+            y: viewportY,
+          })
+        }
+      }
+    }
+  }
+
+  private drawErrorSquiggles(
+    ctx: CanvasRenderingContext2D,
+    wrappedLines: WrappedLine[],
+    theme: Theme,
+  ) {
+    const textPadding = this.getTextPadding()
+
+    for (const error of this.errors) {
+      const visualStart = this.logicalToVisualPosition(error.line, error.startColumn, wrappedLines)
+      const visualEnd = this.logicalToVisualPosition(error.line, error.endColumn, wrappedLines)
+
+      if (visualStart.visualLine === visualEnd.visualLine) {
+        const wrappedLine = wrappedLines[visualStart.visualLine]
+        if (wrappedLine) {
+          const startText = wrappedLine.text.substring(0, visualStart.visualColumn)
+          const errorText = wrappedLine.text.substring(
+            visualStart.visualColumn,
+            visualEnd.visualColumn,
+          )
+
+          const startX = textPadding + ctx.measureText(startText).width
+          const errorWidth = ctx.measureText(errorText).width
+          const y = this.padding + visualStart.visualLine * this.lineHeight + this.lineHeight - 3
+
+          ctx.strokeStyle = theme.errorColor
+          ctx.lineWidth = 1.5
+          ctx.beginPath()
+
+          const squiggleHeight = 2
+          const squiggleWidth = 4
+          let currentX = startX
+          ctx.moveTo(currentX, y)
+
+          while (currentX < startX + errorWidth) {
+            const nextX = Math.min(currentX + squiggleWidth / 2, startX + errorWidth)
+            ctx.lineTo(
+              nextX,
+              y +
+                (Math.floor((currentX - startX) / (squiggleWidth / 2)) % 2 === 0
+                  ? squiggleHeight
+                  : 0),
+            )
+            currentX = nextX
+          }
+
+          ctx.stroke()
+        }
+      } else {
+        for (
+          let visualLine = visualStart.visualLine;
+          visualLine <= visualEnd.visualLine;
+          visualLine++
+        ) {
+          const wrappedLine = wrappedLines[visualLine]
+          if (!wrappedLine) continue
+
+          const y = this.padding + visualLine * this.lineHeight + this.lineHeight - 3
+          let startX: number, errorWidth: number
+
+          if (visualLine === visualStart.visualLine) {
+            const startText = wrappedLine.text.substring(0, visualStart.visualColumn)
+            const errorText = wrappedLine.text.substring(visualStart.visualColumn)
+            startX = textPadding + ctx.measureText(startText).width
+            errorWidth = ctx.measureText(errorText).width
+          } else if (visualLine === visualEnd.visualLine) {
+            const errorText = wrappedLine.text.substring(0, visualEnd.visualColumn)
+            startX = textPadding
+            errorWidth = ctx.measureText(errorText).width
+          } else {
+            startX = textPadding
+            errorWidth = ctx.measureText(wrappedLine.text).width
+          }
+
+          ctx.strokeStyle = theme.errorColor
+          ctx.lineWidth = 1.5
+          ctx.beginPath()
+
+          const squiggleHeight = 2
+          const squiggleWidth = 4
+          let currentX = startX
+          ctx.moveTo(currentX, y)
+
+          while (currentX < startX + errorWidth) {
+            const nextX = Math.min(currentX + squiggleWidth / 2, startX + errorWidth)
+            ctx.lineTo(
+              nextX,
+              y +
+                (Math.floor((currentX - startX) / (squiggleWidth / 2)) % 2 === 0
+                  ? squiggleHeight
+                  : 0),
+            )
+            currentX = nextX
+          }
+
+          ctx.stroke()
+        }
+      }
     }
   }
 }

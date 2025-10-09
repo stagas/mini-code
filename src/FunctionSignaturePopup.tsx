@@ -53,15 +53,6 @@ const FunctionSignaturePopup = ({
     const popupWidth = measuredSize.width
     const popupHeight = measuredSize.height
 
-    console.log('Positioning:', {
-      cursorX: position.x,
-      cursorY: position.y,
-      popupWidth,
-      popupHeight,
-      viewportWidth,
-      viewportHeight,
-    })
-
     // HORIZONTAL: Try to fit at natural width, shift left if needed
     const rightEdge = position.x + popupWidth
 
@@ -69,7 +60,6 @@ const FunctionSignaturePopup = ({
       // Fits at cursor position
       finalX = position.x
       maxWidth = undefined
-      console.log(`Fits at cursor (${position.x}), right edge: ${rightEdge}`)
     } else {
       // Would overflow right edge - try shifting left
       const shiftedX = viewportWidth - popupWidth - margin
@@ -78,12 +68,10 @@ const FunctionSignaturePopup = ({
         // Can fit by shifting left
         finalX = shiftedX
         maxWidth = undefined
-        console.log(`Shifted left to ${shiftedX} to fit`)
       } else {
         // Too wide even when shifted - constrain width
         finalX = margin
         maxWidth = viewportWidth - 2 * margin
-        console.log(`Constrained to width ${maxWidth}`)
       }
     }
 
@@ -91,29 +79,21 @@ const FunctionSignaturePopup = ({
     const spaceAbove = position.y - margin
     const spaceBelow = viewportHeight - (position.y + lineHeight) - margin
 
-    console.log(`Space: above=${spaceAbove}, below=${spaceBelow}, need=${popupHeight}`)
-
     if (spaceAbove >= popupHeight) {
       // Show above
       finalY = position.y - popupHeight - spacing
-      console.log(`Above at ${finalY}`)
     } else if (spaceBelow >= popupHeight) {
       // Show below
       finalY = position.y + lineHeight + spacing
-      console.log(`Below at ${finalY}`)
     } else {
       // Doesn't fit either way - use side with more space
       if (spaceAbove > spaceBelow) {
         finalY = margin
-        console.log(`Top-aligned at ${finalY}`)
       } else {
         finalY = position.y + lineHeight + spacing
-        console.log(`Below (clipped) at ${finalY}`)
       }
     }
   }
-
-  console.log('Final:', { finalX, finalY, maxWidth })
 
   // Find the effective parameter index for rest parameters
   const getEffectiveParameterIndex = (argIndex: number): number => {
