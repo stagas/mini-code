@@ -154,7 +154,6 @@ export const CodeEditor = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    canvasEditorRef.current?.setAutocompleteInputSource('keyboard')
     if (e.key === 'Escape') {
       // Hide autocomplete first, then signature popup
       if (autocompleteInfo) {
@@ -167,7 +166,7 @@ export const CodeEditor = ({
       return
     }
 
-    // Handle autocomplete interactions
+    // Handle autocomplete interactions (before general key handling)
     if (autocompleteInfo && autocompleteInfo.suggestions.length > 0) {
       if (e.key === 'Tab') {
         e.preventDefault()
@@ -205,6 +204,36 @@ export const CodeEditor = ({
         setAutocompleteSelectedIndex(0)
         return
       }
+    }
+
+    // Now handle autocomplete visibility based on key type
+    // Navigation keys should hide autocomplete
+    const isNavigationKey = [
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+    ].includes(e.key)
+
+    const isModifierOnly = ['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)
+    const hasModifier = e.ctrlKey || e.metaKey || e.altKey
+
+    // Enable autocomplete for:
+    // - Printable characters (typing)
+    // - Backspace/Delete (might still be typing after deletion)
+    const isPrintableChar = e.key.length === 1 && !hasModifier
+    const isEditingKey = ['Backspace', 'Delete'].includes(e.key)
+
+    if (isPrintableChar || isEditingKey) {
+      canvasEditorRef.current?.setAutocompleteInputSource('keyboard')
+    } else if (isNavigationKey || isModifierOnly || hasModifier) {
+      // Hide autocomplete on navigation or modifier keys
+      canvasEditorRef.current?.hideAutocomplete()
+      setAutocompleteSelectedIndex(0)
     }
 
     inputHandlerRef.current?.handleKeyDown(e, inputState)

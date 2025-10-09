@@ -19,20 +19,19 @@ const FunctionSignaturePopup = ({
   const popupRef = useRef<HTMLDivElement>(null)
   const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
 
-  // Measure popup dimensions after render
+  // Measure popup dimensions after every render
   useEffect(() => {
     if (visible && popupRef.current) {
       const rect = popupRef.current.getBoundingClientRect()
       if (rect.width > 0 && rect.height > 0) {
-        setMeasuredSize({ width: rect.width, height: rect.height })
-        onDimensionsChange?.(rect.width, rect.height)
+        const next = { width: rect.width, height: rect.height }
+        setMeasuredSize(next)
+        onDimensionsChange?.(next.width, next.height)
       }
     } else if (!visible) {
-      // Clear measured size when popup becomes invisible
       setMeasuredSize(null)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, signature, currentArgumentIndex])
+  })
   if (!visible) return null
 
   const viewportWidth = window.innerWidth
@@ -75,22 +74,33 @@ const FunctionSignaturePopup = ({
       }
     }
 
-    // VERTICAL: Prefer above, fallback to below
-    const spaceAbove = position.y - margin
-    const spaceBelow = viewportHeight - (position.y + lineHeight) - margin
+    // VERTICAL: Prefer above, fallback to below, ensure cursor is never covered
+    const cursorTop = position.y
+    const cursorBottom = position.y + lineHeight
+    const spaceAbove = cursorTop - margin
+    const spaceBelow = viewportHeight - cursorBottom - margin
 
-    if (spaceAbove >= popupHeight) {
-      // Show above
-      finalY = position.y - popupHeight - spacing
-    } else if (spaceBelow >= popupHeight) {
-      // Show below
-      finalY = position.y + lineHeight + spacing
+    if (spaceAbove >= popupHeight + spacing) {
+      // Show above cursor with spacing
+      finalY = cursorTop - popupHeight - spacing
+    } else if (spaceBelow >= popupHeight + spacing) {
+      // Show below cursor with spacing
+      finalY = cursorBottom + spacing
     } else {
-      // Doesn't fit either way - use side with more space
+      // Doesn't fit either way - choose side with more space and clamp
       if (spaceAbove > spaceBelow) {
-        finalY = margin
+        // Above: ensure bottom edge doesn't overlap cursor
+        finalY = Math.max(margin, cursorTop - popupHeight - spacing)
+        if (finalY + popupHeight > cursorTop - spacing) {
+          finalY = Math.max(margin, cursorTop - popupHeight - spacing)
+        }
       } else {
-        finalY = position.y + lineHeight + spacing
+        // Below: start after cursor line
+        finalY = cursorBottom + spacing
+        // Clamp to viewport if needed
+        if (finalY + popupHeight > viewportHeight - margin) {
+          finalY = Math.max(cursorBottom + spacing, viewportHeight - popupHeight - margin)
+        }
       }
     }
   }
