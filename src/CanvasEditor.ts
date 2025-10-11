@@ -1299,10 +1299,21 @@ export class CanvasEditor {
       const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
       const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
-      // Only prevent default if we can actually scroll in the intended direction
-      const canScrollHorizontally = effectiveDeltaX !== 0 && maxScrollX > 0
-      const canScrollVertically = effectiveDeltaY !== 0 && maxScrollY > 0
-      if (!(canScrollHorizontally || canScrollVertically)) {
+      // If nothing is scrollable, allow page to handle it
+      if (maxScrollX === 0 && maxScrollY === 0) {
+        return
+      }
+
+      // Determine dominant intent and only prevent default if that axis can scroll
+      const absX = Math.abs(e.deltaX)
+      const absY = Math.abs(e.deltaY)
+      const horizontalIntent = (e.shiftKey && absY > 0 && absX === 0) || absX > absY
+      // Treat very small remaining scroll room as non-scrollable to avoid trapping the page
+      const epsilon = 1
+      const canScrollHorizontally = effectiveDeltaX !== 0 && maxScrollX > epsilon
+      const canScrollVertically = effectiveDeltaY !== 0 && maxScrollY > epsilon
+      const shouldPrevent = horizontalIntent ? canScrollHorizontally : canScrollVertically
+      if (!shouldPrevent) {
         return
       }
 

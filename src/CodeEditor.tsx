@@ -24,6 +24,7 @@ interface CodeEditorProps {
   functionDefinitions?: Record<string, FunctionSignature>
   errors?: EditorError[]
   canvasRef?: React.RefObject<HTMLCanvasElement>
+  autoHeight?: boolean
 }
 
 export const CodeEditor = ({
@@ -35,6 +36,7 @@ export const CodeEditor = ({
   functionDefinitions = defaultFunctionDefinitions,
   errors = [],
   canvasRef: extCanvasRef,
+  autoHeight = false,
 }: CodeEditorProps) => {
   const ownCanvasRef = useRef<HTMLCanvasElement>(null)
   const canvasRef = extCanvasRef ?? ownCanvasRef
@@ -459,7 +461,12 @@ export const CodeEditor = ({
   return (
     <div
       ref={containerRef}
-      className="bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full"
+      className={
+        autoHeight
+          ? 'bg-neutral-800 text-white relative min-w-0'
+          : 'bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full'
+      }
+      style={autoHeight ? { height: `${Math.max(0, scrollMetrics.contentHeight)}px` } : undefined}
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
     >
       <canvas ref={canvasRef} className="absolute inset-0 outline-none" />
