@@ -10,6 +10,7 @@ import { type AutocompleteInfo } from './autocomplete.ts'
 import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
 import AutocompletePopup from './AutocompletePopup.tsx'
 import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
+import { CodeFile } from './CodeFile.ts'
 import { History } from './history.ts'
 import {
   getSelectedText,
@@ -21,8 +22,9 @@ import { MouseHandler } from './mouse.ts'
 import { type Theme, type Tokenizer } from './syntax.ts'
 
 interface CodeEditorProps {
-  value: string
-  setValue: (value: string) => void
+  codeFile?: CodeFile
+  value?: string
+  setValue?: (value: string) => void
   wordWrap?: boolean
   gutter?: boolean
   theme?: Theme
@@ -35,6 +37,7 @@ interface CodeEditorProps {
 }
 
 export const CodeEditor = ({
+  codeFile: externalCodeFile,
   value,
   setValue,
   wordWrap = false,
@@ -53,11 +56,16 @@ export const CodeEditor = ({
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasEditorRef = useRef<CanvasEditor | null>(null)
 
-  const [inputState, setInputStateInternal] = useState<InputState>({
-    caret: { line: 0, column: 0, columnIntent: 0 },
-    selection: null,
-    lines: value.split('\n'),
-  })
+  // Create internal CodeFile if not provided
+  const internalCodeFileRef = useRef<CodeFile | null>(null)
+  if (!internalCodeFileRef.current && !externalCodeFile) {
+    internalCodeFileRef.current = new CodeFile(value || '')
+  }
+  const codeFile = externalCodeFile || internalCodeFileRef.current!
+  const codeFileRef = useRef<CodeFile>(codeFile)
+  codeFileRef.current = codeFile
+
+  const [inputState, setInputStateInternal] = useState<InputState>(codeFile.inputState)
 
   // Function signature popup state
   const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
@@ -84,11 +92,10 @@ export const CodeEditor = ({
   const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
 
   const inputHandlerRef = useRef<InputHandler | null>(null)
-  const historyRef = useRef<History | null>(null)
   const mouseHandlerRef = useRef<MouseHandler | null>(null)
   const inputStateRef = useRef<InputState>(inputState)
   const setInputStateRef = useRef<(state: InputState) => void>(() => {})
-  const lastTextRef = useRef<string>(value)
+  const lastTextRef = useRef<string>(codeFile.value)
 
   const [scrollMetrics, setScrollMetrics] = useState<{
     scrollX: number
@@ -142,7 +149,13 @@ export const CodeEditor = ({
 
       if (linesChanged) {
         lastTextRef.current = newText
-        setValue(newText)
+        // Update CodeFile (which will trigger setValue if provided)
+        codeFileRef.current.inputState = newState
+        // Also call external setValue if provided (legacy mode)
+        setValue?.(newText)
+      } else {
+        // Even if text didn't change, update caret/selection in CodeFile
+        codeFileRef.current.inputState = newState
       }
     },
     [setValue],
@@ -174,22 +187,52 @@ export const CodeEditor = ({
     inputStateRef.current = inputState
   }, [inputState])
 
-  // Sync with external value changes
+  // Sync with external value changes (legacy mode)
   useEffect(() => {
-    const lines = value.split('\n')
-    const currentLines = inputStateRef.current.lines.join('\n')
-    if (currentLines !== value) {
-      lastTextRef.current = value
-      setInputStateInternal(prev => ({
-        ...prev,
-        lines,
-      }))
-      inputStateRef.current = {
-        ...inputStateRef.current,
-        lines,
+    if (value !== undefined && !externalCodeFile) {
+      const lines = value.split('\n')
+      const currentLines = inputStateRef.current.lines.join('\n')
+      if (currentLines !== value) {
+        lastTextRef.current = value
+        const newState = {
+          ...inputStateRef.current,
+          lines,
+        }
+        setInputStateInternal(newState)
+        inputStateRef.current = newState
+        codeFileRef.current.inputState = newState
       }
     }
-  }, [value])
+  }, [value, externalCodeFile])
+
+  // Subscribe to CodeFile changes and initialize state when external codeFile changes
+  useEffect(() => {
+    if (!externalCodeFile) return
+
+    // Initialize state from external codeFile when it changes
+    const state = externalCodeFile.getState()
+    setInputStateInternal(state.inputState)
+    inputStateRef.current = state.inputState
+    lastTextRef.current = state.value
+    canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+
+    // Subscribe to external CodeFile changes
+    const unsubscribe = externalCodeFile.subscribe(() => {
+      const state = externalCodeFile.getState()
+
+      // Update input state if it changed
+      if (state.inputState !== inputStateRef.current) {
+        setInputStateInternal(state.inputState)
+        inputStateRef.current = state.inputState
+        lastTextRef.current = state.value
+      }
+
+      // Update scroll position if it changed
+      canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+    })
+
+    return unsubscribe
+  }, [externalCodeFile])
 
   // Handle clipboard events
   const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -317,16 +360,15 @@ export const CodeEditor = ({
   }, [errors, hoveredError])
 
   useEffect(() => {
-    // Initialize history only once
-    if (!historyRef.current) {
-      historyRef.current = new History()
-    }
     // Initialize input handler only once
     if (!inputHandlerRef.current) {
       inputHandlerRef.current = new InputHandler(
         state => setInputStateRef.current(state),
-        historyRef.current,
+        codeFile.history,
       )
+    } else {
+      // Update history when codeFile changes
+      inputHandlerRef.current.setHistory(codeFile.history)
     }
 
     // Set up key override function for word wrap handling and external overrides
@@ -420,7 +462,7 @@ export const CodeEditor = ({
         return true // Let input handler process all other keys
       })
     }
-  }, [wordWrap, keyOverride]) // Re-run when wordWrap or keyOverride changes
+  }, [wordWrap, keyOverride, externalCodeFile]) // Re-run when wordWrap, keyOverride, or codeFile changes
 
   useEffect(() => {
     const unsub = subscribeActiveEditor(activeId => {
@@ -480,6 +522,9 @@ export const CodeEditor = ({
     },
     onScrollChange: (sx, sy) => {
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
+      // Update CodeFile scroll position
+      codeFileRef.current.scrollX = sx
+      codeFileRef.current.scrollY = sy
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
@@ -508,6 +553,9 @@ export const CodeEditor = ({
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
+        // Update CodeFile scroll position
+        codeFileRef.current.scrollX = sx
+        codeFileRef.current.scrollY = sy
       },
       onScrollMetricsChange: m =>
         setScrollMetrics(prev =>
@@ -553,6 +601,9 @@ export const CodeEditor = ({
     // Set initial active state
     const currentActive = getActiveEditor() === editorIdRef.current
     canvasEditorRef.current.setActive(currentActive)
+
+    // Restore scroll position from CodeFile
+    canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
 
     // Wire up word-wrap-aware movement to the input handler
     if (inputHandlerRef.current) {

@@ -117,6 +117,10 @@ export class InputHandler {
     this.keyOverride = fn
   }
 
+  setHistory(history: History) {
+    this.history = history
+  }
+
   handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
     // Call key override function if provided - if it returns false, skip default handling
     if (this.keyOverride && !this.keyOverride(event, currentState)) {

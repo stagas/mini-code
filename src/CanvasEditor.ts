@@ -1675,6 +1675,18 @@ export class CanvasEditor {
     const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
     this.publishScrollMetrics(ctx, width, height, content.width, content.height)
 
+    // Clamp scroll position to content bounds before drawing
+    const maxScrollX = Math.max(0, content.width - width)
+    const maxScrollY = Math.max(0, content.height - height)
+    const clampedScrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
+    const clampedScrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
+
+    if (clampedScrollX !== this.scrollX || clampedScrollY !== this.scrollY) {
+      this.scrollX = clampedScrollX
+      this.scrollY = clampedScrollY
+      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+    }
+
     // Draw gutter if enabled (before scroll transform so it stays fixed)
     if (this.options.gutter) {
       const gutterWidth = this.getGutterWidth()
