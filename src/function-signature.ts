@@ -15,6 +15,7 @@ export interface FunctionSignature {
 export interface FunctionCallInfo {
   functionName: string
   currentArgumentIndex: number
+  currentParameterName?: string
   openParenPosition: { line: number; column: number }
 }
 
@@ -105,6 +106,37 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
     returnType: 'number',
     description: 'Calculates the nth Fibonacci number',
   },
+  sin: {
+    name: 'sin',
+    parameters: [{ name: 'hz', type: 'number', description: 'Frequency in Hz' }],
+    returnType: 'number',
+    description: 'Sine wave oscillator',
+  },
+  slp: {
+    name: 'slp',
+    parameters: [
+      { name: 'in', type: 'number', description: 'Input signal' },
+      { name: 'cut', type: 'number', description: 'Cutoff frequency' },
+      { name: 'q', type: 'number', description: 'Resonance/Q factor' },
+    ],
+    returnType: 'number',
+    description: 'Low-pass filter',
+  },
+  tri: {
+    name: 'tri',
+    parameters: [{ name: 'hz', type: 'number', description: 'Frequency in Hz' }],
+    returnType: 'number',
+    description: 'Triangle wave oscillator',
+  },
+  out: {
+    name: 'out',
+    parameters: [
+      { name: 'L', type: 'number', description: 'Left channel output' },
+      { name: 'R', type: 'number', description: 'Right channel output' },
+    ],
+    returnType: 'void',
+    description: 'Audio output',
+  },
 }
 
 /**
@@ -116,9 +148,11 @@ export const findFunctionCallContext = (
   cursorColumn: number,
 ): FunctionCallInfo | null => {
   // Convert cursor position to global position for easier searching
+  const clampedCursorLine = Math.max(0, Math.min(cursorLine, lines.length))
   let cursorGlobalPos = 0
-  for (let i = 0; i < cursorLine; i++) {
-    cursorGlobalPos += lines[i].length + 1 // +1 for newline
+  for (let i = 0; i < clampedCursorLine; i++) {
+    const line = lines[i] ?? ''
+    cursorGlobalPos += line.length + 1 // +1 for newline
   }
   cursorGlobalPos += cursorColumn
 
@@ -161,6 +195,7 @@ export const findFunctionCallContext = (
       return {
         functionName: currentWord,
         currentArgumentIndex: 0,
+        currentParameterName: undefined,
         openParenPosition: { line: openLine, column: openColumn },
       }
     }
@@ -216,6 +251,7 @@ export const findFunctionCallContext = (
 
           // Find the function name before the opening parenthesis
           const beforeParen = code.substring(0, openParen.position).trim()
+          // Look for function name that might be preceded by operators like |> or other characters
           const functionNameMatch = beforeParen.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
 
           if (functionNameMatch && range < smallestRange) {
@@ -240,6 +276,7 @@ export const findFunctionCallContext = (
 
       // Find the function name before the opening parenthesis
       const beforeParen = code.substring(0, openParen.position).trim()
+      // Look for function name that might be preceded by operators like |> or other characters
       const functionNameMatch = beforeParen.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
 
       if (functionNameMatch && range < smallestRange) {
@@ -265,6 +302,7 @@ export const findFunctionCallContext = (
   let braceDepth = 0
   let inString = false
   let stringChar = ''
+  let currentParameterName: string | undefined
 
   for (let i = 0; i < textBetween.length; i++) {
     const char = textBetween[i]
@@ -293,9 +331,57 @@ export const findFunctionCallContext = (
     }
   }
 
+  // Try to extract the current parameter name if we're in a named parameter
+  const fullTextBetween = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+
+  // Find the start of the current argument by looking for the last comma at the top level
+  let lastCommaIndex = -1
+  let depth = 0
+  let inString2 = false
+  let stringChar2 = ''
+
+  for (let i = 0; i < fullTextBetween.length; i++) {
+    const char = fullTextBetween[i]
+
+    // Handle strings
+    if (!inString2 && (char === '"' || char === "'" || char === '`')) {
+      inString2 = true
+      stringChar2 = char
+      continue
+    }
+    if (inString2 && char === stringChar2 && fullTextBetween[i - 1] !== '\\') {
+      inString2 = false
+      continue
+    }
+    if (inString2) continue
+
+    // Handle nested structures
+    if (char === '(') depth++
+    else if (char === ')') depth--
+    else if (char === '[') depth++
+    else if (char === ']') depth--
+    else if (char === '{') depth++
+    else if (char === '}') depth--
+    else if (char === ',' && depth === 0) {
+      lastCommaIndex = i
+    }
+  }
+
+  const currentArgText =
+    lastCommaIndex >= 0
+      ? fullTextBetween.substring(lastCommaIndex + 1).trim()
+      : fullTextBetween.trim()
+
+  // Check if current argument is a named parameter (name:value format)
+  const namedParamMatch = currentArgText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/)
+  if (namedParamMatch) {
+    currentParameterName = namedParamMatch[1]
+  }
+
   return {
     functionName: bestMatch.functionName,
     currentArgumentIndex: commaCount,
+    currentParameterName,
     openParenPosition: { line: bestMatch.openLine, column: bestMatch.openColumn },
   }
 }

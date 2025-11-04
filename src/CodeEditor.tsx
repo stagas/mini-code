@@ -11,9 +11,14 @@ import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
 import AutocompletePopup from './AutocompletePopup.tsx'
 import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
 import { History } from './history.ts'
-import { getSelectedText, InputHandler, type InputState } from './input.ts'
+import {
+  getSelectedText,
+  InputHandler,
+  type InputState,
+  type KeyOverrideFunction,
+} from './input.ts'
 import { MouseHandler } from './mouse.ts'
-import { type Theme } from './syntax.ts'
+import { type Theme, type Tokenizer } from './syntax.ts'
 
 interface CodeEditorProps {
   value: string
@@ -21,10 +26,12 @@ interface CodeEditorProps {
   wordWrap?: boolean
   gutter?: boolean
   theme?: Theme
+  tokenizer?: Tokenizer
   functionDefinitions?: Record<string, FunctionSignature>
   errors?: EditorError[]
   canvasRef?: React.RefObject<HTMLCanvasElement>
   autoHeight?: boolean
+  keyOverride?: KeyOverrideFunction
 }
 
 export const CodeEditor = ({
@@ -33,10 +40,12 @@ export const CodeEditor = ({
   wordWrap = false,
   gutter = false,
   theme,
+  tokenizer,
   functionDefinitions = defaultFunctionDefinitions,
   errors = [],
   canvasRef: extCanvasRef,
   autoHeight = false,
+  keyOverride,
 }: CodeEditorProps) => {
   const ownCanvasRef = useRef<HTMLCanvasElement>(null)
   const canvasRef = extCanvasRef ?? ownCanvasRef
@@ -64,6 +73,7 @@ export const CodeEditor = ({
     x: 0,
     y: 0,
   })
+  const [autocompleteReady, setAutocompleteReady] = useState(false)
   const [autocompleteSelectedIndex, setAutocompleteSelectedIndex] = useState(0)
 
   // Error popup state
@@ -77,6 +87,8 @@ export const CodeEditor = ({
   const historyRef = useRef<History | null>(null)
   const mouseHandlerRef = useRef<MouseHandler | null>(null)
   const inputStateRef = useRef<InputState>(inputState)
+  const setInputStateRef = useRef<(state: InputState) => void>(() => {})
+  const lastTextRef = useRef<string>(value)
 
   const [scrollMetrics, setScrollMetrics] = useState<{
     scrollX: number
@@ -94,15 +106,52 @@ export const CodeEditor = ({
     contentHeight: 0,
   })
 
+  const isHandlingPointerRef = useRef(false)
+
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
     (newState: InputState) => {
+      const oldState = inputStateRef.current
+
+      // Check if state actually changed to prevent unnecessary updates
+      const caretChanged =
+        oldState.caret.line !== newState.caret.line ||
+        oldState.caret.column !== newState.caret.column ||
+        oldState.caret.columnIntent !== newState.caret.columnIntent
+
+      const selectionChanged =
+        (oldState.selection === null) !== (newState.selection === null) ||
+        (oldState.selection &&
+          newState.selection &&
+          (oldState.selection.start.line !== newState.selection.start.line ||
+            oldState.selection.start.column !== newState.selection.start.column ||
+            oldState.selection.end.line !== newState.selection.end.line ||
+            oldState.selection.end.column !== newState.selection.end.column))
+
+      const newText = newState.lines.join('\n')
+      const oldText = lastTextRef.current
+      const linesChanged = oldText !== newText
+
+      // Only update if something actually changed
+      if (!caretChanged && !selectionChanged && !linesChanged) {
+        return
+      }
+
       setInputStateInternal(newState)
       inputStateRef.current = newState
-      setValue(newState.lines.join('\n'))
+
+      if (linesChanged) {
+        lastTextRef.current = newText
+        setValue(newText)
+      }
     },
     [setValue],
   )
+
+  // Keep ref in sync with latest callback
+  useEffect(() => {
+    setInputStateRef.current = setInputState
+  }, [setInputState])
 
   // Update textarea content when input state changes
   useEffect(() => {
@@ -130,6 +179,7 @@ export const CodeEditor = ({
     const lines = value.split('\n')
     const currentLines = inputStateRef.current.lines.join('\n')
     if (currentLines !== value) {
+      lastTextRef.current = value
       setInputStateInternal(prev => ({
         ...prev,
         lines,
@@ -251,6 +301,21 @@ export const CodeEditor = ({
     canvasEditorRef.current?.setErrors(errors)
   }, [errors])
 
+  // Hide error popup if the hovered error was removed from the list
+  useEffect(() => {
+    if (!hoveredError) return
+    const exists = errors.some(
+      e =>
+        e.line === hoveredError.line &&
+        e.startColumn === hoveredError.startColumn &&
+        e.endColumn === hoveredError.endColumn &&
+        e.message === hoveredError.message,
+    )
+    if (!exists) {
+      setHoveredError(null)
+    }
+  }, [errors, hoveredError])
+
   useEffect(() => {
     // Initialize history only once
     if (!historyRef.current) {
@@ -258,9 +323,104 @@ export const CodeEditor = ({
     }
     // Initialize input handler only once
     if (!inputHandlerRef.current) {
-      inputHandlerRef.current = new InputHandler(setInputState, historyRef.current)
+      inputHandlerRef.current = new InputHandler(
+        state => setInputStateRef.current(state),
+        historyRef.current,
+      )
     }
-  }, []) // Remove setInputState dependency since it's stable and we check if handler exists
+
+    // Set up key override function for word wrap handling and external overrides
+    if (inputHandlerRef.current) {
+      inputHandlerRef.current.setKeyOverride((event, currentState) => {
+        // First, call external key override if provided
+        if (keyOverride) {
+          const result = keyOverride(event, currentState)
+          if (!result) {
+            return false // External override handled the key
+          }
+        }
+
+        // Handle Alt+Arrow combinations for line moving (bypass word wrap logic)
+        if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+          return true // Let input handler process it
+        }
+
+        // Handle word wrap arrow keys
+        if (wordWrap && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+          event.preventDefault()
+          const dir = event.key === 'ArrowUp' ? 'up' : 'down'
+          const caret = currentState.caret
+          const next = canvasEditorRef.current?.getCaretForVerticalMove(
+            dir,
+            caret.line,
+            caret.columnIntent,
+          )
+          if (next && (next.line !== caret.line || next.column !== caret.column)) {
+            const newState: InputState = {
+              ...currentState,
+              caret: {
+                line: next.line,
+                column: next.column,
+                columnIntent: next.columnIntent ?? caret.columnIntent,
+              },
+              selection: event.shiftKey
+                ? currentState.selection
+                  ? {
+                      start: currentState.selection.start,
+                      end: { line: next.line, column: next.column },
+                    }
+                  : {
+                      start: { line: caret.line, column: caret.column },
+                      end: { line: next.line, column: next.column },
+                    }
+                : null,
+            }
+            setInputStateRef.current(newState)
+            return false // We handled it
+          }
+          return true // Fall back to default handling
+        }
+
+        if (
+          wordWrap &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+        ) {
+          event.preventDefault()
+          const dir = event.key === 'ArrowLeft' ? 'left' : 'right'
+          const caret = currentState.caret
+          const next = canvasEditorRef.current?.getCaretForHorizontalMove(
+            dir,
+            caret.line,
+            caret.column,
+          )
+          if (next) {
+            const newState: InputState = {
+              ...currentState,
+              caret: { line: next.line, column: next.column, columnIntent: next.columnIntent },
+              selection: event.shiftKey
+                ? currentState.selection
+                  ? {
+                      start: currentState.selection.start,
+                      end: { line: next.line, column: next.column },
+                    }
+                  : {
+                      start: { line: caret.line, column: caret.column },
+                      end: { line: next.line, column: next.column },
+                    }
+                : null,
+            }
+            setInputStateRef.current(newState)
+            return false // We handled it
+          }
+          return true // Fall back to default handling
+        }
+
+        return true // Let input handler process all other keys
+      })
+    }
+  }, [wordWrap, keyOverride]) // Re-run when wordWrap or keyOverride changes
 
   useEffect(() => {
     const unsub = subscribeActiveEditor(activeId => {
@@ -305,9 +465,65 @@ export const CodeEditor = ({
         // Save the new state after the change
         inputHandlerRef.current.saveAfterStateToHistory(newState)
       }
-      setInputState(newState)
+      setInputStateRef.current(newState)
     })
   }, []) // Remove setInputState dependency since it's stable
+
+  // Store callbacks in refs to avoid recreating CanvasEditor
+  const callbacksRef = useRef<CanvasEditorCallbacks>({
+    onFunctionCallChange: setFunctionCallInfo,
+    onPopupPositionChange: setPopupPosition,
+    onAutocompleteChange: setAutocompleteInfo,
+    onAutocompletePositionChange: pos => {
+      setAutocompletePosition(pos)
+      if (pos.x !== 0 || pos.y !== 0) setAutocompleteReady(true)
+    },
+    onScrollChange: (sx, sy) => {
+      mouseHandlerRef.current?.setScrollOffset(sx, sy)
+    },
+    onScrollMetricsChange: m =>
+      setScrollMetrics(prev =>
+        prev.scrollX !== m.scrollX ||
+        prev.scrollY !== m.scrollY ||
+        prev.viewportWidth !== m.viewportWidth ||
+        prev.viewportHeight !== m.viewportHeight ||
+        prev.contentWidth !== m.contentWidth ||
+        prev.contentHeight !== m.contentHeight
+          ? m
+          : prev,
+      ),
+    onErrorHover: setHoveredError,
+    onErrorPositionChange: setErrorPosition,
+  })
+
+  // Keep callbacks ref up to date
+  useEffect(() => {
+    callbacksRef.current = {
+      onFunctionCallChange: setFunctionCallInfo,
+      onPopupPositionChange: setPopupPosition,
+      onAutocompleteChange: setAutocompleteInfo,
+      onAutocompletePositionChange: pos => {
+        setAutocompletePosition(pos)
+        if (pos.x !== 0 || pos.y !== 0) setAutocompleteReady(true)
+      },
+      onScrollChange: (sx, sy) => {
+        mouseHandlerRef.current?.setScrollOffset(sx, sy)
+      },
+      onScrollMetricsChange: m =>
+        setScrollMetrics(prev =>
+          prev.scrollX !== m.scrollX ||
+          prev.scrollY !== m.scrollY ||
+          prev.viewportWidth !== m.viewportWidth ||
+          prev.viewportHeight !== m.viewportHeight ||
+          prev.contentWidth !== m.contentWidth ||
+          prev.contentHeight !== m.contentHeight
+            ? m
+            : prev,
+        ),
+      onErrorHover: setHoveredError,
+      onErrorPositionChange: setErrorPosition,
+    }
+  })
 
   // Initialize canvas editor
   useEffect(() => {
@@ -315,24 +531,18 @@ export const CodeEditor = ({
     const container = containerRef.current
     if (!canvas || !container) return
 
-    const callbacks: CanvasEditorCallbacks = {
-      onFunctionCallChange: setFunctionCallInfo,
-      onPopupPositionChange: setPopupPosition,
-      onAutocompleteChange: setAutocompleteInfo,
-      onAutocompletePositionChange: setAutocompletePosition,
-      onScrollChange: (sx, sy) => {
-        mouseHandlerRef.current?.setScrollOffset(sx, sy)
+    canvasEditorRef.current = new CanvasEditor(
+      canvas,
+      container,
+      inputState,
+      callbacksRef.current,
+      {
+        wordWrap,
+        gutter,
+        theme,
+        tokenizer,
       },
-      onScrollMetricsChange: m => setScrollMetrics(m),
-      onErrorHover: setHoveredError,
-      onErrorPositionChange: setErrorPosition,
-    }
-
-    canvasEditorRef.current = new CanvasEditor(canvas, container, inputState, callbacks, {
-      wordWrap,
-      gutter,
-      theme,
-    })
+    )
 
     // Set function definitions for autocomplete
     canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
@@ -351,13 +561,17 @@ export const CodeEditor = ({
           canvasEditorRef.current?.getCaretForHorizontalMove(direction, line, column) ?? null,
         getCaretForVerticalMove: (direction, line, columnIntent) =>
           canvasEditorRef.current?.getCaretForVerticalMove(direction, line, columnIntent) ?? null,
+        getCaretForLineStart: (line, column) =>
+          canvasEditorRef.current?.getCaretForLineStart(line, column) ?? null,
+        getCaretForLineEnd: (line, column) =>
+          canvasEditorRef.current?.getCaretForLineEnd(line, column) ?? null,
       })
     }
 
     return () => {
       canvasEditorRef.current?.destroy()
     }
-  }, [wordWrap, gutter, theme])
+  }, [wordWrap, gutter, theme, tokenizer])
 
   // Update canvas editor state when inputState changes
   useEffect(() => {
@@ -370,7 +584,7 @@ export const CodeEditor = ({
 
     const handlePointerDown = (event: PointerEvent) => {
       event.preventDefault()
-      setActiveEditor(editorIdRef.current)
+      isHandlingPointerRef.current = true
       canvasEditorRef.current?.setAutocompleteInputSource('mouse')
 
       const rect = canvas.getBoundingClientRect()
@@ -380,16 +594,15 @@ export const CodeEditor = ({
       // Check if clicking on scrollbar
       const scrollbar = canvasEditorRef.current?.checkScrollbarHover(x, y)
       if (scrollbar) {
+        setActiveEditor(editorIdRef.current)
         const isThumb = canvasEditorRef.current?.handleScrollbarClick(x, y, scrollbar)
         if (isThumb) {
           isDraggingScrollbarRef.current = scrollbar
           dragStartRef.current = { x: event.clientX, y: event.clientY }
         }
+        isHandlingPointerRef.current = false
         return
       }
-
-      // Focus first to avoid flicker then process pointer so caret updates after focus
-      textareaRef.current?.focus()
 
       if (wordWrap && canvasEditorRef.current) {
         // Set up word wrap coordinate converter for MouseHandler
@@ -404,6 +617,18 @@ export const CodeEditor = ({
       } else {
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
+
+      // Update canvas editor state synchronously before activating to ensure ensureCaretVisible uses the correct caret position
+      canvasEditorRef.current?.updateState(inputStateRef.current)
+
+      // Activate and focus after updating state so ensureCaretVisible sees the correct position
+      setActiveEditor(editorIdRef.current)
+      textareaRef.current?.focus({ preventScroll: true })
+
+      // Clear the flag after a small delay to ensure focus event has been processed
+      setTimeout(() => {
+        isHandlingPointerRef.current = false
+      }, 0)
     }
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -472,92 +697,23 @@ export const CodeEditor = ({
       <canvas ref={canvasRef} className="absolute inset-0 outline-none" />
       <textarea
         ref={textareaRef}
-        className="absolute inset-0 opacity-0 z-50"
         spellCheck={false}
         autoCorrect="off"
         tabIndex={0}
-        style={{ pointerEvents: 'none' }}
+        style={{
+          position: 'absolute',
+          left: '-9999px',
+          width: '1px',
+          height: '1px',
+          pointerEvents: 'none',
+        }}
         onContextMenu={e => {
           e.preventDefault()
           e.stopPropagation()
         }}
         onKeyDown={e => {
           setActiveEditor(editorIdRef.current)
-
-          // Handle Alt+Arrow combinations for line moving (bypass word wrap logic)
-          if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-            handleKeyDown(e)
-            return
-          }
-
-          if (wordWrap && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-            e.preventDefault()
-            const dir = e.key === 'ArrowUp' ? 'up' : 'down'
-            const caret = inputStateRef.current.caret
-            const next = canvasEditorRef.current?.getCaretForVerticalMove(
-              dir,
-              caret.line,
-              caret.columnIntent,
-            )
-            if (next && (next.line !== caret.line || next.column !== caret.column)) {
-              const newState: InputState = {
-                ...inputStateRef.current,
-                caret: { line: next.line, column: next.column, columnIntent: caret.columnIntent },
-                selection: e.shiftKey
-                  ? inputStateRef.current.selection
-                    ? {
-                        start: inputStateRef.current.selection.start,
-                        end: { line: next.line, column: next.column },
-                      }
-                    : {
-                        start: { line: caret.line, column: caret.column },
-                        end: { line: next.line, column: next.column },
-                      }
-                  : null,
-              }
-              setInputState(newState)
-            } else {
-              // If wrapped movement didn' work, fall back to normal arrow key handling
-              handleKeyDown(e)
-            }
-          } else if (
-            wordWrap &&
-            !e.ctrlKey &&
-            !e.metaKey &&
-            (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
-          ) {
-            e.preventDefault()
-            const dir = e.key === 'ArrowLeft' ? 'left' : 'right'
-            const caret = inputStateRef.current.caret
-            const next = canvasEditorRef.current?.getCaretForHorizontalMove(
-              dir,
-              caret.line,
-              caret.column,
-            )
-            if (next) {
-              const newState: InputState = {
-                ...inputStateRef.current,
-                caret: { line: next.line, column: next.column, columnIntent: next.columnIntent },
-                selection: e.shiftKey
-                  ? inputStateRef.current.selection
-                    ? {
-                        start: inputStateRef.current.selection.start,
-                        end: { line: next.line, column: next.column },
-                      }
-                    : {
-                        start: { line: caret.line, column: caret.column },
-                        end: { line: next.line, column: next.column },
-                      }
-                  : null,
-              }
-              setInputState(newState)
-            } else {
-              // If wrapped movement didn't work, fall back to normal arrow key handling
-              handleKeyDown(e)
-            }
-          } else {
-            handleKeyDown(e)
-          }
+          handleKeyDown(e)
         }}
         onCopy={handleCopy}
         onPaste={handlePaste}
@@ -566,12 +722,16 @@ export const CodeEditor = ({
           // Allow natural focus changes between editors
         }}
         onFocus={() => {
-          setActiveEditor(editorIdRef.current)
+          // Don't activate if we're in the middle of a pointer down handler
+          // as it will already handle activation with the correct state
+          if (!isHandlingPointerRef.current) {
+            setActiveEditor(editorIdRef.current)
+          }
         }}
       />
 
       {/* Autocomplete popup */}
-      {isActive && autocompleteInfo && (
+      {isActive && autocompleteInfo && autocompleteReady && (
         <AutocompletePopup
           suggestions={autocompleteInfo.suggestions}
           selectedIndex={autocompleteSelectedIndex}
@@ -602,6 +762,7 @@ export const CodeEditor = ({
             setInputState(newState)
             canvasEditorRef.current?.hideAutocomplete()
             setAutocompleteSelectedIndex(0)
+            setAutocompleteReady(false)
           }}
         />
       )}

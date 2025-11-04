@@ -4,7 +4,9 @@ import {
   type Token,
   getTokenColor,
   type Theme,
+  type Tokenizer,
   defaultTheme,
+  defaultTokenizer,
 } from './syntax.ts'
 import {
   findFunctionCallContext,
@@ -93,18 +95,23 @@ const findMatchingBrace = (
   }
 
   // Convert cursor position to global position
+  const clampedCursorLine = Math.max(0, Math.min(cursorLine, highlightedCode.length))
   let cursorGlobalPos = 0
-  for (let i = 0; i < cursorLine; i++) {
+  for (let i = 0; i < clampedCursorLine; i++) {
     const line = highlightedCode[i]
-    cursorGlobalPos += line.text.length + 1 // +1 for newline
+    const textLength = (line && typeof line.text === 'string') ? line.text.length : 0
+    cursorGlobalPos += textLength + 1 // +1 for newline
   }
   cursorGlobalPos += cursorColumn
 
   // Helper function to calculate global position for a brace
   const getBraceGlobalPos = (brace: { line: number; position: number }): number => {
     let globalPos = 0
-    for (let i = 0; i < brace.line; i++) {
-      globalPos += highlightedCode[i].text.length + 1 // +1 for newline
+    const upTo = Math.max(0, Math.min(brace.line, highlightedCode.length))
+    for (let i = 0; i < upTo; i++) {
+      const line = highlightedCode[i]
+      const textLength = (line && typeof line.text === 'string') ? line.text.length : 0
+      globalPos += textLength + 1 // +1 for newline
     }
     globalPos += brace.position
     return globalPos
@@ -214,6 +221,7 @@ export interface CanvasEditorOptions {
   wordWrap?: boolean
   gutter?: boolean
   theme?: Theme
+  tokenizer?: Tokenizer
 }
 
 interface WrappedLine {
@@ -250,6 +258,9 @@ export class CanvasEditor {
   private readonly padding = 16
   private readonly lineHeight = 20
   private isActive = false
+  private autocompleteRaf: number | null = null
+  private lastCaretContentX: number | null = null
+  private lastCaretContentY: number | null = null
   private signatureEnabled = true
   private scrollbarWidth = 10
   private scrollMetrics = {
@@ -263,6 +274,7 @@ export class CanvasEditor {
   private popupDimensions = { width: 400, height: 300 }
   private errors: EditorError[] = []
   private hoveredError: EditorError | null = null
+  private isHoveringGutter: boolean = false
 
   private setFont(ctx: CanvasRenderingContext2D) {
     const theme = this.options.theme || defaultTheme
@@ -305,6 +317,40 @@ export class CanvasEditor {
     ctx.stroke()
   }
 
+  // Draw a line arrow for the ligature sequence "->" with given color and width reservation
+  private drawLineArrowLigature(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    color: string,
+    reservedWidth: number,
+  ) {
+    const centerY = y + this.lineHeight / 2 - 3.5
+    const startX = x + reservedWidth * 0.15
+    const endX = x + reservedWidth * 0.85
+
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.25
+
+    // Shaft
+    ctx.beginPath()
+    ctx.moveTo(startX, centerY)
+    ctx.lineTo(endX, centerY)
+    ctx.stroke()
+
+    // Arrowhead
+    const head = Math.min(6, reservedWidth * 0.5)
+    const upY = centerY - head * 0.6
+    const downY = centerY + head * 0.6
+
+    ctx.beginPath()
+    ctx.moveTo(endX, centerY)
+    ctx.lineTo(endX - head, upY)
+    ctx.moveTo(endX, centerY)
+    ctx.lineTo(endX - head, downY)
+    ctx.stroke()
+  }
+
   // Stream through tokens and render text replacing cross-token "|>" with a custom arrow
   private drawTokensWithCustomLigatures(
     ctx: CanvasRenderingContext2D,
@@ -337,12 +383,24 @@ export class CanvasEditor {
           currentX += reserved
 
           if (nextCharInSame === '>') {
-            // Consume the '>' in the same token
             i++
             continue
           }
 
-          // We will skip exactly the first character of the next token (the '>')
+          pendingSkipNextLeading = true
+          break
+        }
+
+        if (ch === '-' && (nextCharInSame === '>' || nextCharAcross === '>')) {
+          const reserved = ctx.measureText('->').width
+          this.drawLineArrowLigature(ctx, currentX, y, color, reserved)
+          currentX += reserved
+
+          if (nextCharInSame === '>') {
+            i++
+            continue
+          }
+
           pendingSkipNextLeading = true
           break
         }
@@ -393,7 +451,7 @@ export class CanvasEditor {
     this.container = container
     this.inputState = initialState
     this.callbacks = callbacks
-    this.options = options
+    this.options = { tokenizer: defaultTokenizer, ...options }
 
     this.updateCanvasSize()
     this.draw()
@@ -444,11 +502,12 @@ export class CanvasEditor {
     // Get syntax highlighting for token-aware wrapping
     const code = this.inputState.lines.join('\n')
     const theme = this.options.theme || defaultTheme
+    const tokenizer = this.options.tokenizer || defaultTokenizer
     let highlightedCode: HighlightedLine[]
     if (this.highlightCache && this.highlightCache.code === code) {
       highlightedCode = this.highlightCache.result
     } else {
-      highlightedCode = highlightCode(code, 'javascript', theme)
+      highlightedCode = highlightCode(code, tokenizer, theme)
     }
 
     const wrappedLines: WrappedLine[] = []
@@ -1055,7 +1114,7 @@ export class CanvasEditor {
     direction: 'up' | 'down',
     line: number,
     columnIntent: number,
-  ): { line: number; column: number } | null {
+  ): { line: number; column: number; columnIntent?: number } | null {
     if (!this.options.wordWrap) {
       return null // Fall back to normal handling
     }
@@ -1090,14 +1149,90 @@ export class CanvasEditor {
     const currentWrapped = wrappedLines[currentVisual.visualLine]
     const nextWrapped = wrappedLines[nextVisualLine]
 
-    // columnIntent now represents the visual position within a wrapped segment (0, 1, 2, etc.)
-    // We need to map this to the target wrapped segment
-    const clampedVisualIntent = Math.min(Math.max(columnIntent, 0), nextWrapped.text.length)
+    // Determine the visual column intent
+    // When at the start of a wrapped segment (visualColumn 0), always use 0 as intent
+    // When at end or in an empty line, preserve the intent
+    // Otherwise, use the max of current position and stored intent
+    const atStartOfSegment = currentVisual.visualColumn === 0 && currentColumn > 0
+    const atEndOfLine = currentVisual.visualColumn >= currentWrapped.text.length
+    const visualIntent = atStartOfSegment ? 0 : (atEndOfLine ? columnIntent : Math.max(currentVisual.visualColumn, columnIntent))
+    const clampedVisualIntent = Math.min(Math.max(visualIntent, 0), nextWrapped.text.length)
 
     // Convert visual position to logical position within the target wrapped segment
     const logical = this.visualToLogicalPosition(nextVisualLine, clampedVisualIntent, wrappedLines)
 
-    return { line: logical.logicalLine, column: logical.logicalColumn }
+    // Preserve the unclamped visual intent so column position is remembered through short lines
+    return {
+      line: logical.logicalLine,
+      column: logical.logicalColumn,
+      columnIntent: visualIntent // Preserve the desired visual column
+    }
+  }
+
+  public getCaretForLineStart(
+    line: number,
+    column: number,
+  ): { line: number; column: number; columnIntent: number } | null {
+    if (!this.options.wordWrap) {
+      return null // Fall back to normal handling
+    }
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+
+    this.setFont(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+
+    // Find current visual position
+    const currentVisual = this.logicalToVisualPosition(line, column, wrappedLines)
+    if (currentVisual.visualLine < 0 || currentVisual.visualLine >= wrappedLines.length) {
+      return null
+    }
+
+    // Move to start of current wrapped line segment
+    const wrapped = wrappedLines[currentVisual.visualLine]
+    const logical = this.visualToLogicalPosition(currentVisual.visualLine, 0, wrappedLines)
+
+    return {
+      line: logical.logicalLine,
+      column: logical.logicalColumn,
+      columnIntent: logical.logicalColumn,
+    }
+  }
+
+  public getCaretForLineEnd(
+    line: number,
+    column: number,
+  ): { line: number; column: number; columnIntent: number } | null {
+    if (!this.options.wordWrap) {
+      return null // Fall back to normal handling
+    }
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+
+    this.setFont(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+
+    // Find current visual position
+    const currentVisual = this.logicalToVisualPosition(line, column, wrappedLines)
+    if (currentVisual.visualLine < 0 || currentVisual.visualLine >= wrappedLines.length) {
+      return null
+    }
+
+    // Move to end of current wrapped line segment
+    const wrapped = wrappedLines[currentVisual.visualLine]
+    const logical = this.visualToLogicalPosition(
+      currentVisual.visualLine,
+      wrapped.text.length,
+      wrappedLines,
+    )
+
+    return {
+      line: logical.logicalLine,
+      column: logical.logicalColumn,
+      columnIntent: logical.logicalColumn,
+    }
   }
 
   private getColumnFromX(x: number, line: string, ctx: CanvasRenderingContext2D): number {
@@ -1167,6 +1302,10 @@ export class CanvasEditor {
     if (this.resizeObserver) {
       this.resizeObserver.disconnect()
       this.resizeObserver = null
+    }
+    if (this.autocompleteRaf !== null) {
+      cancelAnimationFrame(this.autocompleteRaf)
+      this.autocompleteRaf = null
     }
   }
 
@@ -1362,15 +1501,25 @@ export class CanvasEditor {
     contentWidth: number,
     contentHeight: number,
   ) {
+    // Only notify if metrics actually changed to prevent infinite update loops
+    const changed =
+      this.scrollMetrics.viewportWidth !== viewportWidth ||
+      this.scrollMetrics.viewportHeight !== viewportHeight ||
+      this.scrollMetrics.contentWidth !== contentWidth ||
+      this.scrollMetrics.contentHeight !== contentHeight
+
     this.scrollMetrics = { viewportWidth, viewportHeight, contentWidth, contentHeight }
-    this.callbacks.onScrollMetricsChange?.({
-      scrollX: this.scrollX,
-      scrollY: this.scrollY,
-      viewportWidth,
-      viewportHeight,
-      contentWidth,
-      contentHeight,
-    })
+
+    if (changed) {
+      this.callbacks.onScrollMetricsChange?.({
+        scrollX: this.scrollX,
+        scrollY: this.scrollY,
+        viewportWidth,
+        viewportHeight,
+        contentWidth,
+        contentHeight,
+      })
+    }
   }
 
   private ensureCaretVisible() {
@@ -1509,11 +1658,12 @@ export class CanvasEditor {
     const code = this.inputState.lines.join('\n')
     let highlightedCode: HighlightedLine[]
     const theme = this.options.theme || defaultTheme
+    const tokenizer = this.options.tokenizer || defaultTokenizer
 
     if (this.highlightCache && this.highlightCache.code === code) {
       highlightedCode = this.highlightCache.result
     } else {
-      highlightedCode = highlightCode(code, 'javascript', theme)
+      highlightedCode = highlightCode(code, tokenizer, theme)
       this.highlightCache = { code, result: highlightedCode }
     }
 
@@ -1566,7 +1716,16 @@ export class CanvasEditor {
 
         if (isFirstVisualLine) {
           const gutterWidth = this.getGutterWidth()
-          ctx.fillStyle = theme.gutterText
+          const hasErrorOnLine = this.errors.some(e => e.line === wrappedLine.logicalLine)
+
+          if (hasErrorOnLine) {
+            // Draw red background strip for the line's gutter area
+            ctx.fillStyle = theme.errorColor
+            ctx.fillRect(0, y - 3, this.padding + gutterWidth - 1, this.lineHeight - 2)
+          }
+
+          // Draw the line number on top
+          ctx.fillStyle = hasErrorOnLine ? '#ffffff' : theme.gutterText
           ctx.textAlign = 'right'
           ctx.fillText(lineNumber.toString(), this.padding + gutterWidth - 8, y)
           ctx.textAlign = 'left' // Reset text alignment
@@ -1629,6 +1788,10 @@ export class CanvasEditor {
 
         ctx.fillStyle = theme.caret
         ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
+
+        // Record caret content-space coordinates precisely for popup positioning
+        this.lastCaretContentX = textPadding + ctx.measureText(caretText).width
+        this.lastCaretContentY = this.padding + visualPos.visualLine * this.lineHeight
       }
     }
 
@@ -1707,7 +1870,7 @@ export class CanvasEditor {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
         this.setFont(ctx)
-        const rect = this.canvas.getBoundingClientRect()
+        const rect = this.container.getBoundingClientRect()
         const textPadding = this.getTextPadding()
 
         // For word wrap mode, calculate visual line positions
@@ -1771,9 +1934,16 @@ export class CanvasEditor {
           y: position.y,
         }
 
-        // Always update popup position so it can recalculate dynamically
+        // Only update if position actually changed
+        const positionChanged =
+          !this.lastPopupPosition ||
+          this.lastPopupPosition.x !== newPopupPosition.x ||
+          this.lastPopupPosition.y !== newPopupPosition.y
+
         this.lastPopupPosition = newPopupPosition
-        this.callbacks.onPopupPositionChange?.(newPopupPosition)
+        if (positionChanged) {
+          this.callbacks.onPopupPositionChange?.(newPopupPosition)
+        }
       }
     } else if (this.lastPopupPosition !== null) {
       // Clear popup position when there's no call info
@@ -1982,10 +2152,11 @@ export class CanvasEditor {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
         this.setFont(ctx)
-        const rect = this.canvas.getBoundingClientRect()
+        const rect = this.container.getBoundingClientRect()
 
         let preCalculatedCaretContentY: number | undefined
         let preCalculatedCaretContentX: number | undefined
+        const textPadding = this.getTextPadding()
         if (this.options.wordWrap) {
           const wrappedLines = this.getWrappedLines(ctx)
           const caretVisualPos = this.logicalToVisualPosition(
@@ -1994,7 +2165,6 @@ export class CanvasEditor {
             wrappedLines,
           )
           preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight
-          const textPadding = this.getTextPadding()
           const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
           if (caretWrappedLine) {
             const textBeforeCaretInSegment = caretWrappedLine.text.substring(
@@ -2004,29 +2174,55 @@ export class CanvasEditor {
             preCalculatedCaretContentX =
               textPadding + ctx.measureText(textBeforeCaretInSegment).width
           }
+        } else {
+          // Non-wrapped: compute caret X/Y in content space
+          const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
+          const textBeforeCaret = caretLine.substring(0, this.inputState.caret.column)
+          preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaret).width
+          preCalculatedCaretContentY = this.padding + this.inputState.caret.line * this.lineHeight
         }
 
-        const position = calculateAutocompletePosition(
-          this.inputState.caret.line,
-          this.inputState.caret.column,
-          this.padding,
-          this.lineHeight,
-          ctx,
-          this.inputState.lines,
-          rect,
-          this.scrollX,
-          this.scrollY,
-          preCalculatedCaretContentY,
-          preCalculatedCaretContentX,
-        )
+        const computeAndPublish = () => {
+          const contentX = this.lastCaretContentX ?? preCalculatedCaretContentX
+          const contentY = this.lastCaretContentY ?? preCalculatedCaretContentY
+          const position = calculateAutocompletePosition(
+            this.inputState.caret.line,
+            this.inputState.caret.column,
+            textPadding,
+            this.lineHeight,
+            ctx,
+            this.inputState.lines,
+            rect,
+            this.scrollX,
+            this.scrollY,
+            contentY,
+            contentX,
+          )
 
-        const newPosition = {
-          x: position.x,
-          y: position.y,
+          const newPosition = { x: Math.round(position.x), y: Math.round(position.y) }
+
+          // Only update if position actually changed
+          const positionChanged =
+            !this.lastAutocompletePosition ||
+            this.lastAutocompletePosition.x !== newPosition.x ||
+            this.lastAutocompletePosition.y !== newPosition.y
+
+          this.lastAutocompletePosition = newPosition
+          if (positionChanged) {
+            this.callbacks.onAutocompletePositionChange?.(newPosition)
+          }
         }
 
-        this.lastAutocompletePosition = newPosition
-        this.callbacks.onAutocompletePositionChange?.(newPosition)
+        // Schedule three frames to ensure caret/layout state is finalized before measuring
+        if (this.autocompleteRaf !== null) cancelAnimationFrame(this.autocompleteRaf)
+        this.autocompleteRaf = requestAnimationFrame(() => {
+          this.autocompleteRaf = requestAnimationFrame(() => {
+            this.autocompleteRaf = requestAnimationFrame(() => {
+              computeAndPublish()
+              this.autocompleteRaf = null
+            })
+          })
+        })
       }
     } else if (this.lastAutocompletePosition !== null) {
       this.lastAutocompletePosition = null
@@ -2076,16 +2272,48 @@ export class CanvasEditor {
     const wrappedLines = this.getWrappedLines(ctx)
     const textPadding = this.getTextPadding()
 
+    // Reset gutter hover flag first
+    this.isHoveringGutter = false
+
+    // Check if hovering over gutter area (gutter is drawn before scroll transform, so use raw coordinates)
+    if (this.options.gutter && this.errors.length > 0 && wrappedLines.length > 0) {
+      const gutterWidth = this.getGutterWidth()
+      const gutterEnd = this.padding + gutterWidth
+
+      // Check if mouse is in gutter area (including padding area)
+      if (x >= 0 && x < gutterEnd) {
+        // Mouse is in gutter area, find which line it corresponds to
+        // Line numbers scroll with content, so we need to account for scroll
+        const adjustedY = y + this.scrollY
+        const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
+        const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+
+        const wrappedLine = wrappedLines[clampedVisualLineIndex]
+        if (wrappedLine !== undefined) {
+          // Find the first error on this logical line (matching normal error hover behavior)
+          const errorOnLine = this.errors.find(error => error.line === wrappedLine.logicalLine)
+          if (errorOnLine) {
+            this.isHoveringGutter = true
+            return errorOnLine
+          }
+        }
+      }
+    }
+
+    // Not in gutter, check normal error hover on text content
     const adjustedY = y + this.scrollY
     const adjustedX = x + this.scrollX
-
     const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
     const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
 
     const wrappedLine = wrappedLines[clampedVisualLineIndex]
     if (!wrappedLine) return null
 
-    const visualColumn = this.getColumnFromX(adjustedX - textPadding, wrappedLine.text, ctx)
+    const visualColumn = this.getColumnFromXInclusive(
+      adjustedX - textPadding,
+      wrappedLine.text,
+      ctx,
+    )
     const logicalPosition = this.visualToLogicalPosition(
       clampedVisualLineIndex,
       visualColumn,
@@ -2105,51 +2333,95 @@ export class CanvasEditor {
     return null
   }
 
+  // For hover hit-testing: treat any x within a character cell as inside that character
+  // rather than rounding to nearest. This aligns hover with the drawn squiggles.
+  private getColumnFromXInclusive(x: number, line: string, ctx: CanvasRenderingContext2D): number {
+    if (x <= 0) return 0
+
+    let currentWidth = 0
+    for (let i = 0; i < line.length; i++) {
+      const charWidth = ctx.measureText(line[i]).width
+      const nextWidth = currentWidth + charWidth
+      if (x < nextWidth) return i
+      currentWidth = nextWidth
+    }
+
+    return line.length
+  }
+
   public updateErrorHover(error: EditorError | null) {
+    // Always update position if error exists, even if it's the same error (for gutter hover updates)
+    const shouldUpdate = this.hoveredError !== error || (error !== null && this.isHoveringGutter)
+
     if (this.hoveredError !== error) {
       this.hoveredError = error
       this.callbacks.onErrorHover?.(error)
+    }
 
-      if (error) {
-        const ctx = this.canvas.getContext('2d')
-        if (ctx) {
-          this.setFont(ctx)
-          const rect = this.canvas.getBoundingClientRect()
-          const textPadding = this.getTextPadding()
+    if (error && shouldUpdate) {
+      const ctx = this.canvas.getContext('2d')
+      if (ctx) {
+        this.setFont(ctx)
+        const rect = this.container.getBoundingClientRect()
+        const textPadding = this.getTextPadding()
 
-          let preCalculatedContentY: number | undefined
-          let preCalculatedContentX: number | undefined
+        let preCalculatedContentY: number | undefined
+        let preCalculatedContentX: number | undefined
 
-          if (this.options.wordWrap) {
+        // If hovering over gutter, position popup near the gutter
+        if (this.isHoveringGutter && this.options.gutter) {
             const wrappedLines = this.getWrappedLines(ctx)
-            const visualPos = this.logicalToVisualPosition(
-              error.line,
-              error.startColumn,
-              wrappedLines,
-            )
-            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+            const gutterWidth = this.getGutterWidth()
 
-            const wrappedLine = wrappedLines[visualPos.visualLine]
-            if (wrappedLine) {
-              const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
-              preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+            // Position at the line start, just after the gutter
+            if (this.options.wordWrap) {
+              const visualPos = this.logicalToVisualPosition(
+                error.line,
+                0,
+                wrappedLines,
+              )
+              preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+              preCalculatedContentX = textPadding
+            } else {
+              preCalculatedContentY = this.padding + error.line * this.lineHeight
+              preCalculatedContentX = textPadding
             }
           } else {
-            preCalculatedContentY = this.padding + error.line * this.lineHeight
-            const line = this.inputState.lines[error.line] || ''
-            const textBeforeError = line.substring(0, error.startColumn)
-            preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+            // Normal positioning at error location
+            if (this.options.wordWrap) {
+              const wrappedLines = this.getWrappedLines(ctx)
+              const visualPos = this.logicalToVisualPosition(
+                error.line,
+                error.startColumn,
+                wrappedLines,
+              )
+              preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+
+              const wrappedLine = wrappedLines[visualPos.visualLine]
+              if (wrappedLine) {
+                const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
+                preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+              }
+            } else {
+              preCalculatedContentY = this.padding + error.line * this.lineHeight
+              const line = this.inputState.lines[error.line] || ''
+              const textBeforeError = line.substring(0, error.startColumn)
+              preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+            }
           }
 
-          const viewportX = preCalculatedContentX! - this.scrollX + rect.left
-          const viewportY = preCalculatedContentY! - this.scrollY + rect.top
+        const viewportX = preCalculatedContentX! - this.scrollX + rect.left
+        const viewportY = preCalculatedContentY! - this.scrollY + rect.top
 
-          this.callbacks.onErrorPositionChange?.({
-            x: viewportX,
-            y: viewportY,
-          })
-        }
+        this.callbacks.onErrorPositionChange?.({
+          x: viewportX,
+          y: viewportY,
+        })
       }
+    }
+
+    if (!error) {
+      this.isHoveringGutter = false
     }
   }
 

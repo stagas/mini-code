@@ -9,6 +9,7 @@ export interface AutocompleteInfo {
 
 /**
  * Find the word being typed at the cursor position
+ * Only returns a word if the cursor is at the end of a word (indicating active typing)
  */
 export const findCurrentWord = (
   lines: string[],
@@ -44,6 +45,10 @@ export const findCurrentWord = (
 
   // Only return if we have at least some word content
   if (word.length === 0) return null
+
+  // Only show autocomplete if cursor is at the end of the word (indicating active typing)
+  // This prevents autocomplete from showing when navigating within or past words
+  if (cursorColumn !== endColumn) return null
 
   return { word, startColumn, endColumn }
 }

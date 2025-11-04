@@ -17,18 +17,34 @@ interface ErrorPopupProps {
 const ErrorPopup = ({ error, position, visible, onDimensionsChange }: ErrorPopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
   const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
+  const onDimensionsChangeRef = useRef(onDimensionsChange)
 
+  useEffect(() => {
+    onDimensionsChangeRef.current = onDimensionsChange
+  }, [onDimensionsChange])
+
+  // Measure popup dimensions
   useEffect(() => {
     if (visible && popupRef.current) {
       const rect = popupRef.current.getBoundingClientRect()
       if (rect.width > 0 && rect.height > 0) {
-        setMeasuredSize({ width: rect.width, height: rect.height })
-        onDimensionsChange?.(rect.width, rect.height)
+        setMeasuredSize(prev => {
+          const next = { width: rect.width, height: rect.height }
+          const changed = !prev || prev.width !== next.width || prev.height !== next.height
+          return changed ? next : prev
+        })
       }
     } else if (!visible) {
-      setMeasuredSize(null)
+      setMeasuredSize(prev => prev ? null : prev)
     }
-  }, [visible, error, onDimensionsChange])
+  }, [visible, error, position.x, position.y])
+
+  // Notify parent of dimension changes in a separate effect
+  useEffect(() => {
+    if (measuredSize) {
+      onDimensionsChangeRef.current?.(measuredSize.width, measuredSize.height)
+    }
+  }, [measuredSize])
 
   if (!visible) return null
 

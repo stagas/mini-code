@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 interface AutocompletePopupProps {
   suggestions: string[]
@@ -19,98 +19,29 @@ const AutocompletePopup = ({
 }: AutocompletePopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
   const selectedItemRef = useRef<HTMLDivElement>(null)
-  const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
 
-  // Measure popup dimensions after render
-  useEffect(() => {
-    if (visible && popupRef.current) {
-      const rect = popupRef.current.getBoundingClientRect()
-      if (rect.width > 0 && rect.height > 0) {
-        setMeasuredSize({ width: rect.width, height: rect.height })
-      }
-    } else if (!visible) {
-      setMeasuredSize(null)
-    }
-  }, [visible, suggestions, selectedIndex])
-
-  // Scroll selected item into view
+  // Keep selected item in view as selection changes
   useEffect(() => {
     if (visible && selectedItemRef.current) {
       selectedItemRef.current.scrollIntoView({ block: 'nearest' })
     }
   }, [visible, selectedIndex])
 
+  // Minimal guard: don't render until we have a non-zero position
   if (!visible || suggestions.length === 0) return null
+  if (position.x === 0 && position.y === 0) return null
 
-  const viewportWidth = window.innerWidth
-  const viewportHeight = window.innerHeight
-  const margin = 10
+  // Simple placement: below the caret with slight spacing
   const lineHeight = 20
-  const spacing = 0
-
-  let finalX = position.x
-  let finalY = position.y
-  let maxWidth: number | undefined = undefined
-  let maxHeight: number | undefined = undefined
-
-  if (!measuredSize) {
-    // First render: position off-screen to allow measurement
-    finalX = -9999
-    finalY = -9999
-  } else {
-    const popupWidth = measuredSize.width
-    const popupHeight = measuredSize.height
-
-    // HORIZONTAL: Try to fit at natural width, shift left if needed
-    const rightEdge = position.x + popupWidth
-
-    if (rightEdge <= viewportWidth - margin) {
-      finalX = position.x
-      maxWidth = undefined
-    } else {
-      const shiftedX = viewportWidth - popupWidth - margin
-
-      if (shiftedX >= margin) {
-        finalX = shiftedX
-        maxWidth = undefined
-      } else {
-        finalX = margin
-        maxWidth = viewportWidth - 2 * margin
-      }
-    }
-
-    // VERTICAL: Prefer above, fallback to below
-    const spaceAbove = position.y - margin
-    const spaceBelow = viewportHeight - (position.y + lineHeight) - margin
-
-    if (spaceAbove >= popupHeight) {
-      // Show above
-      finalY = position.y - popupHeight - spacing
-    } else if (spaceBelow >= popupHeight) {
-      // Show below
-      finalY = position.y + lineHeight + spacing
-    } else {
-      // Doesn't fit either way - use side with more space and constrain height
-      if (spaceAbove >= spaceBelow) {
-        finalY = Math.max(margin, position.y - popupHeight - spacing)
-        maxHeight = spaceAbove
-      } else {
-        finalY = position.y + lineHeight + spacing
-        maxHeight = spaceBelow
-      }
-    }
-  }
+  const spacing = -2
+  const left = position.x
+  const top = position.y + lineHeight + spacing
 
   return (
     <div
       ref={popupRef}
       className="fixed z-[9999] bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-auto cursor-default"
-      style={{
-        left: `${finalX}px`,
-        top: `${finalY}px`,
-        ...(maxWidth ? { maxWidth: `${maxWidth}px` } : {}),
-        ...(maxHeight ? { maxHeight: `${maxHeight}px` } : {}),
-      }}
+      style={{ left: `${left}px`, top: `${top}px` }}
       onMouseDown={e => {
         // Keep editor focus stable while interacting with the popup
         e.preventDefault()
@@ -127,7 +58,6 @@ const AutocompletePopup = ({
             }`}
             onMouseEnter={() => onHover?.(index)}
             onMouseDown={e => {
-              // Use mousedown so selection fires before potential blur
               e.preventDefault()
               e.stopPropagation()
               onSelect?.(index)

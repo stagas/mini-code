@@ -1,8 +1,5 @@
-import Prism from 'prismjs'
-import 'prismjs/components/prism-javascript'
-import 'prismjs/components/prism-typescript'
-import 'prismjs/components/prism-jsx'
-import 'prismjs/components/prism-tsx'
+// Tokenizer function type - takes a line of code and returns tokens
+export type Tokenizer = (line: string) => Token[]
 
 export interface Theme {
   colors: {
@@ -10,6 +7,8 @@ export interface Theme {
     string: string
     number: string
     function: string
+    parameter: string
+    argument: string
     comment: string
     operator: string
     punctuation: string
@@ -37,6 +36,8 @@ export const defaultTheme: Theme = {
     string: '#f1fa8c', // yellow
     number: '#bd93f9', // purple
     function: '#50fa7b', // green
+    parameter: '#50fa7b', // green
+    argument: '#50fa7b', // green
     comment: '#6272a4', // gray
     operator: '#ff79c6', // pink
     punctuation: '#f8f8f2', // light gray
@@ -72,27 +73,14 @@ export interface HighlightedLine {
   text: string
 }
 
-const flattenTokens = (tokens: (string | Prism.Token)[]): Token[] => {
-  const result: Token[] = []
-
-  for (const token of tokens) {
-    if (typeof token === 'string') {
-      result.push({ type: 'default', content: token, length: token.length })
-    } else {
-      if (typeof token.content === 'string') {
-        result.push({ type: token.type, content: token.content, length: token.content.length })
-      } else if (Array.isArray(token.content)) {
-        result.push(...flattenTokens(token.content))
-      }
-    }
-  }
-
-  return result
+// Simple tokenizer that treats each character as a default token
+export const defaultTokenizer: Tokenizer = (line: string): Token[] => {
+  return [{ type: 'default', content: line, length: line.length }]
 }
 
 export const highlightCode = (
   code: string,
-  language: string = 'javascript',
+  tokenizer: Tokenizer = defaultTokenizer,
   theme: Theme = defaultTheme,
 ): HighlightedLine[] => {
   try {
@@ -111,15 +99,9 @@ export const highlightCode = (
         continue
       }
 
-      // Highlight each line independently
-      const tokens = Prism.tokenize(line, Prism.languages[language] || Prism.languages.javascript)
-      const flatTokens = flattenTokens(tokens)
-      const tokensWithBraces = addRainbowBraces(
-        flatTokens,
-        globalBraceDepth,
-        globalBraceStack,
-        theme,
-      )
+      // Use the provided tokenizer to tokenize the line
+      const tokens = tokenizer(line)
+      const tokensWithBraces = addRainbowBraces(tokens, globalBraceDepth, globalBraceStack, theme)
 
       // Update global brace depth for next line
       for (const token of tokensWithBraces) {
@@ -243,8 +225,9 @@ export const getTokenColor = (type: string, theme: Theme = defaultTheme): string
 
   switch (type) {
     case 'keyword':
-    case 'operator':
       return theme.colors.keyword
+    case 'operator':
+      return theme.colors.operator
     case 'string':
     case 'string-property':
       return theme.colors.string
@@ -253,6 +236,10 @@ export const getTokenColor = (type: string, theme: Theme = defaultTheme): string
     case 'function':
     case 'function-variable':
       return theme.colors.function
+    case 'parameter':
+      return theme.colors.parameter
+    case 'argument':
+      return theme.colors.argument
     case 'comment':
     case 'comment-line':
     case 'comment-block':

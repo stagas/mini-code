@@ -18,24 +18,34 @@ const FunctionSignaturePopup = ({
 }: FunctionSignaturePopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
   const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
+  const onDimensionsChangeRef = useRef(onDimensionsChange)
 
-  // Measure popup dimensions and notify parent only when they change
+  useEffect(() => {
+    onDimensionsChangeRef.current = onDimensionsChange
+  }, [onDimensionsChange])
+
+  // Measure popup dimensions
   useEffect(() => {
     if (visible && popupRef.current) {
       const rect = popupRef.current.getBoundingClientRect()
       if (rect.width > 0 && rect.height > 0) {
-        const next = { width: rect.width, height: rect.height }
-        const changed =
-          !measuredSize || measuredSize.width !== next.width || measuredSize.height !== next.height
-        if (changed) {
-          setMeasuredSize(next)
-          onDimensionsChange?.(next.width, next.height)
-        }
+        setMeasuredSize(prev => {
+          const next = { width: rect.width, height: rect.height }
+          const changed = !prev || prev.width !== next.width || prev.height !== next.height
+          return changed ? next : prev
+        })
       }
     } else if (!visible) {
-      if (measuredSize) setMeasuredSize(null)
+      setMeasuredSize(prev => prev ? null : prev)
     }
-  }, [visible, signature, currentArgumentIndex, position.x, position.y, measuredSize])
+  }, [visible, signature, currentArgumentIndex, position.x, position.y])
+
+  // Notify parent of dimension changes in a separate effect
+  useEffect(() => {
+    if (measuredSize) {
+      onDimensionsChangeRef.current?.(measuredSize.width, measuredSize.height)
+    }
+  }, [measuredSize])
   if (!visible) return null
 
   const viewportWidth = window.innerWidth

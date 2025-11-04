@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { CodeEditor, type EditorError } from './src/index.ts'
+import { CodeEditor, type EditorError, javascriptTokenizer } from './src/index.ts'
 
 const defaultCode = `function fibonacci(n) {
   if (n <= 1) return n;
@@ -45,7 +45,14 @@ const App = () => {
 
   return (
     <div className="flex flex-row gap-[1px] w-[100dvw] h-[100dvh]">
-      <CodeEditor value={value1} setValue={setValue1} wordWrap gutter errors={errors} />
+      <CodeEditor
+        value={value1}
+        setValue={setValue1}
+        wordWrap
+        gutter
+        errors={errors}
+        tokenizer={javascriptTokenizer}
+      />
       <CodeEditor value={value2} setValue={setValue2} />
     </div>
   )

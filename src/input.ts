@@ -40,7 +40,20 @@ export interface MovementCallbacks {
     line: number,
     columnIntent: number,
   ) => { line: number; column: number } | null
+  getCaretForLineStart?: (
+    line: number,
+    column: number,
+  ) => { line: number; column: number; columnIntent: number } | null
+  getCaretForLineEnd?: (
+    line: number,
+    column: number,
+  ) => { line: number; column: number; columnIntent: number } | null
 }
+
+export type KeyOverrideFunction = (
+  event: React.KeyboardEvent<HTMLTextAreaElement>,
+  currentState: InputState,
+) => boolean
 
 export function getSelectedText(inputState: InputState): string {
   if (!inputState.selection) return ''
@@ -84,6 +97,7 @@ export class InputHandler {
   private onStateChange: (state: InputState) => void
   private history: History
   private movementCallbacks: MovementCallbacks
+  private keyOverride: KeyOverrideFunction | null = null
 
   constructor(
     onStateChange: (state: InputState) => void,
@@ -99,7 +113,16 @@ export class InputHandler {
     this.movementCallbacks = callbacks
   }
 
+  setKeyOverride(fn: KeyOverrideFunction | null) {
+    this.keyOverride = fn
+  }
+
   handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
+    // Call key override function if provided - if it returns false, skip default handling
+    if (this.keyOverride && !this.keyOverride(event, currentState)) {
+      return
+    }
+
     // Do nothing for modifier keys pressed alone
     if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
       return
@@ -110,7 +133,17 @@ export class InputHandler {
       return
     }
 
-    const newState = { ...currentState }
+    const newState = {
+      ...currentState,
+      lines: [...currentState.lines],
+      caret: { ...currentState.caret },
+      selection: currentState.selection
+        ? {
+            start: { ...currentState.selection.start },
+            end: { ...currentState.selection.end },
+          }
+        : null,
+    }
     const isShiftPressed = event.shiftKey
     const shouldSaveToHistory = this.shouldSaveToHistory(event.key)
     const isCharacterInput = this.isCharacterInput(event.key)
@@ -230,7 +263,9 @@ export class InputHandler {
         }
         break
       case 'Delete':
-        if (event.ctrlKey || event.metaKey) {
+        if (event.shiftKey) {
+          this.deleteCurrentLine(newState)
+        } else if (event.ctrlKey || event.metaKey) {
           this.deleteWordRight(newState)
         } else {
           this.handleDelete(newState)
@@ -508,6 +543,10 @@ export class InputHandler {
       state.caret.line = newLine
       const targetLine = state.lines[state.caret.line] || ''
       state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    } else {
+      // Already at the first line – jump to column 0
+      state.caret.column = 0
+      state.caret.columnIntent = 0
     }
   }
 
@@ -518,15 +557,47 @@ export class InputHandler {
       state.caret.line = newLine
       const targetLine = state.lines[state.caret.line] || ''
       state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
+    } else {
+      // Already at the last line – jump to last column
+      const currentLine = state.lines[state.caret.line] || ''
+      state.caret.column = currentLine.length
+      state.caret.columnIntent = currentLine.length
     }
   }
 
   private moveCaretToLineStart(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForLineStart) {
+      const result = this.movementCallbacks.getCaretForLineStart(
+        state.caret.line,
+        state.caret.column,
+      )
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        state.caret.columnIntent = result.columnIntent
+        return
+      }
+    }
+
+    // Default logical movement
     state.caret.column = 0
     state.caret.columnIntent = 0
   }
 
   private moveCaretToLineEnd(state: InputState) {
+    // Try word-wrap-aware movement first
+    if (this.movementCallbacks.getCaretForLineEnd) {
+      const result = this.movementCallbacks.getCaretForLineEnd(state.caret.line, state.caret.column)
+      if (result) {
+        state.caret.line = result.line
+        state.caret.column = result.column
+        state.caret.columnIntent = result.columnIntent
+        return
+      }
+    }
+
+    // Default logical movement
     const currentLine = state.lines[state.caret.line] || ''
     state.caret.column = currentLine.length
     state.caret.columnIntent = currentLine.length
@@ -785,6 +856,48 @@ export class InputHandler {
       const newLine = currentLine + nextLine
       state.lines[state.caret.line] = newLine
       state.lines.splice(state.caret.line + 1, 1)
+    }
+
+    // Save after state
+    this.saveAfterStateToHistory(state)
+  }
+
+  private deleteCurrentLine(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // Clear any selection since we're deleting the entire line
+    if (state.selection) {
+      state.selection = null
+    }
+
+    // Save before state with caret position
+    this.saveBeforeStateWithCaretToHistory(state)
+
+    // Store the current column position to preserve it
+    const preservedColumn = state.caret.column
+    const preservedColumnIntent = state.caret.columnIntent
+    const isOnlyLine = state.lines.length === 1
+
+    if (isOnlyLine) {
+      // If it's the only line, just empty it instead of deleting
+      state.lines[0] = ''
+      state.caret.column = 0
+      state.caret.columnIntent = 0
+    } else {
+      // Remove the current line
+      state.lines.splice(state.caret.line, 1)
+
+      // Adjust caret position
+      if (state.caret.line >= state.lines.length) {
+        // If we deleted the last line, move to the new last line
+        state.caret.line = Math.max(0, state.lines.length - 1)
+      }
+
+      // Preserve the column position, but clamp it to the line length
+      const currentLine = state.lines[state.caret.line] || ''
+      state.caret.column = Math.min(preservedColumn, currentLine.length)
+      state.caret.columnIntent = Math.min(preservedColumnIntent, currentLine.length)
     }
 
     // Save after state
