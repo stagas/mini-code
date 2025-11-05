@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { CanvasEditor, type CanvasEditorCallbacks } from './CanvasEditor.ts'
 import {
@@ -206,7 +206,7 @@ export const CodeEditor = ({
   }, [value, externalCodeFile])
 
   // Subscribe to CodeFile changes and initialize state when external codeFile changes
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!externalCodeFile) return
 
     // Initialize state from external codeFile when it changes
