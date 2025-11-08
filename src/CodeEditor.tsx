@@ -209,12 +209,16 @@ export const CodeEditor = ({
   useLayoutEffect(() => {
     if (!externalCodeFile) return
 
+    let rafId: number | null = null
+
     // Initialize state from external codeFile when it changes
     const state = externalCodeFile.getState()
     setInputStateInternal(state.inputState)
     inputStateRef.current = state.inputState
     lastTextRef.current = state.value
-    canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+    rafId = requestAnimationFrame(() => {
+      canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+    })
 
     // Subscribe to external CodeFile changes
     const unsubscribe = externalCodeFile.subscribe(() => {
@@ -228,10 +232,15 @@ export const CodeEditor = ({
       }
 
       // Update scroll position if it changed
-      canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+      requestAnimationFrame(() => {
+        canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+      })
     })
 
-    return unsubscribe
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId)
+      unsubscribe()
+    }
   }, [externalCodeFile])
 
   // Handle clipboard events
