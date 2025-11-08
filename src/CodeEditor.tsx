@@ -96,6 +96,7 @@ export const CodeEditor = ({
   const inputStateRef = useRef<InputState>(inputState)
   const setInputStateRef = useRef<(state: InputState) => void>(() => {})
   const lastTextRef = useRef<string>(codeFile.value)
+  const lastScrollRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
 
   const [scrollMetrics, setScrollMetrics] = useState<{
     scrollX: number
@@ -216,6 +217,8 @@ export const CodeEditor = ({
     setInputStateInternal(state.inputState)
     inputStateRef.current = state.inputState
     lastTextRef.current = state.value
+    lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
+
     rafId = requestAnimationFrame(() => {
       canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
     })
@@ -223,18 +226,23 @@ export const CodeEditor = ({
     // Subscribe to external CodeFile changes
     const unsubscribe = externalCodeFile.subscribe(() => {
       const state = externalCodeFile.getState()
+      const newValue = state.value
+      const currentValue = lastTextRef.current
 
-      // Update input state if it changed
-      if (state.inputState !== inputStateRef.current) {
+      // Only update if the value actually changed
+      if (newValue !== currentValue) {
         setInputStateInternal(state.inputState)
         inputStateRef.current = state.inputState
-        lastTextRef.current = state.value
+        lastTextRef.current = newValue
       }
 
-      // Update scroll position if it changed
-      requestAnimationFrame(() => {
-        canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
-      })
+      // Update scroll position if it changed from what we last set
+      if (state.scrollX !== lastScrollRef.current.x || state.scrollY !== lastScrollRef.current.y) {
+        lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
+        requestAnimationFrame(() => {
+          canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+        })
+      }
     })
 
     return () => {
@@ -531,7 +539,8 @@ export const CodeEditor = ({
     },
     onScrollChange: (sx, sy) => {
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
-      // Update CodeFile scroll position
+      // Update CodeFile scroll position and track it
+      lastScrollRef.current = { x: sx, y: sy }
       codeFileRef.current.scrollX = sx
       codeFileRef.current.scrollY = sy
     },
@@ -562,7 +571,8 @@ export const CodeEditor = ({
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
-        // Update CodeFile scroll position
+        // Update CodeFile scroll position and track it
+        lastScrollRef.current = { x: sx, y: sy }
         codeFileRef.current.scrollX = sx
         codeFileRef.current.scrollY = sy
       },
