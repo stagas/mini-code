@@ -205,6 +205,13 @@ export class InputHandler {
           event.preventDefault()
           this.handleToggleLineComment(currentState)
           return
+        case 'd':
+          if (event.shiftKey) {
+            event.preventDefault()
+            this.handleDuplicateLines(currentState)
+            return
+          }
+          break
       }
     }
 
@@ -1726,6 +1733,115 @@ export class InputHandler {
         ? {
             start: { ...state.selection.start },
             end: { ...state.selection.end },
+          }
+        : null,
+    })
+  }
+
+  handleDuplicateLines(currentState: InputState) {
+    const newState = { ...currentState }
+
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(newState)
+
+    // Store original caret position to keep it
+    const originalCaret = { ...newState.caret }
+
+    // Determine target lines
+    let firstLine: number
+    let lastLine: number
+    let hasRealSelection = false
+    let originalSelection: Selection | null = null
+
+    if (newState.selection && !this.isSelectionEmpty(newState.selection)) {
+      hasRealSelection = true
+      const { start, end } = newState.selection
+
+      const normalizedStart =
+        start.line < end.line || (start.line === end.line && start.column <= end.column)
+          ? start
+          : end
+      const normalizedEnd =
+        start.line < end.line || (start.line === end.line && start.column <= end.column)
+          ? end
+          : start
+
+      firstLine = normalizedStart.line
+      lastLine = normalizedEnd.line
+
+      // Store original selection boundaries
+      originalSelection = {
+        start: { ...normalizedStart },
+        end: { ...normalizedEnd },
+      }
+    } else {
+      firstLine = newState.caret.line
+      lastLine = newState.caret.line
+    }
+
+    // Save before state
+    if (hasRealSelection) {
+      this.saveBeforeStateWithSelectionToHistory(newState)
+    } else {
+      this.saveBeforeStateWithCaretToHistory(newState)
+    }
+
+    // Get lines to duplicate
+    const linesToDuplicate: string[] = []
+    for (let i = firstLine; i <= lastLine; i++) {
+      linesToDuplicate.push(newState.lines[i] || '')
+    }
+
+    // Insert duplicated lines after the last line
+    const insertIndex = lastLine + 1
+    newState.lines.splice(insertIndex, 0, ...linesToDuplicate)
+
+    // Move caret to the duplicated lines at the same relative position
+    if (originalCaret.line >= firstLine && originalCaret.line <= lastLine) {
+      // Caret is within the duplicated range, move it to the corresponding position
+      const relativeLine = originalCaret.line - firstLine
+      const newCaretLine = insertIndex + relativeLine
+      const newCaretLineContent = newState.lines[newCaretLine] || ''
+      // Clamp column to line length
+      newState.caret.line = newCaretLine
+      newState.caret.column = Math.min(originalCaret.column, newCaretLineContent.length)
+      newState.caret.columnIntent = newState.caret.column
+    } else {
+      // Caret is outside the duplicated range, keep it at original position
+      newState.caret = { ...originalCaret }
+    }
+
+    // If there was a selection, move it to the duplicated lines
+    if (hasRealSelection && originalSelection) {
+      newState.selection = {
+        start: {
+          line: insertIndex + (originalSelection.start.line - firstLine),
+          column: originalSelection.start.column,
+        },
+        end: {
+          line: insertIndex + (originalSelection.end.line - firstLine),
+          column: originalSelection.end.column,
+        },
+      }
+    } else {
+      newState.selection = null
+    }
+
+    // Save after state
+    if (hasRealSelection) {
+      this.saveAfterStateWithSelectionToHistory(newState)
+    } else {
+      this.saveAfterStateToHistory(newState)
+    }
+
+    // Update the state - ensure we create a new object for React
+    this.onStateChange({
+      lines: [...newState.lines],
+      caret: { ...newState.caret },
+      selection: newState.selection
+        ? {
+            start: { ...newState.selection.start },
+            end: { ...newState.selection.end },
           }
         : null,
     })
