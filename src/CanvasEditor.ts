@@ -99,7 +99,7 @@ const findMatchingBrace = (
   let cursorGlobalPos = 0
   for (let i = 0; i < clampedCursorLine; i++) {
     const line = highlightedCode[i]
-    const textLength = (line && typeof line.text === 'string') ? line.text.length : 0
+    const textLength = line && typeof line.text === 'string' ? line.text.length : 0
     cursorGlobalPos += textLength + 1 // +1 for newline
   }
   cursorGlobalPos += cursorColumn
@@ -110,7 +110,7 @@ const findMatchingBrace = (
     const upTo = Math.max(0, Math.min(brace.line, highlightedCode.length))
     for (let i = 0; i < upTo; i++) {
       const line = highlightedCode[i]
-      const textLength = (line && typeof line.text === 'string') ? line.text.length : 0
+      const textLength = line && typeof line.text === 'string' ? line.text.length : 0
       globalPos += textLength + 1 // +1 for newline
     }
     globalPos += brace.position
@@ -1155,7 +1155,11 @@ export class CanvasEditor {
     // Otherwise, use the max of current position and stored intent
     const atStartOfSegment = currentVisual.visualColumn === 0 && currentColumn > 0
     const atEndOfLine = currentVisual.visualColumn >= currentWrapped.text.length
-    const visualIntent = atStartOfSegment ? 0 : (atEndOfLine ? columnIntent : Math.max(currentVisual.visualColumn, columnIntent))
+    const visualIntent = atStartOfSegment
+      ? 0
+      : atEndOfLine
+      ? columnIntent
+      : Math.max(currentVisual.visualColumn, columnIntent)
     const clampedVisualIntent = Math.min(Math.max(visualIntent, 0), nextWrapped.text.length)
 
     // Convert visual position to logical position within the target wrapped segment
@@ -1165,7 +1169,7 @@ export class CanvasEditor {
     return {
       line: logical.logicalLine,
       column: logical.logicalColumn,
-      columnIntent: visualIntent // Preserve the desired visual column
+      columnIntent: visualIntent, // Preserve the desired visual column
     }
   }
 
@@ -1451,7 +1455,18 @@ export class CanvasEditor {
       const epsilon = 1
       const canScrollHorizontally = effectiveDeltaX !== 0 && maxScrollX > epsilon
       const canScrollVertically = effectiveDeltaY !== 0 && maxScrollY > epsilon
-      const shouldPrevent = horizontalIntent ? canScrollHorizontally : canScrollVertically
+
+      // Check if we can actually scroll in the direction we're trying to scroll
+      const canScrollXInDirection =
+        canScrollHorizontally &&
+        ((effectiveDeltaX > 0 && this.scrollX < maxScrollX) ||
+          (effectiveDeltaX < 0 && this.scrollX > 0))
+      const canScrollYInDirection =
+        canScrollVertically &&
+        ((effectiveDeltaY > 0 && this.scrollY < maxScrollY) ||
+          (effectiveDeltaY < 0 && this.scrollY > 0))
+
+      const shouldPrevent = horizontalIntent ? canScrollXInDirection : canScrollYInDirection
       if (!shouldPrevent) {
         return
       }
@@ -2297,7 +2312,10 @@ export class CanvasEditor {
         // Mouse is in gutter area, find which line it corresponds to
         // Line numbers scroll with content, so we need to account for scroll
         const adjustedY = y + this.scrollY
-        const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
+        const visualLineIndex = Math.max(
+          0,
+          Math.floor((adjustedY - this.padding) / this.lineHeight),
+        )
         const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
 
         const wrappedLine = wrappedLines[clampedVisualLineIndex]
@@ -2382,45 +2400,41 @@ export class CanvasEditor {
 
         // If hovering over gutter, position popup near the gutter
         if (this.isHoveringGutter && this.options.gutter) {
-            const wrappedLines = this.getWrappedLines(ctx)
-            const gutterWidth = this.getGutterWidth()
+          const wrappedLines = this.getWrappedLines(ctx)
+          const gutterWidth = this.getGutterWidth()
 
-            // Position at the line start, just after the gutter
-            if (this.options.wordWrap) {
-              const visualPos = this.logicalToVisualPosition(
-                error.line,
-                0,
-                wrappedLines,
-              )
-              preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
-              preCalculatedContentX = textPadding
-            } else {
-              preCalculatedContentY = this.padding + error.line * this.lineHeight
-              preCalculatedContentX = textPadding
-            }
+          // Position at the line start, just after the gutter
+          if (this.options.wordWrap) {
+            const visualPos = this.logicalToVisualPosition(error.line, 0, wrappedLines)
+            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+            preCalculatedContentX = textPadding
           } else {
-            // Normal positioning at error location
-            if (this.options.wordWrap) {
-              const wrappedLines = this.getWrappedLines(ctx)
-              const visualPos = this.logicalToVisualPosition(
-                error.line,
-                error.startColumn,
-                wrappedLines,
-              )
-              preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+            preCalculatedContentY = this.padding + error.line * this.lineHeight
+            preCalculatedContentX = textPadding
+          }
+        } else {
+          // Normal positioning at error location
+          if (this.options.wordWrap) {
+            const wrappedLines = this.getWrappedLines(ctx)
+            const visualPos = this.logicalToVisualPosition(
+              error.line,
+              error.startColumn,
+              wrappedLines,
+            )
+            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
 
-              const wrappedLine = wrappedLines[visualPos.visualLine]
-              if (wrappedLine) {
-                const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
-                preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
-              }
-            } else {
-              preCalculatedContentY = this.padding + error.line * this.lineHeight
-              const line = this.inputState.lines[error.line] || ''
-              const textBeforeError = line.substring(0, error.startColumn)
+            const wrappedLine = wrappedLines[visualPos.visualLine]
+            if (wrappedLine) {
+              const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
               preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
             }
+          } else {
+            preCalculatedContentY = this.padding + error.line * this.lineHeight
+            const line = this.inputState.lines[error.line] || ''
+            const textBeforeError = line.substring(0, error.startColumn)
+            preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
           }
+        }
 
         const viewportX = preCalculatedContentX! - this.scrollX + rect.left
         const viewportY = preCalculatedContentY! - this.scrollY + rect.top
