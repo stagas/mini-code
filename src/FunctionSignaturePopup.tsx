@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { FunctionParameter, FunctionSignature } from './function-signature.ts'
+import { type Theme, defaultTheme } from './syntax.ts'
 
 interface FunctionSignaturePopupProps {
   signature: FunctionSignature
   currentArgumentIndex: number
+  currentParameterName?: string
   position: { x: number; y: number }
   visible: boolean
+  theme?: Theme
   onDimensionsChange?: (width: number, height: number) => void
 }
 
 const FunctionSignaturePopup = ({
   signature,
   currentArgumentIndex,
+  currentParameterName,
   position,
   visible,
+  theme = defaultTheme,
   onDimensionsChange,
 }: FunctionSignaturePopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
@@ -118,8 +123,21 @@ const FunctionSignaturePopup = ({
     }
   }
 
-  // Find the effective parameter index for rest parameters
-  const getEffectiveParameterIndex = (argIndex: number): number => {
+  // Find the effective parameter index
+  // If currentParameterName is provided, use it to find the matching parameter
+  // Otherwise, use positional index and handle rest parameters
+  const getEffectiveParameterIndex = (argIndex: number, paramName?: string): number => {
+    // If we have a named parameter, find it by name
+    if (paramName) {
+      const paramIndex = signature.parameters.findIndex(
+        param => param.name === paramName || param.name === `...${paramName}`
+      )
+      if (paramIndex >= 0) {
+        return paramIndex
+      }
+    }
+
+    // Fall back to positional index with rest parameter handling
     for (let i = signature.parameters.length - 1; i >= 0; i--) {
       const param = signature.parameters[i]
       if (param.name.startsWith('...') && i <= argIndex) {
@@ -129,7 +147,7 @@ const FunctionSignaturePopup = ({
     return argIndex
   }
 
-  const effectiveParameterIndex = getEffectiveParameterIndex(currentArgumentIndex)
+  const effectiveParameterIndex = getEffectiveParameterIndex(currentArgumentIndex, currentParameterName)
 
   const renderParameter = (param: FunctionParameter, index: number, isLast: boolean) => {
     const isActive = index === effectiveParameterIndex
@@ -140,14 +158,16 @@ const FunctionSignaturePopup = ({
     return (
       <span key={index}>
         <span
-          className={`${
-            isActive ? 'bg-blue-600 text-white px-1 rounded font-semibold' : 'text-gray-300'
-          }`}
+          className={isActive ? 'px-1 rounded font-semibold' : ''}
+          style={{
+            backgroundColor: isActive ? theme.functionSignaturePopup.activeParameterBackground : 'transparent',
+            color: isActive ? theme.functionSignaturePopup.activeParameterText : theme.functionSignaturePopup.text,
+          }}
           title={param.description}
         >
           {paramText}
         </span>
-        {!isLast && <span className="text-gray-500">,</span>}
+        {!isLast && <span style={{ color: theme.functionSignaturePopup.separator }}>,</span>}
       </span>
     )
   }
@@ -155,58 +175,62 @@ const FunctionSignaturePopup = ({
   return (
     <div
       ref={popupRef}
-      className="fixed z-[9999] bg-gray-900 border border-gray-700 rounded-lg shadow-2xl pointer-events-none"
+      className="fixed z-[9999] rounded-lg shadow-2xl pointer-events-none"
       style={{
         left: `${finalX}px`,
         top: `${finalY}px`,
+        backgroundColor: theme.functionSignaturePopup.background,
+        borderColor: theme.functionSignaturePopup.border,
+        borderWidth: '1px',
+        borderStyle: 'solid',
         ...(maxWidth ? { maxWidth: `${maxWidth}px` } : {}),
       }}
     >
       <div className="p-3">
         <div className="text-sm">
-          <div className="text-white font-mono break-words overflow-hidden">
-            <span className="text-green-400 font-semibold">{signature.name}</span>
-            <span className="text-gray-400">(</span>
+          <div className="font-mono break-words overflow-hidden" style={{ color: theme.functionSignaturePopup.text }}>
+            <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">{signature.name}</span>
+            <span style={{ color: theme.functionSignaturePopup.separator }}>(</span>
             {signature.parameters.map((param, index) =>
               renderParameter(param, index, index === signature.parameters.length - 1),
             )}
-            <span className="text-gray-400">)</span>
+            <span style={{ color: theme.functionSignaturePopup.separator }}>)</span>
             {signature.returnType && (
               <>
-                <span className="text-gray-500">:</span>
-                <span className="text-blue-400 break-all">{signature.returnType}</span>
+                <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
+                <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">{signature.returnType}</span>
               </>
             )}
           </div>
 
           {signature.description && (
-            <div className="text-gray-400 text-xs mt-2 leading-relaxed break-words">
+            <div className="text-xs mt-2 leading-relaxed break-words" style={{ color: theme.functionSignaturePopup.description }}>
               {signature.description}
             </div>
           )}
 
           {/* Current parameter details */}
           {signature.parameters[effectiveParameterIndex] && (
-            <div className="mt-2 pt-2 border-t border-gray-700">
+            <div className="mt-2 pt-2" style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px', borderTopStyle: 'solid' }}>
               <div className="text-xs break-words">
-                <span className="text-blue-400 font-semibold">
+                <span style={{ color: theme.functionSignaturePopup.parameterName }} className="font-semibold">
                   {signature.parameters[effectiveParameterIndex].name}
                   {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
                 </span>
                 {signature.parameters[effectiveParameterIndex].type && (
                   <>
-                    <span className="text-gray-500">:</span>
-                    <span className="text-yellow-400 break-all">
+                    <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
+                    <span style={{ color: theme.functionSignaturePopup.parameterType }} className="break-all">
                       {signature.parameters[effectiveParameterIndex].type}
                     </span>
                   </>
                 )}
                 {signature.parameters[effectiveParameterIndex].optional && (
-                  <span className="text-gray-500 ml-1">(optional)</span>
+                  <span style={{ color: theme.functionSignaturePopup.separator }} className="ml-1">(optional)</span>
                 )}
               </div>
               {signature.parameters[effectiveParameterIndex].description && (
-                <div className="text-gray-400 text-xs mt-1 leading-relaxed break-words">
+                <div className="text-xs mt-1 leading-relaxed break-words" style={{ color: theme.functionSignaturePopup.description }}>
                   {signature.parameters[effectiveParameterIndex].description}
                 </div>
               )}

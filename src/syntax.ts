@@ -16,6 +16,34 @@ export interface Theme {
   }
   rainbowColors: string[]
   errorColor: string
+  errorGutterColor: string
+  errorSquigglyColor: string
+  errorPopup: {
+    background: string
+    border: string
+    text: string
+  }
+  functionSignaturePopup: {
+    background: string
+    border: string
+    text: string
+    activeParameterBackground: string
+    activeParameterText: string
+    functionName: string
+    returnType: string
+    parameterName: string
+    parameterType: string
+    description: string
+    separator: string
+  }
+  autocompletePopup: {
+    background: string
+    border: string
+    text: string
+    selectedBackground: string
+    selectedText: string
+    hoverBackground: string
+  }
   background: string
   gutterBackground: string
   gutterBorder: string
@@ -49,6 +77,34 @@ export const defaultTheme: Theme = {
     '#8be9fd', // blue
   ],
   errorColor: '#ff5555', // red
+  errorGutterColor: '#ff5555', // red
+  errorSquigglyColor: '#ff5555', // red
+  errorPopup: {
+    background: '#7f1d1d', // red-900
+    border: '#991b1b', // red-700
+    text: '#fca5a5', // red-300
+  },
+  functionSignaturePopup: {
+    background: '#111827', // gray-900
+    border: '#374151', // gray-700
+    text: '#d1d5db', // gray-300
+    activeParameterBackground: '#2563eb', // blue-600
+    activeParameterText: '#ffffff', // white
+    functionName: '#4ade80', // green-400
+    returnType: '#60a5fa', // blue-400
+    parameterName: '#60a5fa', // blue-400
+    parameterType: '#fbbf24', // yellow-400
+    description: '#9ca3af', // gray-400
+    separator: '#6b7280', // gray-500
+  },
+  autocompletePopup: {
+    background: '#111827', // gray-900
+    border: '#374151', // gray-700
+    text: '#d1d5db', // gray-300
+    selectedBackground: '#2563eb', // blue-600
+    selectedText: '#ffffff', // white
+    hoverBackground: '#1f2937', // gray-800
+  },
   background: '#1f2937', // dark gray
   gutterBackground: '#374151', // darker gray
   gutterBorder: '#4b5563', // medium gray

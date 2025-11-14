@@ -19,7 +19,7 @@ import {
   type KeyOverrideFunction,
 } from './input.ts'
 import { MouseHandler } from './mouse.ts'
-import { type Theme, type Tokenizer } from './syntax.ts'
+import { type Theme, type Tokenizer, defaultTheme } from './syntax.ts'
 
 interface CodeEditorProps {
   codeFile?: CodeFile
@@ -806,7 +806,8 @@ export const CodeEditor = ({
           suggestions={autocompleteInfo.suggestions}
           selectedIndex={autocompleteSelectedIndex}
           position={autocompletePosition}
-          visible={true}
+          visible={!inputState.selection}
+          theme={theme ?? defaultTheme}
           onHover={index => setAutocompleteSelectedIndex(index)}
           onSelect={index => {
             const selectedSuggestion = autocompleteInfo.suggestions[index]
@@ -842,8 +843,10 @@ export const CodeEditor = ({
         <FunctionSignaturePopup
           signature={functionDefinitions[functionCallInfo.functionName]}
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}
+          currentParameterName={functionCallInfo.currentParameterName}
           position={popupPosition}
-          visible={true}
+          visible={!inputState.selection}
+          theme={theme ?? defaultTheme}
           onDimensionsChange={(width, height) => {
             setPopupDimensions({ width, height })
             canvasEditorRef.current?.setPopupDimensions(width, height)
@@ -853,7 +856,12 @@ export const CodeEditor = ({
 
       {/* Error popup */}
       {isActive && hoveredError && (
-        <ErrorPopup error={hoveredError} position={errorPosition} visible={true} />
+        <ErrorPopup
+          error={hoveredError}
+          position={errorPosition}
+          visible={!inputState.selection}
+          theme={theme ?? defaultTheme}
+        />
       )}
     </div>
   )

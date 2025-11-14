@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react'
+import { type Theme, defaultTheme } from './syntax.ts'
 
 interface AutocompletePopupProps {
   suggestions: string[]
   selectedIndex: number
   position: { x: number; y: number }
   visible: boolean
+  theme?: Theme
   onSelect?: (index: number) => void
   onHover?: (index: number) => void
 }
@@ -14,6 +16,7 @@ const AutocompletePopup = ({
   selectedIndex,
   position,
   visible,
+  theme = defaultTheme,
   onSelect,
   onHover,
 }: AutocompletePopupProps) => {
@@ -40,8 +43,15 @@ const AutocompletePopup = ({
   return (
     <div
       ref={popupRef}
-      className="fixed z-[9999] bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-auto cursor-default"
-      style={{ left: `${left}px`, top: `${top}px` }}
+      className="fixed z-[9999] rounded-lg shadow-2xl overflow-auto cursor-default"
+      style={{
+        left: `${left}px`,
+        top: `${top}px`,
+        backgroundColor: theme.autocompletePopup.background,
+        borderColor: theme.autocompletePopup.border,
+        borderWidth: '1px',
+        borderStyle: 'solid',
+      }}
       onMouseDown={e => {
         // Keep editor focus stable while interacting with the popup
         e.preventDefault()
@@ -49,23 +59,40 @@ const AutocompletePopup = ({
       }}
     >
       <div className="py-1">
-        {suggestions.map((suggestion, index) => (
-          <div
-            key={suggestion}
-            ref={index === selectedIndex ? selectedItemRef : undefined}
-            className={`px-3 py-1 font-mono text-sm cursor-default ${
-              index === selectedIndex ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-800'
-            }`}
-            onMouseEnter={() => onHover?.(index)}
-            onMouseDown={e => {
-              e.preventDefault()
-              e.stopPropagation()
-              onSelect?.(index)
-            }}
-          >
-            {suggestion}
-          </div>
-        ))}
+        {suggestions.map((suggestion, index) => {
+          const isSelected = index === selectedIndex
+          return (
+            <div
+              key={suggestion}
+              ref={isSelected ? selectedItemRef : undefined}
+              className="px-3 py-1 font-mono text-sm cursor-default"
+              style={{
+                backgroundColor: isSelected
+                  ? theme.autocompletePopup.selectedBackground
+                  : 'transparent',
+                color: isSelected ? theme.autocompletePopup.selectedText : theme.autocompletePopup.text,
+              }}
+              onMouseEnter={e => {
+                if (!isSelected) {
+                  e.currentTarget.style.backgroundColor = theme.autocompletePopup.hoverBackground
+                }
+                onHover?.(index)
+              }}
+              onMouseLeave={e => {
+                if (!isSelected) {
+                  e.currentTarget.style.backgroundColor = 'transparent'
+                }
+              }}
+              onMouseDown={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                onSelect?.(index)
+              }}
+            >
+              {suggestion}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

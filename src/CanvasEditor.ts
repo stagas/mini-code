@@ -1747,7 +1747,7 @@ export class CanvasEditor {
 
           if (hasErrorOnLine) {
             // Draw red background strip for the line's gutter area
-            ctx.fillStyle = theme.errorColor
+            ctx.fillStyle = theme.errorGutterColor
             ctx.fillRect(0, y - 3, this.padding + gutterWidth - 1, this.lineHeight - 2)
           }
 
@@ -1985,6 +1985,7 @@ export class CanvasEditor {
     return (
       a.functionName === b.functionName &&
       a.currentArgumentIndex === b.currentArgumentIndex &&
+      a.currentParameterName === b.currentParameterName &&
       a.openParenPosition.line === b.openParenPosition.line &&
       a.openParenPosition.column === b.openParenPosition.column
     )
@@ -2475,7 +2476,7 @@ export class CanvasEditor {
           const errorWidth = ctx.measureText(errorText).width
           const y = this.padding + visualStart.visualLine * this.lineHeight + this.lineHeight - 3
 
-          ctx.strokeStyle = theme.errorColor
+          ctx.strokeStyle = theme.errorSquigglyColor
           ctx.lineWidth = 1.5
           ctx.beginPath()
 
@@ -2524,7 +2525,7 @@ export class CanvasEditor {
             errorWidth = ctx.measureText(wrappedLine.text).width
           }
 
-          ctx.strokeStyle = theme.errorColor
+          ctx.strokeStyle = theme.errorSquigglyColor
           ctx.lineWidth = 1.5
           ctx.beginPath()
 

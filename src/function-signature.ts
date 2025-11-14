@@ -137,6 +137,26 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
     returnType: 'void',
     description: 'Audio output',
   },
+  '.walk': {
+    name: '.walk',
+    parameters: [
+      { name: 'rate', type: 'number', description: 'Rate at which to walk through the sequence' },
+    ],
+    returnType: 'any',
+    description: 'Walks through a sequence at the specified rate',
+  },
+  freesoundslicer: {
+    name: 'freesoundslicer',
+    parameters: [
+      { name: 'id', type: 'number', description: 'Sound ID' },
+      { name: 'trig', type: 'number', description: 'Trigger' },
+      { name: 'speed', type: 'number', description: 'Speed' },
+      { name: 'offset', type: 'number', description: 'Offset' },
+      { name: 'threshold', type: 'number', description: 'Threshold' },
+    ],
+    returnType: 'number',
+    description: 'Free sound slicer',
+  },
 }
 
 /**
@@ -164,8 +184,9 @@ export const findFunctionCallContext = (
   const afterCursor = code.substring(cursorGlobalPos)
 
   // Find word boundaries around cursor
-  const beforeMatch = beforeCursor.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)$/)
-  const afterMatch = afterCursor.match(/^([a-zA-Z0-9_$.]*)/)
+  // Also match dot methods like .walk
+  const beforeMatch = beforeCursor.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)$/)
+  const afterMatch = afterCursor.match(/^([a-zA-Z0-9_$]*)/)
 
   if (beforeMatch || afterMatch) {
     const wordStart = beforeMatch ? cursorGlobalPos - beforeMatch[1].length : cursorGlobalPos
@@ -252,7 +273,8 @@ export const findFunctionCallContext = (
           // Find the function name before the opening parenthesis
           const beforeParen = code.substring(0, openParen.position).trim()
           // Look for function name that might be preceded by operators like |> or other characters
-          const functionNameMatch = beforeParen.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
+          // Also match dot methods like .walk
+          const functionNameMatch = beforeParen.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
 
           if (functionNameMatch && range < smallestRange) {
             const functionName = functionNameMatch[1]
@@ -277,7 +299,8 @@ export const findFunctionCallContext = (
       // Find the function name before the opening parenthesis
       const beforeParen = code.substring(0, openParen.position).trim()
       // Look for function name that might be preceded by operators like |> or other characters
-      const functionNameMatch = beforeParen.match(/([a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
+      // Also match dot methods like .walk
+      const functionNameMatch = beforeParen.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
 
       if (functionNameMatch && range < smallestRange) {
         const functionName = functionNameMatch[1]
@@ -294,18 +317,23 @@ export const findFunctionCallContext = (
 
   if (!bestMatch) return null
 
-  // Calculate current argument index by counting commas between open paren and cursor
-  const textBetween = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
-  let commaCount = 0
-  let parenDepth = 0
-  let bracketDepth = 0
-  let braceDepth = 0
+  // Get function signature to track used parameters
+  const signature = functionDefinitions[bestMatch.functionName]
+
+  // Parse all arguments before cursor to determine which parameters have been used
+  const allArgsText = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+  const usedParameterNames = new Set<string>()
+  const usedPositionalIndices = new Set<number>()
+  let positionalIndex = 0
+
+  // Parse arguments before cursor
+  let argStart = 0
+  let depth = 0
   let inString = false
   let stringChar = ''
-  let currentParameterName: string | undefined
 
-  for (let i = 0; i < textBetween.length; i++) {
-    const char = textBetween[i]
+  for (let i = 0; i < allArgsText.length; i++) {
+    const char = allArgsText[i]
 
     // Handle strings
     if (!inString && (char === '"' || char === "'" || char === '`')) {
@@ -313,20 +341,102 @@ export const findFunctionCallContext = (
       stringChar = char
       continue
     }
-    if (inString && char === stringChar && textBetween[i - 1] !== '\\') {
+    if (inString && char === stringChar && allArgsText[i - 1] !== '\\') {
       inString = false
       continue
     }
     if (inString) continue
 
     // Handle nested structures
-    if (char === '(') parenDepth++
-    else if (char === ')') parenDepth--
-    else if (char === '[') bracketDepth++
-    else if (char === ']') bracketDepth--
-    else if (char === '{') braceDepth++
-    else if (char === '}') braceDepth--
-    else if (char === ',' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+    if (char === '(') depth++
+    else if (char === ')') depth--
+    else if (char === '[') depth++
+    else if (char === ']') depth--
+    else if (char === '{') depth++
+    else if (char === '}') depth--
+    else if (char === ',' && depth === 0) {
+      // Found end of an argument
+      const argText = allArgsText.substring(argStart, i).trim()
+      if (argText.length > 0) {
+        // Check if it's a named parameter (with colon)
+        const namedMatch = argText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/)
+        if (namedMatch) {
+          const paramName = namedMatch[1]
+          usedParameterNames.add(paramName)
+          // Also check if it matches a parameter with ... prefix
+          if (signature) {
+            for (const param of signature.parameters) {
+              const cleanName = param.name.replace(/^\.\.\./, '')
+              if (cleanName === paramName || param.name === paramName) {
+                usedParameterNames.add(cleanName)
+                usedParameterNames.add(param.name)
+                break
+              }
+            }
+          }
+        } else if (signature) {
+          // Check if it's a short parameter syntax (parameter name without colon)
+          // Extract the first word to see if it matches a parameter name
+          const wordMatch = argText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+          if (wordMatch) {
+            const word = wordMatch[1]
+            // Check if this word exactly matches a parameter name
+            for (const param of signature.parameters) {
+              const cleanName = param.name.replace(/^\.\.\./, '')
+              if (cleanName === word || param.name === word) {
+                // This is a short parameter syntax - mark it as used
+                usedParameterNames.add(cleanName)
+                usedParameterNames.add(param.name)
+                break
+              }
+            }
+          }
+          // Also track as positional (in case it's not a parameter name match)
+          usedPositionalIndices.add(positionalIndex)
+          positionalIndex++
+        } else {
+          // Positional parameter (no signature available)
+          usedPositionalIndices.add(positionalIndex)
+          positionalIndex++
+        }
+      }
+      argStart = i + 1
+    }
+  }
+
+  // Calculate current argument index by counting commas between open paren and cursor
+  const textBetween = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+  let commaCount = 0
+  let parenDepth2 = 0
+  let bracketDepth2 = 0
+  let braceDepth2 = 0
+  let inString3 = false
+  let stringChar3 = ''
+  let currentParameterName: string | undefined
+
+  for (let i = 0; i < textBetween.length; i++) {
+    const char = textBetween[i]
+
+    // Handle strings
+    if (!inString3 && (char === '"' || char === "'" || char === '`')) {
+      inString3 = true
+      stringChar3 = char
+      continue
+    }
+    if (inString3 && char === stringChar3 && textBetween[i - 1] !== '\\') {
+      inString3 = false
+      continue
+    }
+    if (inString3) continue
+
+    // Handle nested structures
+    if (char === '(') parenDepth2++
+    else if (char === ')') parenDepth2--
+    else if (char === '[') bracketDepth2++
+    else if (char === ']') bracketDepth2--
+    else if (char === '{') braceDepth2++
+    else if (char === '}') braceDepth2--
+    else if (char === ',' && parenDepth2 === 0 && bracketDepth2 === 0 && braceDepth2 === 0) {
       commaCount++
     }
   }
@@ -336,7 +446,7 @@ export const findFunctionCallContext = (
 
   // Find the start of the current argument by looking for the last comma at the top level
   let lastCommaIndex = -1
-  let depth = 0
+  let depth2 = 0
   let inString2 = false
   let stringChar2 = ''
 
@@ -356,16 +466,61 @@ export const findFunctionCallContext = (
     if (inString2) continue
 
     // Handle nested structures
+    if (char === '(') depth2++
+    else if (char === ')') depth2--
+    else if (char === '[') depth2++
+    else if (char === ']') depth2--
+    else if (char === '{') depth2++
+    else if (char === '}') depth2--
+    else if (char === ',' && depth2 === 0) {
+      lastCommaIndex = i
+    }
+  }
+
+  // Get the full current argument text by looking ahead from cursor to find where argument ends
+  const textFromOpenParen = code.substring(bestMatch.openPos + 1)
+  const argStartInFullText = lastCommaIndex >= 0 ? lastCommaIndex + 1 : 0
+  let argEndInFullText = textFromOpenParen.length
+  depth = 0
+  inString2 = false
+  stringChar2 = ''
+
+  // Find the end of the current argument (next comma or closing paren at top level)
+  for (let i = argStartInFullText; i < textFromOpenParen.length; i++) {
+    const char = textFromOpenParen[i]
+
+    // Handle strings
+    if (!inString2 && (char === '"' || char === "'" || char === '`')) {
+      inString2 = true
+      stringChar2 = char
+      continue
+    }
+    if (inString2 && char === stringChar2 && textFromOpenParen[i - 1] !== '\\') {
+      inString2 = false
+      continue
+    }
+    if (inString2) continue
+
+    // Handle nested structures
     if (char === '(') depth++
-    else if (char === ')') depth--
+    else if (char === ')') {
+      if (depth === 0) {
+        argEndInFullText = i
+        break
+      }
+      depth--
+    }
     else if (char === '[') depth++
     else if (char === ']') depth--
     else if (char === '{') depth++
     else if (char === '}') depth--
     else if (char === ',' && depth === 0) {
-      lastCommaIndex = i
+      argEndInFullText = i
+      break
     }
   }
+
+  const fullCurrentArgText = textFromOpenParen.substring(argStartInFullText, argEndInFullText).trim()
 
   const currentArgText =
     lastCommaIndex >= 0
@@ -373,9 +528,113 @@ export const findFunctionCallContext = (
       : fullTextBetween.trim()
 
   // Check if current argument is a named parameter (name:value format)
-  const namedParamMatch = currentArgText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/)
+  // First check currentArgText (up to cursor) for immediate feedback when typing
+  let namedParamMatch = currentArgText.match(/([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/)
+  if (!namedParamMatch) {
+    // Also check full argument text
+    namedParamMatch = fullCurrentArgText.match(/([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/)
+  }
+
   if (namedParamMatch) {
-    currentParameterName = namedParamMatch[1]
+    const paramName = namedParamMatch[1]
+    const matchIndex = fullCurrentArgText.indexOf(namedParamMatch[0])
+
+    // Only use if parameter hasn't been used yet
+    if (!usedParameterNames.has(paramName)) {
+      // If the pattern is at the start of the argument (after trimming), use it
+      if (matchIndex === 0) {
+        currentParameterName = paramName
+      } else {
+        // Pattern is somewhere in the argument - check if cursor is on it
+        const argStartInCode = bestMatch.openPos + 1 + argStartInFullText
+        const untrimmedArgText = textFromOpenParen.substring(argStartInFullText, argEndInFullText)
+        const leadingWhitespace = untrimmedArgText.length - untrimmedArgText.trimStart().length
+        const trimmedArgStart = argStartInCode + leadingWhitespace
+        const cursorInArg = cursorGlobalPos - trimmedArgStart
+        const matchEnd = matchIndex + paramName.length
+
+        // If cursor is on or within the parameter name, use it
+        if (cursorInArg >= matchIndex && cursorInArg <= matchEnd) {
+          currentParameterName = paramName
+        }
+      }
+    }
+  } else {
+    // No colon found - check if the argument text matches a parameter name prefix
+    if (signature) {
+      // Priority 1: Check currentArgText (text up to cursor) - most accurate when typing
+      // This is what the user is actively typing, so check it first
+      const trimmedCurrentArg = currentArgText.trim()
+      if (trimmedCurrentArg.length > 0) {
+        // Extract the first word from the current argument
+        const currentArgWordMatch = trimmedCurrentArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+        if (currentArgWordMatch && currentArgWordMatch[1].length > 0) {
+          const argWord = currentArgWordMatch[1]
+
+          // Check if there's a colon after the cursor
+          const argTextFromCursor = code.substring(cursorGlobalPos, Math.min(
+            code.length,
+            bestMatch.openPos + 1 + fullTextBetween.length + 100
+          ))
+          const hasColonAfterCursor = argTextFromCursor.match(/^\s*:/)
+
+          if (hasColonAfterCursor) {
+            // Has colon - use the word as parameter name (if not already used)
+            if (!usedParameterNames.has(argWord)) {
+              currentParameterName = argWord
+            }
+          } else {
+            // No colon yet - check if the word matches the start of any unused parameter name
+            for (const param of signature.parameters) {
+              const paramName = param.name.replace(/^\.\.\./, '')
+              // Check if parameter is not used and matches the word
+              if (!usedParameterNames.has(paramName) &&
+                  !usedParameterNames.has(param.name) &&
+                  paramName.startsWith(argWord) &&
+                  argWord.length > 0) {
+                currentParameterName = paramName
+                break // Use first match
+              }
+            }
+          }
+        }
+      } else {
+        // Current argument is empty - find next unused positional parameter
+        for (let i = 0; i < signature.parameters.length; i++) {
+          if (!usedPositionalIndices.has(i) && !usedParameterNames.has(signature.parameters[i].name)) {
+            const paramName = signature.parameters[i].name.replace(/^\.\.\./, '')
+            if (!usedParameterNames.has(paramName)) {
+              // Don't set currentParameterName here - let positional index handle it
+              // But we need to adjust currentArgumentIndex to point to this parameter
+              commaCount = i
+              break
+            }
+          }
+        }
+      }
+
+      // Priority 2: Check fullCurrentArgText if we haven't found a match
+      if (!currentParameterName && trimmedCurrentArg.length > 0) {
+        const trimmedFullArg = fullCurrentArgText.trim()
+        if (trimmedFullArg.length > 0) {
+          const argWordMatch = trimmedFullArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+          if (argWordMatch && argWordMatch[1].length > 0) {
+            const argWord = argWordMatch[1]
+            const matchingParam = signature.parameters.find(
+              param => {
+                const paramName = param.name.replace(/^\.\.\./, '')
+                return !usedParameterNames.has(paramName) &&
+                       !usedParameterNames.has(param.name) &&
+                       paramName.startsWith(argWord)
+              }
+            )
+            if (matchingParam) {
+              currentParameterName = matchingParam.name.replace(/^\.\.\./, '')
+            }
+          }
+        }
+      }
+    }
   }
 
   return {

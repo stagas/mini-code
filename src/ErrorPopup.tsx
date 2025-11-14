@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { type Theme, defaultTheme } from './syntax.ts'
 
 export interface EditorError {
   line: number
@@ -11,10 +12,11 @@ interface ErrorPopupProps {
   error: EditorError
   position: { x: number; y: number }
   visible: boolean
+  theme?: Theme
   onDimensionsChange?: (width: number, height: number) => void
 }
 
-const ErrorPopup = ({ error, position, visible, onDimensionsChange }: ErrorPopupProps) => {
+const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensionsChange }: ErrorPopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
   const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
   const onDimensionsChangeRef = useRef(onDimensionsChange)
@@ -101,16 +103,22 @@ const ErrorPopup = ({ error, position, visible, onDimensionsChange }: ErrorPopup
   return (
     <div
       ref={popupRef}
-      className="fixed z-[9999] bg-red-900 border border-red-700 rounded-lg shadow-2xl pointer-events-none"
+      className="fixed z-[9999] rounded-lg shadow-2xl pointer-events-none"
       style={{
         left: `${finalX}px`,
         top: `${finalY}px`,
+        backgroundColor: theme.errorPopup.background,
+        borderColor: theme.errorPopup.border,
+        borderWidth: '1px',
+        borderStyle: 'solid',
         ...(maxWidth ? { maxWidth: `${maxWidth}px` } : {}),
       }}
     >
       <div className="p-3">
         <div className="text-sm">
-          <div className="text-red-300 break-words leading-relaxed">{error.message}</div>
+          <div className="break-words leading-relaxed" style={{ color: theme.errorPopup.text }}>
+            {error.message}
+          </div>
         </div>
       </div>
     </div>
