@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
+import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
+import AutocompletePopup from './AutocompletePopup.tsx'
 import { CanvasEditor, type CanvasEditorCallbacks } from './CanvasEditor.ts'
+import { CodeFile } from './CodeFile.ts'
+import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
 import {
   type FunctionCallInfo,
   functionDefinitions as defaultFunctionDefinitions,
   type FunctionSignature,
 } from './function-signature.ts'
-import { type AutocompleteInfo } from './autocomplete.ts'
 import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
-import AutocompletePopup from './AutocompletePopup.tsx'
-import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
-import { CodeFile } from './CodeFile.ts'
 import { History } from './history.ts'
 import {
   getSelectedText,
@@ -19,7 +19,7 @@ import {
   type KeyOverrideFunction,
 } from './input.ts'
 import { MouseHandler } from './mouse.ts'
-import { type Theme, type Tokenizer, defaultTheme } from './syntax.ts'
+import { defaultTheme, type Theme, type Tokenizer } from './syntax.ts'
 
 interface CodeEditorProps {
   codeFile?: CodeFile
@@ -34,6 +34,8 @@ interface CodeEditorProps {
   canvasRef?: React.RefObject<HTMLCanvasElement>
   autoHeight?: boolean
   keyOverride?: KeyOverrideFunction
+  hideFunctionSignatures?: boolean
+  onPointerDown?: (event: PointerEvent) => void
 }
 
 export const CodeEditor = ({
@@ -49,6 +51,8 @@ export const CodeEditor = ({
   canvasRef: extCanvasRef,
   autoHeight = false,
   keyOverride,
+  hideFunctionSignatures = false,
+  onPointerDown,
 }: CodeEditorProps) => {
   const ownCanvasRef = useRef<HTMLCanvasElement>(null)
   const canvasRef = extCanvasRef ?? ownCanvasRef
@@ -115,6 +119,11 @@ export const CodeEditor = ({
   })
 
   const isHandlingPointerRef = useRef(false)
+  const lastMousePositionRef = useRef<{ x: number; y: number; event: PointerEvent | null }>({
+    x: 0,
+    y: 0,
+    event: null,
+  })
 
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
@@ -122,19 +131,17 @@ export const CodeEditor = ({
       const oldState = inputStateRef.current
 
       // Check if state actually changed to prevent unnecessary updates
-      const caretChanged =
-        oldState.caret.line !== newState.caret.line ||
-        oldState.caret.column !== newState.caret.column ||
-        oldState.caret.columnIntent !== newState.caret.columnIntent
+      const caretChanged = oldState.caret.line !== newState.caret.line
+        || oldState.caret.column !== newState.caret.column
+        || oldState.caret.columnIntent !== newState.caret.columnIntent
 
-      const selectionChanged =
-        (oldState.selection === null) !== (newState.selection === null) ||
-        (oldState.selection &&
-          newState.selection &&
-          (oldState.selection.start.line !== newState.selection.start.line ||
-            oldState.selection.start.column !== newState.selection.start.column ||
-            oldState.selection.end.line !== newState.selection.end.line ||
-            oldState.selection.end.column !== newState.selection.end.column))
+      const selectionChanged = (oldState.selection === null) !== (newState.selection === null)
+        || (oldState.selection
+          && newState.selection
+          && (oldState.selection.start.line !== newState.selection.start.line
+            || oldState.selection.start.column !== newState.selection.start.column
+            || oldState.selection.end.line !== newState.selection.end.line
+            || oldState.selection.end.column !== newState.selection.end.column))
 
       const newText = newState.lines.join('\n')
       const oldText = lastTextRef.current
@@ -154,7 +161,8 @@ export const CodeEditor = ({
         codeFileRef.current.inputState = newState
         // Also call external setValue if provided (legacy mode)
         setValue?.(newText)
-      } else {
+      }
+      else {
         // Even if text didn't change, update caret/selection in CodeFile
         codeFileRef.current.inputState = newState
       }
@@ -266,6 +274,14 @@ export const CodeEditor = ({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Allow browser default for zoom shortcuts
+    if (
+      (e.ctrlKey || e.metaKey)
+      && (e.key === '-' || e.key === '=' || e.key === 'Minus' || e.key === 'Equal')
+    ) {
+      return
+    }
+
     if (e.key === 'Escape') {
       // Hide autocomplete first, then signature popup
       if (autocompleteInfo) {
@@ -293,10 +309,9 @@ export const CodeEditor = ({
         // Accept selected suggestion
         const selectedSuggestion = autocompleteInfo.suggestions[autocompleteSelectedIndex]
         const line = inputState.lines[inputState.caret.line]
-        const newLine =
-          line.substring(0, autocompleteInfo.startColumn) +
-          selectedSuggestion +
-          line.substring(autocompleteInfo.endColumn)
+        const newLine = line.substring(0, autocompleteInfo.startColumn)
+          + selectedSuggestion
+          + line.substring(autocompleteInfo.endColumn)
 
         const newLines = [...inputState.lines]
         newLines[inputState.caret.line] = newLine
@@ -342,7 +357,8 @@ export const CodeEditor = ({
 
     if (isPrintableChar || isEditingKey) {
       canvasEditorRef.current?.setAutocompleteInputSource('keyboard')
-    } else if (isNavigationKey || isModifierOnly || hasModifier) {
+    }
+    else if (isNavigationKey || isModifierOnly || hasModifier) {
       // Hide autocomplete on navigation or modifier keys
       canvasEditorRef.current?.hideAutocomplete()
       setAutocompleteSelectedIndex(0)
@@ -354,6 +370,11 @@ export const CodeEditor = ({
   // Reset selected index when autocomplete info changes
   useEffect(() => {
     setAutocompleteSelectedIndex(0)
+    // Clear ready state and position when autocomplete is cleared
+    if (!autocompleteInfo) {
+      setAutocompleteReady(false)
+      setAutocompletePosition({ x: 0, y: 0 })
+    }
   }, [autocompleteInfo])
 
   // Update errors in canvas editor
@@ -366,10 +387,10 @@ export const CodeEditor = ({
     if (!hoveredError) return
     const exists = errors.some(
       e =>
-        e.line === hoveredError.line &&
-        e.startColumn === hoveredError.startColumn &&
-        e.endColumn === hoveredError.endColumn &&
-        e.message === hoveredError.message,
+        e.line === hoveredError.line
+        && e.startColumn === hoveredError.startColumn
+        && e.endColumn === hoveredError.endColumn
+        && e.message === hoveredError.message,
     )
     if (!exists) {
       setHoveredError(null)
@@ -383,7 +404,8 @@ export const CodeEditor = ({
         state => setInputStateRef.current(state),
         codeFile.history,
       )
-    } else {
+    }
+    else {
       // Update history when codeFile changes
       inputHandlerRef.current.setHistory(codeFile.history)
     }
@@ -425,13 +447,13 @@ export const CodeEditor = ({
               selection: event.shiftKey
                 ? currentState.selection
                   ? {
-                      start: currentState.selection.start,
-                      end: { line: next.line, column: next.column },
-                    }
+                    start: currentState.selection.start,
+                    end: { line: next.line, column: next.column },
+                  }
                   : {
-                      start: { line: caret.line, column: caret.column },
-                      end: { line: next.line, column: next.column },
-                    }
+                    start: { line: caret.line, column: caret.column },
+                    end: { line: next.line, column: next.column },
+                  }
                 : null,
             }
             setInputStateRef.current(newState)
@@ -441,10 +463,10 @@ export const CodeEditor = ({
         }
 
         if (
-          wordWrap &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+          wordWrap
+          && !event.ctrlKey
+          && !event.metaKey
+          && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')
         ) {
           event.preventDefault()
           const dir = event.key === 'ArrowLeft' ? 'left' : 'right'
@@ -461,13 +483,13 @@ export const CodeEditor = ({
               selection: event.shiftKey
                 ? currentState.selection
                   ? {
-                      start: currentState.selection.start,
-                      end: { line: next.line, column: next.column },
-                    }
+                    start: currentState.selection.start,
+                    end: { line: next.line, column: next.column },
+                  }
                   : {
-                      start: { line: caret.line, column: caret.column },
-                      end: { line: next.line, column: next.column },
-                    }
+                    start: { line: caret.line, column: caret.column },
+                    end: { line: next.line, column: next.column },
+                  }
                 : null,
             }
             setInputStateRef.current(newState)
@@ -539,21 +561,17 @@ export const CodeEditor = ({
     },
     onScrollChange: (sx, sy) => {
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
-      // Update CodeFile scroll position and track it
-      lastScrollRef.current = { x: sx, y: sy }
-      codeFileRef.current.scrollX = sx
-      codeFileRef.current.scrollY = sy
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
-        prev.scrollX !== m.scrollX ||
-        prev.scrollY !== m.scrollY ||
-        prev.viewportWidth !== m.viewportWidth ||
-        prev.viewportHeight !== m.viewportHeight ||
-        prev.contentWidth !== m.contentWidth ||
-        prev.contentHeight !== m.contentHeight
+        prev.scrollX !== m.scrollX
+          || prev.scrollY !== m.scrollY
+          || prev.viewportWidth !== m.viewportWidth
+          || prev.viewportHeight !== m.viewportHeight
+          || prev.contentWidth !== m.contentWidth
+          || prev.contentHeight !== m.contentHeight
           ? m
-          : prev,
+          : prev
       ),
     onErrorHover: setHoveredError,
     onErrorPositionChange: setErrorPosition,
@@ -571,21 +589,25 @@ export const CodeEditor = ({
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
-        // Update CodeFile scroll position and track it
-        lastScrollRef.current = { x: sx, y: sy }
-        codeFileRef.current.scrollX = sx
-        codeFileRef.current.scrollY = sy
+
+        // Update selection during auto-scroll when dragging
+        if (mouseHandlerRef.current?.isDraggingSelection() && lastMousePositionRef.current.event) {
+          mouseHandlerRef.current.handlePointerMove(
+            lastMousePositionRef.current.event,
+            inputStateRef.current,
+          )
+        }
       },
       onScrollMetricsChange: m =>
         setScrollMetrics(prev =>
-          prev.scrollX !== m.scrollX ||
-          prev.scrollY !== m.scrollY ||
-          prev.viewportWidth !== m.viewportWidth ||
-          prev.viewportHeight !== m.viewportHeight ||
-          prev.contentWidth !== m.contentWidth ||
-          prev.contentHeight !== m.contentHeight
+          prev.scrollX !== m.scrollX
+            || prev.scrollY !== m.scrollY
+            || prev.viewportWidth !== m.viewportWidth
+            || prev.viewportHeight !== m.viewportHeight
+            || prev.contentWidth !== m.contentWidth
+            || prev.contentHeight !== m.contentHeight
             ? m
-            : prev,
+            : prev
         ),
       onErrorHover: setHoveredError,
       onErrorPositionChange: setErrorPosition,
@@ -631,10 +653,8 @@ export const CodeEditor = ({
           canvasEditorRef.current?.getCaretForHorizontalMove(direction, line, column) ?? null,
         getCaretForVerticalMove: (direction, line, columnIntent) =>
           canvasEditorRef.current?.getCaretForVerticalMove(direction, line, columnIntent) ?? null,
-        getCaretForLineStart: (line, column) =>
-          canvasEditorRef.current?.getCaretForLineStart(line, column) ?? null,
-        getCaretForLineEnd: (line, column) =>
-          canvasEditorRef.current?.getCaretForLineEnd(line, column) ?? null,
+        getCaretForLineStart: (line, column) => canvasEditorRef.current?.getCaretForLineStart(line, column) ?? null,
+        getCaretForLineEnd: (line, column) => canvasEditorRef.current?.getCaretForLineEnd(line, column) ?? null,
       })
     }
 
@@ -653,6 +673,7 @@ export const CodeEditor = ({
     if (!canvas) return
 
     const handlePointerDown = (event: PointerEvent) => {
+      onPointerDown?.(event)
       event.preventDefault()
       isHandlingPointerRef.current = true
       canvasEditorRef.current?.setAutocompleteInputSource('mouse')
@@ -684,7 +705,8 @@ export const CodeEditor = ({
 
         // Let MouseHandler handle everything (including double/triple clicks)
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
-      } else {
+      }
+      else {
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
 
@@ -725,7 +747,80 @@ export const CodeEditor = ({
       const error = canvasEditorRef.current?.checkErrorHover(x, y)
       canvasEditorRef.current?.updateErrorHover(error || null)
 
-      mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
+      // Selection updates are handled by handleWindowPointerMove to support auto-scroll outside canvas
+      // Only update here if not dragging (to handle non-selection mouse moves)
+      if (!mouseHandlerRef.current?.isDraggingSelection()) {
+        mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
+      }
+      else {
+        // Window handler will handle selection updates and auto-scroll
+        canvasEditorRef.current?.updateAutoScroll(event.clientX, event.clientY)
+      }
+    }
+
+    const handleWindowPointerMove = (event: PointerEvent) => {
+      // Only handle if we're dragging a selection
+      if (!mouseHandlerRef.current?.isDraggingSelection()) {
+        return
+      }
+
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const rect = canvas.getBoundingClientRect()
+      const dpr = window.devicePixelRatio || 1
+      const viewportHeight = canvas.height / dpr
+      let x = event.clientX - rect.left
+      let y = event.clientY - rect.top
+
+      const boundaryZone = 20
+      // Check if mouse is in top boundary zone (above or within 20px of top)
+      // or bottom boundary zone (below or within 20px of bottom)
+      const isInTopBoundary = y < boundaryZone
+      const isInBottomBoundary = y > viewportHeight - boundaryZone
+
+      // If mouse is in top or bottom boundary zone, use animation logic only
+      // Don't update selection immediately to prevent jumping when mouse moves fast
+      if (isInTopBoundary || isInBottomBoundary) {
+        // Store projected position but don't update selection
+        const projectedX = Math.max(0, Math.min(rect.width, x))
+        // Project to the edge of the boundary zone
+        const projectedY = isInTopBoundary ? boundaryZone : viewportHeight - boundaryZone
+        const syntheticEvent = new PointerEvent('pointermove', {
+          clientX: rect.left + projectedX,
+          clientY: rect.top + projectedY,
+          pointerId: event.pointerId,
+          buttons: event.buttons,
+        })
+        // Only update lastMousePositionRef, don't update selection yet
+        // Selection will update gradually during auto-scroll
+        lastMousePositionRef.current = { x: projectedX, y: projectedY, event: syntheticEvent }
+      }
+      else if (
+        x >= 0
+        && x <= rect.width
+        && y >= boundaryZone
+        && y <= viewportHeight - boundaryZone
+      ) {
+        // Mouse is inside canvas (outside boundary zones) - update selection immediately
+        mouseHandlerRef.current.handlePointerMove(event, inputStateRef.current)
+        lastMousePositionRef.current = { x, y, event }
+      }
+      else {
+        // Mouse is outside horizontally but vertically in middle area - handle normally
+        const projectedX = Math.max(0, Math.min(rect.width, x))
+        const syntheticEvent = new PointerEvent('pointermove', {
+          clientX: rect.left + projectedX,
+          clientY: event.clientY,
+          pointerId: event.pointerId,
+          buttons: event.buttons,
+        })
+        mouseHandlerRef.current.handlePointerMove(syntheticEvent, inputStateRef.current)
+        lastMousePositionRef.current = { x: projectedX, y, event: syntheticEvent }
+      }
+
+      // Always update auto-scroll based on window position
+      canvasEditorRef.current?.updateAutoScroll(event.clientX, event.clientY)
     }
 
     const handlePointerUp = (event: PointerEvent) => {
@@ -736,18 +831,26 @@ export const CodeEditor = ({
       dragStartRef.current = null
 
       mouseHandlerRef.current?.handlePointerUp(event, inputStateRef.current)
+
+      // Stop auto-scroll when pointer is released
+      canvasEditorRef.current?.stopAutoScroll()
+      lastMousePositionRef.current = { x: 0, y: 0, event: null }
     }
 
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
     canvas.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointermove', handleWindowPointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
 
     return () => {
       canvas.removeEventListener('pointerdown', handlePointerDown)
       canvas.removeEventListener('pointermove', handlePointerMove)
       canvas.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointermove', handleWindowPointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [])
+  }, [onPointerDown])
 
   // Scrollbar dragging
   const isDraggingScrollbarRef = useRef<'vertical' | 'horizontal' | null>(null)
@@ -756,11 +859,9 @@ export const CodeEditor = ({
   return (
     <div
       ref={containerRef}
-      className={
-        autoHeight
-          ? 'bg-neutral-800 text-white relative min-w-0'
-          : 'bg-neutral-800 text-white relative flex-1 min-w-0 min-h-0 h-full'
-      }
+      className={autoHeight
+        ? 'text-white relative min-w-0'
+        : 'text-white relative flex-1 min-w-0 min-h-0 h-full'}
       style={autoHeight ? { height: `${Math.max(0, scrollMetrics.contentHeight)}px` } : undefined}
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
     >
@@ -801,21 +902,38 @@ export const CodeEditor = ({
       />
 
       {/* Autocomplete popup */}
-      {isActive && autocompleteInfo && autocompleteReady && (
+      {isActive
+        && autocompleteInfo
+        && autocompleteInfo.suggestions.length > 0
+        && autocompleteReady
+        && (() => {
+          // Hide popup if current line is empty or there's no word at cursor
+          const currentLine = inputState.lines[inputState.caret.line] || ''
+          const wordInfo = findCurrentWord(
+            inputState.lines,
+            inputState.caret.line,
+            inputState.caret.column,
+          )
+          // Verify autocompleteInfo matches current word position
+          const matchesCurrentWord = wordInfo !== null
+            && wordInfo.startColumn === autocompleteInfo.startColumn
+            && wordInfo.endColumn === autocompleteInfo.endColumn
+            && wordInfo.word === autocompleteInfo.word
+          return !inputState.selection && wordInfo !== null && currentLine.trim().length > 0 && matchesCurrentWord
+        })() && (
         <AutocompletePopup
           suggestions={autocompleteInfo.suggestions}
           selectedIndex={autocompleteSelectedIndex}
           position={autocompletePosition}
-          visible={!inputState.selection}
+          visible={true}
           theme={theme ?? defaultTheme}
           onHover={index => setAutocompleteSelectedIndex(index)}
           onSelect={index => {
             const selectedSuggestion = autocompleteInfo.suggestions[index]
             const line = inputStateRef.current.lines[inputStateRef.current.caret.line]
-            const newLine =
-              line.substring(0, autocompleteInfo.startColumn) +
-              selectedSuggestion +
-              line.substring(autocompleteInfo.endColumn)
+            const newLine = line.substring(0, autocompleteInfo.startColumn)
+              + selectedSuggestion
+              + line.substring(autocompleteInfo.endColumn)
 
             const newLines = [...inputStateRef.current.lines]
             newLines[inputStateRef.current.caret.line] = newLine
@@ -839,7 +957,10 @@ export const CodeEditor = ({
       )}
 
       {/* Function signature popup */}
-      {isActive && functionCallInfo && functionDefinitions[functionCallInfo.functionName] && (
+      {!hideFunctionSignatures
+        && isActive
+        && functionCallInfo
+        && functionDefinitions[functionCallInfo.functionName] && (
         <FunctionSignaturePopup
           signature={functionDefinitions[functionCallInfo.functionName]}
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}

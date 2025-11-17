@@ -30,6 +30,10 @@ export class MouseHandler {
     this.wordWrapCoordinateConverter = converter
   }
 
+  isDraggingSelection(): boolean {
+    return this.isDragging
+  }
+
   handlePointerDown(event: PointerEvent, currentState: InputState) {
     const rect = this.canvas.getBoundingClientRect()
     let x: number, y: number

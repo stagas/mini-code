@@ -8,6 +8,32 @@ export interface AutocompleteInfo {
 }
 
 /**
+ * Check if a position in a line is inside a string literal
+ */
+const isInsideString = (line: string, column: number): boolean => {
+  let inString = false
+  let stringChar = ''
+
+  for (let i = 0; i < column; i++) {
+    const char = line[i]
+
+    if (!inString && (char === '"' || char === "'" || char === '`')) {
+      inString = true
+      stringChar = char
+      continue
+    }
+
+    if (inString && char === stringChar && (i === 0 || line[i - 1] !== '\\')) {
+      inString = false
+      stringChar = ''
+      continue
+    }
+  }
+
+  return inString
+}
+
+/**
  * Find the word being typed at the cursor position
  * Only returns a word if the cursor is at the end of a word (indicating active typing)
  */
@@ -18,6 +44,9 @@ export const findCurrentWord = (
 ): { word: string; startColumn: number; endColumn: number } | null => {
   const line = lines[cursorLine]
   if (!line) return null
+
+  // Don't autocomplete if cursor is inside a string
+  if (isInsideString(line, cursorColumn)) return null
 
   // Identifier segment characters (per segment): letters, numbers, $, _
   // Dot is treated as a segment delimiter for the current word
@@ -55,19 +84,42 @@ export const findCurrentWord = (
 
 /**
  * Extract all unique identifiers from the code
+ * Filters out identifiers that are inside strings
  */
 export const extractIdentifiers = (lines: string[]): Set<string> => {
   const identifiers = new Set<string>()
 
-  // Regex to match identifiers (including dotted ones like console.log)
-  const identifierRegex = /[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*/g
-
   for (const line of lines) {
+    // Regex to match identifiers (including dotted ones like console.log)
+    const identifierRegex = /[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*/g
     const matches = line.matchAll(identifierRegex)
+
     for (const match of matches) {
       const identifier = match[0]
-      // Filter out common keywords that shouldn't be autocompleted
-      if (!isKeyword(identifier)) {
+      const startIndex = match.index!
+
+      // Check if this identifier is inside a string by tracking string state up to its start
+      let inStringAtStart = false
+      let currentStringChar = ''
+
+      for (let i = 0; i < startIndex; i++) {
+        const char = line[i]
+
+        if (!inStringAtStart && (char === '"' || char === "'" || char === '`')) {
+          inStringAtStart = true
+          currentStringChar = char
+          continue
+        }
+
+        if (inStringAtStart && char === currentStringChar && (i === 0 || line[i - 1] !== '\\')) {
+          inStringAtStart = false
+          currentStringChar = ''
+          continue
+        }
+      }
+
+      // Only add if not inside a string and not a keyword
+      if (!inStringAtStart && !isKeyword(identifier)) {
         identifiers.add(identifier)
       }
     }

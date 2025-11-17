@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { FunctionParameter, FunctionSignature } from './function-signature.ts'
 import { type Theme, defaultTheme } from './syntax.ts'
 
@@ -22,28 +22,108 @@ const FunctionSignaturePopup = ({
   onDimensionsChange,
 }: FunctionSignaturePopupProps) => {
   const popupRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLElement | null>(null)
   const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
+  const [positionOffset, setPositionOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
   const onDimensionsChangeRef = useRef(onDimensionsChange)
 
   useEffect(() => {
     onDimensionsChangeRef.current = onDimensionsChange
   }, [onDimensionsChange])
 
+  // Calculate position offset - runs after layout to ensure accurate measurements
+  const calculateOffset = useCallback(() => {
+    if (!popupRef.current) {
+      setPositionOffset({ x: 0, y: 0 })
+      containerRef.current = null
+      return
+    }
+
+    // Find the nearest ancestor with transforms that creates a containing block for fixed positioning
+    let element: HTMLElement | null = popupRef.current.parentElement
+    let transformAncestor: HTMLElement | null = null
+
+    while (element) {
+      const style = window.getComputedStyle(element)
+      const transform = style.transform
+      const willChange = style.willChange
+      const filter = style.filter
+      const perspective = style.perspective
+      if (
+        transform !== 'none' ||
+        (willChange && (willChange.includes('transform') || willChange.includes('filter'))) ||
+        filter !== 'none' ||
+        (perspective !== 'none' && perspective !== '')
+      ) {
+        transformAncestor = element
+        break
+      }
+      element = element.parentElement
+    }
+
+    containerRef.current = transformAncestor
+
+    if (transformAncestor) {
+      // Get the container's bounding rect (accounts for transforms)
+      const containerRect = transformAncestor.getBoundingClientRect()
+      // The position passed in is viewport coordinates, but if there's a transform ancestor,
+      // fixed positioning is relative to that ancestor, so we need to adjust
+      setPositionOffset({
+        x: containerRect.left,
+        y: containerRect.top,
+      })
+    } else {
+      setPositionOffset({ x: 0, y: 0 })
+    }
+  }, [])
+
+  // Find the containing block for fixed positioning and calculate offset
+  useLayoutEffect(() => {
+    if (!visible) {
+      setPositionOffset({ x: 0, y: 0 })
+      containerRef.current = null
+      return
+    }
+
+    // Use RAF to ensure DOM is fully laid out
+    const rafId = requestAnimationFrame(() => {
+      calculateOffset()
+    })
+
+    return () => cancelAnimationFrame(rafId)
+  }, [visible, position.x, position.y])
+
   // Measure popup dimensions
   useEffect(() => {
     if (visible && popupRef.current) {
-      const rect = popupRef.current.getBoundingClientRect()
-      if (rect.width > 0 && rect.height > 0) {
-        setMeasuredSize(prev => {
-          const next = { width: rect.width, height: rect.height }
-          const changed = !prev || prev.width !== next.width || prev.height !== next.height
-          return changed ? next : prev
-        })
-      }
+      // Use RAF to ensure layout is complete before measuring
+      const rafId = requestAnimationFrame(() => {
+        if (!popupRef.current) return
+        const rect = popupRef.current.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) {
+          setMeasuredSize(prev => {
+            const next = { width: rect.width, height: rect.height }
+            const changed = !prev || prev.width !== next.width || prev.height !== next.height
+            return changed ? next : prev
+          })
+        }
+      })
+
+      return () => cancelAnimationFrame(rafId)
     } else if (!visible) {
       setMeasuredSize(prev => prev ? null : prev)
     }
   }, [visible, signature, currentArgumentIndex, position.x, position.y])
+
+  // Recalculate offset after measurement to ensure accurate positioning
+  useEffect(() => {
+    if (visible && measuredSize && popupRef.current) {
+      const rafId = requestAnimationFrame(() => {
+        calculateOffset()
+      })
+      return () => cancelAnimationFrame(rafId)
+    }
+  }, [visible, measuredSize, calculateOffset])
 
   // Notify parent of dimension changes in a separate effect
   useEffect(() => {
@@ -59,8 +139,12 @@ const FunctionSignaturePopup = ({
   const lineHeight = 20
   const spacing = 5
 
-  let finalX = position.x
-  let finalY = position.y
+  // Adjust position if container has transforms (fixed positioning becomes relative to transformed ancestor)
+  const adjustedX = position.x - positionOffset.x
+  const adjustedY = position.y - positionOffset.y
+
+  let finalX = adjustedX
+  let finalY = adjustedY
   let maxWidth: number | undefined = undefined
 
   if (!measuredSize) {
@@ -71,37 +155,43 @@ const FunctionSignaturePopup = ({
     const popupWidth = measuredSize.width
     const popupHeight = measuredSize.height
 
-    // HORIZONTAL: Try to fit at natural width, shift left if needed
-    const rightEdge = position.x + popupWidth
+    // If container has transforms, use container-relative viewport
+    const containerRect = containerRef.current?.getBoundingClientRect()
+    const effectiveViewportWidth = containerRect ? containerRect.width : viewportWidth
+    const effectiveViewportHeight = containerRect ? containerRect.height : viewportHeight
+    const effectiveMargin = margin
 
-    if (rightEdge <= viewportWidth - margin) {
+    // HORIZONTAL: Try to fit at natural width, shift left if needed
+    const rightEdge = adjustedX + popupWidth
+
+    if (rightEdge <= effectiveViewportWidth - effectiveMargin) {
       // Fits at cursor position
-      finalX = position.x
+      finalX = adjustedX
       maxWidth = undefined
     } else {
       // Would overflow right edge - try shifting left
-      const shiftedX = viewportWidth - popupWidth - margin
+      const shiftedX = effectiveViewportWidth - popupWidth - effectiveMargin
 
-      if (shiftedX >= margin) {
+      if (shiftedX >= effectiveMargin) {
         // Can fit by shifting left
         finalX = shiftedX
         maxWidth = undefined
       } else {
         // Too wide even when shifted - constrain width
-        finalX = margin
-        maxWidth = viewportWidth - 2 * margin
+        finalX = effectiveMargin
+        maxWidth = effectiveViewportWidth - 2 * effectiveMargin
       }
     }
 
     // VERTICAL: Prefer below, fallback to above, ensure cursor is never covered
-    const cursorTop = position.y
-    const cursorBottom = position.y + lineHeight
-    const spaceAbove = cursorTop - margin
-    const spaceBelow = viewportHeight - cursorBottom - margin
+    const cursorTop = adjustedY
+    const cursorBottom = adjustedY + lineHeight
+    const spaceAbove = cursorTop - effectiveMargin
+    const spaceBelow = effectiveViewportHeight - cursorBottom - effectiveMargin
 
     if (spaceBelow >= popupHeight + spacing) {
       // Show below cursor with spacing
-      finalY = cursorBottom //+ spacing
+      finalY = cursorBottom
     } else if (spaceAbove >= popupHeight + spacing) {
       // Show above cursor with spacing
       finalY = cursorTop - popupHeight - spacing
@@ -109,15 +199,15 @@ const FunctionSignaturePopup = ({
       // Doesn't fit either way - choose side with more space and clamp
       if (spaceBelow >= spaceAbove) {
         // Below: start after cursor line
-        finalY = cursorBottom //+ spacing
-        if (finalY + popupHeight > viewportHeight - margin) {
-          finalY = Math.max(cursorBottom + spacing, viewportHeight - popupHeight - margin)
+        finalY = cursorBottom
+        if (finalY + popupHeight > effectiveViewportHeight - effectiveMargin) {
+          finalY = Math.max(cursorBottom + spacing, effectiveViewportHeight - popupHeight - effectiveMargin)
         }
       } else {
         // Above: ensure bottom edge doesn't overlap cursor
-        finalY = Math.max(margin, cursorTop - popupHeight - spacing)
+        finalY = Math.max(effectiveMargin, cursorTop - popupHeight - spacing)
         if (finalY + popupHeight > cursorTop - spacing) {
-          finalY = Math.max(margin, cursorTop - popupHeight - spacing)
+          finalY = Math.max(effectiveMargin, cursorTop - popupHeight - spacing)
         }
       }
     }

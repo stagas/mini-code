@@ -212,6 +212,12 @@ export class InputHandler {
             return
           }
           break
+        case '-':
+        case '=':
+        case 'minus':
+        case 'equal':
+          // Allow browser default for zoom (ctrl+- and ctrl+=)
+          return
       }
     }
 
@@ -1693,18 +1699,40 @@ export class InputHandler {
       }
     }
 
-    // Adjust selection boundaries
+    // Adjust selection boundaries and caret
+    const adjust = (column: number, delta: number): number =>
+      column >= baseIndent ? Math.max(0, column + delta) : column
+
     if (hasRealSelection && state.selection) {
       const startLine = state.selection.start.line
       const endLine = state.selection.end.line
       const startDelta = deltaPerLine[startLine] || 0
       const endDelta = deltaPerLine[endLine] || 0
 
-      const adjust = (column: number, delta: number): number =>
-        column >= baseIndent ? Math.max(0, column + delta) : column
-
       state.selection.start.column = adjust(state.selection.start.column, startDelta)
       state.selection.end.column = adjust(state.selection.end.column, endDelta)
+
+      // Adjust caret from its original position using the delta for its line
+      // This ensures the caret is correctly positioned even if it wasn't exactly at selection end
+      if (state.caret.line >= firstLine && state.caret.line <= lastLine) {
+        // Caret is on a commented line, adjust it
+        const caretLine = state.caret.line
+        const caretDelta = deltaPerLine[caretLine] || 0
+        state.caret.column = adjust(state.caret.column, caretDelta)
+        state.caret.columnIntent = state.caret.column
+      } else if (endLine > lastLine && state.selection.end.column === 0) {
+        // Selection ended at start of line after last commented line
+        // Position caret at end of last commented line
+        const lastLineContent = state.lines[lastLine] || ''
+        state.caret.line = lastLine
+        state.caret.column = lastLineContent.length
+        state.caret.columnIntent = lastLineContent.length
+      } else {
+        // Caret is not on a commented line, set it to match selection end
+        state.caret.line = endLine
+        state.caret.column = state.selection.end.column
+        state.caret.columnIntent = state.selection.end.column
+      }
     } else {
       // Adjust caret if it's on an affected line and after insert position
       if (state.caret.line >= firstLine && state.caret.line <= lastLine) {

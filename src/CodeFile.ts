@@ -138,4 +138,37 @@ export class CodeFile {
       this.notifyListeners()
     }
   }
+
+  // Replace value with history tracking
+  replaceValue(newValue: string) {
+    if (this._value === newValue) return
+
+    const beforeState = this.inputStateToHistoryState(this._inputState)
+    this._history.flushDebouncedState(beforeState)
+    this._history.saveBeforeState(beforeState)
+
+    this._value = newValue
+    this._inputState = {
+      ...this._inputState,
+      lines: newValue.split('\n'),
+    }
+
+    const afterState = this.inputStateToHistoryState(this._inputState)
+    this._history.saveAfterState(afterState)
+
+    this.notifyListeners()
+  }
+
+  private inputStateToHistoryState(inputState: InputState) {
+    return {
+      lines: [...inputState.lines],
+      caret: { ...inputState.caret },
+      selection: inputState.selection
+        ? {
+            start: { ...inputState.selection.start },
+            end: { ...inputState.selection.end },
+          }
+        : null,
+    }
+  }
 }
