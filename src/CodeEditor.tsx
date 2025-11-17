@@ -155,16 +155,17 @@ export const CodeEditor = ({
       setInputStateInternal(newState)
       inputStateRef.current = newState
 
+      // Always update CodeFile to trigger subscriptions
+      codeFileRef.current.inputState = newState
+
       if (linesChanged) {
         lastTextRef.current = newText
-        // Update CodeFile (which will trigger setValue if provided)
-        codeFileRef.current.inputState = newState
         // Also call external setValue if provided (legacy mode)
         setValue?.(newText)
       }
       else {
-        // Even if text didn't change, update caret/selection in CodeFile
-        codeFileRef.current.inputState = newState
+        // Keep lastTextRef in sync even if text didn't change
+        lastTextRef.current = newText
       }
     },
     [setValue],
@@ -266,11 +267,13 @@ export const CodeEditor = ({
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    inputHandlerRef.current?.handlePasteEvent(e, inputState)
+    e.preventDefault()
+    inputHandlerRef.current?.handlePasteEvent(e, inputStateRef.current)
   }
 
   const handleCut = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    inputHandlerRef.current?.handleCut(inputState)
+    e.preventDefault()
+    inputHandlerRef.current?.handleCut(inputStateRef.current)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -295,7 +298,27 @@ export const CodeEditor = ({
     }
 
     // Handle autocomplete interactions (before general key handling)
-    if (autocompleteInfo && autocompleteInfo.suggestions.length > 0) {
+    // Only handle if autocomplete is actually visible (same conditions as JSX)
+    const isAutocompleteVisible = isActive
+      && autocompleteInfo
+      && autocompleteInfo.suggestions.length > 0
+      && autocompleteReady
+      && !inputState.selection
+      && (() => {
+        const currentLine = inputState.lines[inputState.caret.line] || ''
+        const wordInfo = findCurrentWord(
+          inputState.lines,
+          inputState.caret.line,
+          inputState.caret.column,
+        )
+        const matchesCurrentWord = wordInfo !== null
+          && wordInfo.startColumn === autocompleteInfo.startColumn
+          && wordInfo.endColumn === autocompleteInfo.endColumn
+          && wordInfo.word === autocompleteInfo.word
+        return wordInfo !== null && currentLine.trim().length > 0 && matchesCurrentWord
+      })()
+
+    if (isAutocompleteVisible) {
       if (e.key === 'Tab') {
         e.preventDefault()
         const len = autocompleteInfo.suggestions.length
@@ -307,23 +330,34 @@ export const CodeEditor = ({
       if (e.key === 'Enter') {
         e.preventDefault()
         // Accept selected suggestion
+        const currentState = inputStateRef.current
         const selectedSuggestion = autocompleteInfo.suggestions[autocompleteSelectedIndex]
-        const line = inputState.lines[inputState.caret.line]
+        const line = currentState.lines[currentState.caret.line]
         const newLine = line.substring(0, autocompleteInfo.startColumn)
           + selectedSuggestion
           + line.substring(autocompleteInfo.endColumn)
 
-        const newLines = [...inputState.lines]
-        newLines[inputState.caret.line] = newLine
+        const newLines = [...currentState.lines]
+        newLines[currentState.caret.line] = newLine
 
         const newState: InputState = {
-          ...inputState,
+          ...currentState,
           lines: newLines,
           caret: {
-            line: inputState.caret.line,
+            line: currentState.caret.line,
             column: autocompleteInfo.startColumn + selectedSuggestion.length,
             columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
           },
+        }
+
+        // Save to history before applying the change
+        if (inputHandlerRef.current) {
+          // Flush any pending debounced state
+          codeFileRef.current.history.flushDebouncedState(currentState)
+          // Save before state
+          inputHandlerRef.current.saveBeforeStateToHistory(currentState)
+          // Save after state
+          inputHandlerRef.current.saveAfterStateToHistory(newState)
         }
 
         setInputState(newState)
@@ -358,13 +392,14 @@ export const CodeEditor = ({
     if (isPrintableChar || isEditingKey) {
       canvasEditorRef.current?.setAutocompleteInputSource('keyboard')
     }
-    else if (isNavigationKey || isModifierOnly || hasModifier) {
+    else if (isNavigationKey || (isModifierOnly && e.key !== 'Shift') || (hasModifier && !e.shiftKey)) {
       // Hide autocomplete on navigation or modifier keys
+      // Don't hide when Shift is pressed alone (needed for Shift+Tab navigation)
       canvasEditorRef.current?.hideAutocomplete()
       setAutocompleteSelectedIndex(0)
     }
 
-    inputHandlerRef.current?.handleKeyDown(e, inputState)
+    inputHandlerRef.current?.handleKeyDown(e, inputStateRef.current)
   }
 
   // Reset selected index when autocomplete info changes
@@ -561,6 +596,10 @@ export const CodeEditor = ({
     },
     onScrollChange: (sx, sy) => {
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
+      // Update CodeFile scroll position and track it
+      lastScrollRef.current = { x: sx, y: sy }
+      codeFileRef.current.scrollX = sx
+      codeFileRef.current.scrollY = sy
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
@@ -589,6 +628,10 @@ export const CodeEditor = ({
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
+        // Update CodeFile scroll position and track it
+        lastScrollRef.current = { x: sx, y: sy }
+        codeFileRef.current.scrollX = sx
+        codeFileRef.current.scrollY = sy
 
         // Update selection during auto-scroll when dragging
         if (mouseHandlerRef.current?.isDraggingSelection() && lastMousePositionRef.current.event) {
@@ -946,6 +989,16 @@ export const CodeEditor = ({
                 column: autocompleteInfo.startColumn + selectedSuggestion.length,
                 columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
               },
+            }
+
+            // Save to history before applying the change
+            if (inputHandlerRef.current) {
+              // Flush any pending debounced state
+              codeFileRef.current.history.flushDebouncedState(inputStateRef.current)
+              // Save before state
+              inputHandlerRef.current.saveBeforeStateToHistory(inputStateRef.current)
+              // Save after state
+              inputHandlerRef.current.saveAfterStateToHistory(newState)
             }
 
             setInputState(newState)

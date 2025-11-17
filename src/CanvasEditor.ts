@@ -715,13 +715,8 @@ export class CanvasEditor {
         }
       }
 
-      // Exactly at the boundary: prefer the next segment if it starts here
+      // Exactly at the boundary: prefer the end of this segment instead of start of next
       if (logicalColumn === wrapped.endColumn) {
-        const next = wrappedLines[i + 1]
-        if (next && next.logicalLine === logicalLine && next.startColumn === wrapped.endColumn) {
-          return { visualLine: i + 1, visualColumn: 0 }
-        }
-        // Otherwise treat as end of this segment
         return { visualLine: i, visualColumn: wrapped.text.length }
       }
     }
@@ -1043,15 +1038,11 @@ export class CanvasEditor {
     }
 
     // Clamp scroll values to new maximums
-    const oldScrollX = this.scrollX
-    const oldScrollY = this.scrollY
     this.scrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
     this.scrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
 
-    // Notify about scroll changes only if they actually changed
-    if (this.scrollX !== oldScrollX || this.scrollY !== oldScrollY) {
-      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
-    }
+    // Notify about scroll changes
+    this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
   }
 
   public getCaretPositionFromCoordinates(
@@ -1081,6 +1072,20 @@ export class CanvasEditor {
     // Calculate column position within the visual line
     const textPadding = this.getTextPadding()
     const visualColumn = this.getColumnFromX(adjustedX - textPadding, wrappedLine.text, ctx)
+
+    // If we're at the start of a wrapped segment (visualColumn = 0) and this is a continuation
+    // of the previous segment (same logical line), place caret at end of previous segment instead
+    if (visualColumn === 0 && clampedVisualLineIndex > 0) {
+      const prevWrappedLine = wrappedLines[clampedVisualLineIndex - 1]
+      if (prevWrappedLine && prevWrappedLine.logicalLine === wrappedLine.logicalLine) {
+        // Place caret at end of previous segment
+        return {
+          line: prevWrappedLine.logicalLine,
+          column: prevWrappedLine.endColumn,
+          columnIntent: prevWrappedLine.endColumn,
+        }
+      }
+    }
 
     // Convert visual position to logical position
     const logicalPosition = this.visualToLogicalPosition(
@@ -1165,9 +1170,17 @@ export class CanvasEditor {
         nextVisualColumn = currentVisual.visualColumn + 1
       }
       else if (currentVisual.visualLine < wrappedLines.length - 1) {
-        // Move to start of next segment
+        // Move to next segment
         nextVisualLine = currentVisual.visualLine + 1
-        nextVisualColumn = 0
+        const nextWrapped = wrappedLines[nextVisualLine]
+        // If next segment is part of same logical line, move to position 1 (inside the segment)
+        // to avoid being placed back at end of previous segment, but only if segment has content
+        if (nextWrapped.logicalLine === currentWrapped.logicalLine && nextWrapped.text.length > 1) {
+          nextVisualColumn = 1
+        }
+        else {
+          nextVisualColumn = 0
+        }
       }
       else {
         // At end of last segment, try to move to next line
@@ -1353,12 +1366,29 @@ export class CanvasEditor {
 
   public updateState(newState: InputState) {
     // Invalidate wrapped lines cache if lines changed
-    if (this.inputState.lines !== newState.lines) {
+    const linesChanged = this.inputState.lines !== newState.lines
+
+    // Track if we were at the bottom before update (must check before invalidating cache)
+    const ctx = this.canvas.getContext('2d')
+    let wasAtBottom = false
+    if (ctx && linesChanged && this.isActive) {
+      this.setFont(ctx)
+      const oldContentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+      const dpr = window.devicePixelRatio || 1
+      const viewportHeight = this.canvas.height / dpr
+      const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
+      wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
+    }
+
+    if (linesChanged) {
       this.wrappedLinesCache = null
       this.invalidateMeasurementCaches()
     }
+
     this.inputState = newState
-    if (this.isActive) this.ensureCaretVisible()
+    if (this.isActive) this.ensureCaretVisible(wasAtBottom)
     this.draw()
     this.updateAutocomplete()
     this.updateFunctionSignature()
@@ -1458,6 +1488,9 @@ export class CanvasEditor {
     contentWidth: number
     contentHeight: number
   } | null {
+    // Ensure canvas size is up to date before calculating metrics
+    this.updateCanvasSize()
+
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return null
     this.setFont(ctx)
@@ -1636,7 +1669,8 @@ export class CanvasEditor {
     }
   }
 
-  private ensureCaretVisible() {
+  private ensureCaretVisible(wasAtBottom = false) {
+    // return
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
 
@@ -1690,23 +1724,49 @@ export class CanvasEditor {
     // Margins so caret isn't flush to edge
     const margin = 16
 
+    // Check if caret is already fully visible
+    const caretVisibleX = caretX >= this.scrollX + margin && caretX <= this.scrollX + viewportWidth - margin
+    const caretVisibleY = caretTop >= this.scrollY + margin && caretBottom <= this.scrollY + viewportHeight - margin
+
+    // If we were at the bottom and caret is on the last line, maintain bottom scroll
+    const isLastLine = this.inputState.caret.line === this.inputState.lines.length - 1
+    if (wasAtBottom && isLastLine) {
+      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+      if (this.scrollY < maxScrollY) {
+        this.scrollY = maxScrollY
+        queueMicrotask(() => {
+          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        })
+      }
+      return
+    }
+
+    // If caret is already fully visible, don't change scroll position
+    if (caretVisibleX && caretVisibleY) {
+      return
+    }
+
     let nextScrollX = this.scrollX
     let nextScrollY = this.scrollY
 
     // Horizontal scrolling
-    if (caretX < this.scrollX + margin) {
-      nextScrollX = Math.max(0, caretX - margin)
-    }
-    else if (caretX > this.scrollX + viewportWidth - margin) {
-      nextScrollX = caretX - (viewportWidth - margin)
+    if (!caretVisibleX) {
+      if (caretX < this.scrollX + margin) {
+        nextScrollX = Math.max(0, caretX - margin)
+      }
+      else if (caretX > this.scrollX + viewportWidth - margin) {
+        nextScrollX = caretX - (viewportWidth - margin)
+      }
     }
 
     // Vertical scrolling
-    if (caretTop < this.scrollY + margin) {
-      nextScrollY = Math.max(0, caretTop - margin)
-    }
-    else if (caretBottom > this.scrollY + viewportHeight - margin) {
-      nextScrollY = caretBottom - (viewportHeight - margin)
+    if (!caretVisibleY) {
+      if (caretTop < this.scrollY + margin) {
+        nextScrollY = Math.max(0, caretTop - margin)
+      }
+      else if (caretBottom > this.scrollY + viewportHeight - margin) {
+        nextScrollY = caretBottom - (viewportHeight - margin)
+      }
     }
 
     // Clamp to content size
@@ -1719,7 +1779,9 @@ export class CanvasEditor {
     if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
       this.scrollX = nextScrollX
       this.scrollY = nextScrollY
-      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      queueMicrotask(() => {
+        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      })
     }
   }
 
@@ -2424,7 +2486,7 @@ export class CanvasEditor {
     }
   }
 
-  private updateAutocomplete() {
+  private updateAutocomplete(forceImmediate = false) {
     if (!this.isActive) return
     if (this.autocompleteInputSource !== 'keyboard') return
 
@@ -2468,8 +2530,6 @@ export class CanvasEditor {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
         this.setFont(ctx)
-        const rect = this.container.getBoundingClientRect()
-
         let preCalculatedCaretContentY: number | undefined
         let preCalculatedCaretContentX: number | undefined
         const textPadding = this.getTextPadding()
@@ -2508,7 +2568,7 @@ export class CanvasEditor {
             this.lineHeight,
             ctx,
             this.inputState.lines,
-            rect,
+            this.container.getBoundingClientRect(),
             this.scrollX,
             this.scrollY,
             contentY,
@@ -2530,7 +2590,8 @@ export class CanvasEditor {
 
         // If autocomplete info hasn't changed, update position immediately (e.g., during scroll)
         // Only delay when autocomplete info is changing (new suggestions, etc.)
-        if (!changed && this.lastAutocompleteInfo !== null) {
+        // Force immediate update if canvas state is already finalized (e.g., after error updates)
+        if (forceImmediate || (!changed && this.lastAutocompleteInfo !== null)) {
           computeAndPublish()
         }
         else {
@@ -2583,8 +2644,54 @@ export class CanvasEditor {
   }
 
   public setErrors(errors: EditorError[]) {
+    // Track if we were at the bottom before updating errors
+    const ctx = this.canvas.getContext('2d')
+    let wasAtBottom = false
+    if (ctx && this.isActive) {
+      this.setFont(ctx)
+      const oldContentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+      const dpr = window.devicePixelRatio || 1
+      const viewportHeight = this.canvas.height / dpr
+      const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
+      wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
+    }
+
     this.errors = errors
-    this.draw()
+
+    // Defer canvas size update to avoid feedback loop with ResizeObserver
+    // The draw will use current canvas size, and metrics will be updated correctly
+    requestAnimationFrame(() => {
+      this.updateCanvasSize()
+
+      const drawCtx = this.canvas.getContext('2d')
+      if (!drawCtx) return
+
+      this.draw()
+      this.updateFunctionSignature()
+      this.updateAutocomplete(true)
+
+      // Preserve bottom scroll position after draw if we were at the bottom
+      if (wasAtBottom && drawCtx && this.isActive) {
+        this.setFont(drawCtx)
+        const wrappedLines = this.getWrappedLines(drawCtx)
+        const newContentSize = this.options.wordWrap
+          ? this.getContentSizeWithWrapping(drawCtx, wrappedLines)
+          : this.getContentSize(drawCtx)
+        const dpr = window.devicePixelRatio || 1
+        const viewportHeight = this.canvas.height / dpr
+        const maxScrollY = Math.max(0, newContentSize.height - viewportHeight)
+        if (this.scrollY < maxScrollY) {
+          this.scrollY = maxScrollY
+          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+          // Redraw to reflect the corrected scroll position
+          this.draw()
+          this.updateFunctionSignature()
+          this.updateAutocomplete(true)
+        }
+      }
+    })
   }
 
   public checkErrorHover(x: number, y: number): EditorError | null {

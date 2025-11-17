@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { FunctionParameter, FunctionSignature } from './function-signature.ts'
-import { type Theme, defaultTheme } from './syntax.ts'
+import { defaultTheme, type Theme } from './syntax.ts'
 
 interface FunctionSignaturePopupProps {
   signature: FunctionSignature
@@ -50,10 +50,10 @@ const FunctionSignaturePopup = ({
       const filter = style.filter
       const perspective = style.perspective
       if (
-        transform !== 'none' ||
-        (willChange && (willChange.includes('transform') || willChange.includes('filter'))) ||
-        filter !== 'none' ||
-        (perspective !== 'none' && perspective !== '')
+        transform !== 'none'
+        || (willChange && (willChange.includes('transform') || willChange.includes('filter')))
+        || filter !== 'none'
+        || (perspective !== 'none' && perspective !== '')
       ) {
         transformAncestor = element
         break
@@ -72,7 +72,8 @@ const FunctionSignaturePopup = ({
         x: containerRect.left,
         y: containerRect.top,
       })
-    } else {
+    }
+    else {
       setPositionOffset({ x: 0, y: 0 })
     }
   }, [])
@@ -110,7 +111,8 @@ const FunctionSignaturePopup = ({
       })
 
       return () => cancelAnimationFrame(rafId)
-    } else if (!visible) {
+    }
+    else if (!visible) {
       setMeasuredSize(prev => prev ? null : prev)
     }
   }, [visible, signature, currentArgumentIndex, position.x, position.y])
@@ -151,7 +153,8 @@ const FunctionSignaturePopup = ({
     // First render: position off-screen to allow measurement without constraint
     finalX = -9999
     finalY = -9999
-  } else {
+  }
+  else {
     const popupWidth = measuredSize.width
     const popupHeight = measuredSize.height
 
@@ -168,7 +171,8 @@ const FunctionSignaturePopup = ({
       // Fits at cursor position
       finalX = adjustedX
       maxWidth = undefined
-    } else {
+    }
+    else {
       // Would overflow right edge - try shifting left
       const shiftedX = effectiveViewportWidth - popupWidth - effectiveMargin
 
@@ -176,7 +180,8 @@ const FunctionSignaturePopup = ({
         // Can fit by shifting left
         finalX = shiftedX
         maxWidth = undefined
-      } else {
+      }
+      else {
         // Too wide even when shifted - constrain width
         finalX = effectiveMargin
         maxWidth = effectiveViewportWidth - 2 * effectiveMargin
@@ -192,10 +197,12 @@ const FunctionSignaturePopup = ({
     if (spaceBelow >= popupHeight + spacing) {
       // Show below cursor with spacing
       finalY = cursorBottom
-    } else if (spaceAbove >= popupHeight + spacing) {
+    }
+    else if (spaceAbove >= popupHeight + spacing) {
       // Show above cursor with spacing
       finalY = cursorTop - popupHeight - spacing
-    } else {
+    }
+    else {
       // Doesn't fit either way - choose side with more space and clamp
       if (spaceBelow >= spaceAbove) {
         // Below: start after cursor line
@@ -203,7 +210,8 @@ const FunctionSignaturePopup = ({
         if (finalY + popupHeight > effectiveViewportHeight - effectiveMargin) {
           finalY = Math.max(cursorBottom + spacing, effectiveViewportHeight - popupHeight - effectiveMargin)
         }
-      } else {
+      }
+      else {
         // Above: ensure bottom edge doesn't overlap cursor
         finalY = Math.max(effectiveMargin, cursorTop - popupHeight - spacing)
         if (finalY + popupHeight > cursorTop - spacing) {
@@ -220,7 +228,7 @@ const FunctionSignaturePopup = ({
     // If we have a named parameter, find it by name
     if (paramName) {
       const paramIndex = signature.parameters.findIndex(
-        param => param.name === paramName || param.name === `...${paramName}`
+        param => param.name === paramName || param.name === `...${paramName}`,
       )
       if (paramIndex >= 0) {
         return paramIndex
@@ -241,14 +249,27 @@ const FunctionSignaturePopup = ({
 
   const renderParameter = (param: FunctionParameter, index: number, isLast: boolean) => {
     const isActive = index === effectiveParameterIndex
-    const paramText = `${param.name}${param.optional ? '?' : ''}${
-      param.type ? `: ${param.type}` : ''
-    }`
+    const paramText = (
+      <span>
+        <span style={{ color: theme.functionSignaturePopup.parameterName }}>
+          {param.name}
+          {param.optional ? '?' : ''}
+        </span>
+        {param.type
+          ? (
+            <>
+              <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
+              <span style={{ color: theme.functionSignaturePopup.parameterType }}>{param.type}</span>
+            </>
+          )
+          : ''}
+      </span>
+    )
 
     return (
       <span key={index}>
         <span
-          className={isActive ? 'px-1 rounded font-semibold' : ''}
+          className={isActive ? 'px-1 rounded' : ''}
           style={{
             backgroundColor: isActive ? theme.functionSignaturePopup.activeParameterBackground : 'transparent',
             color: isActive ? theme.functionSignaturePopup.activeParameterText : theme.functionSignaturePopup.text,
@@ -257,7 +278,7 @@ const FunctionSignaturePopup = ({
         >
           {paramText}
         </span>
-        {!isLast && <span style={{ color: theme.functionSignaturePopup.separator }}>,</span>}
+        {!isLast && <span style={{ color: theme.functionSignaturePopup.separator }}>,{' '}</span>}
       </span>
     )
   }
@@ -278,31 +299,42 @@ const FunctionSignaturePopup = ({
     >
       <div className="p-3">
         <div className="text-sm">
-          <div className="font-mono break-words overflow-hidden" style={{ color: theme.functionSignaturePopup.text }}>
-            <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">{signature.name}</span>
+          <div className="break-words overflow-hidden"
+            style={{ color: theme.functionSignaturePopup.text, font: theme.font }}
+          >
+            <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">
+              {signature.name}
+            </span>
             <span style={{ color: theme.functionSignaturePopup.separator }}>(</span>
             {signature.parameters.map((param, index) =>
-              renderParameter(param, index, index === signature.parameters.length - 1),
+              renderParameter(param, index, index === signature.parameters.length - 1)
             )}
             <span style={{ color: theme.functionSignaturePopup.separator }}>)</span>
             {signature.returnType && (
               <>
                 <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-                <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">{signature.returnType}</span>
+                <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">
+                  {signature.returnType}
+                </span>
               </>
             )}
           </div>
 
           {signature.description && (
-            <div className="text-xs mt-2 leading-relaxed break-words" style={{ color: theme.functionSignaturePopup.description }}>
+            <div className="text-sm font-semibold mt-2 leading-relaxed break-words"
+              style={{ color: theme.functionSignaturePopup.description }}
+            >
               {signature.description}
             </div>
           )}
 
           {/* Current parameter details */}
           {signature.parameters[effectiveParameterIndex] && (
-            <div className="mt-2 pt-2" style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px', borderTopStyle: 'solid' }}>
-              <div className="text-xs break-words">
+            <div className="mt-2 pt-2"
+              style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
+                borderTopStyle: 'solid' }}
+            >
+              <div className="text-sm font-semibold break-words">
                 <span style={{ color: theme.functionSignaturePopup.parameterName }} className="font-semibold">
                   {signature.parameters[effectiveParameterIndex].name}
                   {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
@@ -320,7 +352,9 @@ const FunctionSignaturePopup = ({
                 )}
               </div>
               {signature.parameters[effectiveParameterIndex].description && (
-                <div className="text-xs mt-1 leading-relaxed break-words" style={{ color: theme.functionSignaturePopup.description }}>
+                <div className="text-sm mt-1 leading-relaxed break-words"
+                  style={{ color: theme.functionSignaturePopup.description }}
+                >
                   {signature.parameters[effectiveParameterIndex].description}
                 </div>
               )}

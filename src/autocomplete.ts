@@ -17,7 +17,7 @@ const isInsideString = (line: string, column: number): boolean => {
   for (let i = 0; i < column; i++) {
     const char = line[i]
 
-    if (!inString && (char === '"' || char === "'" || char === '`')) {
+    if (!inString && (char === '"' || char === '\'' || char === '`')) {
       inString = true
       stringChar = char
       continue
@@ -105,7 +105,7 @@ export const extractIdentifiers = (lines: string[]): Set<string> => {
       for (let i = 0; i < startIndex; i++) {
         const char = line[i]
 
-        if (!inStringAtStart && (char === '"' || char === "'" || char === '`')) {
+        if (!inStringAtStart && (char === '"' || char === '\'' || char === '`')) {
           inStringAtStart = true
           currentStringChar = char
           continue
@@ -203,9 +203,7 @@ export const getAutocompleteSuggestions = (
 
   // Filter by prefix match (case-insensitive)
   const prefix = currentWord.toLowerCase()
-  const filtered = Array.from(suggestions).filter(suggestion =>
-    suggestion.toLowerCase().startsWith(prefix),
-  )
+  const filtered = Array.from(suggestions).filter(suggestion => suggestion.toLowerCase().startsWith(prefix))
 
   // Remove the current word itself from suggestions
   const withoutSelf = filtered.filter(s => s !== currentWord)

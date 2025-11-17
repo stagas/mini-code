@@ -157,6 +157,17 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
     returnType: 'number',
     description: 'Free sound slicer',
   },
+  seq: {
+    name: 'seq',
+    parameters: [
+      { name: 'seq', type: 'string', description: 'Sequence pattern' },
+      { name: 'swing', type: 'number', description: 'Swing amount' },
+      { name: 'offset', type: 'number', description: 'Offset' },
+      { name: 'cb', type: 'function', description: 'Callback function' },
+    ],
+    returnType: 'any',
+    description: 'Sequence function',
+  },
 }
 
 /**
@@ -375,25 +386,33 @@ export const findFunctionCallContext = (
             }
           }
         } else if (signature) {
-          // Check if it's a short parameter syntax (parameter name without colon)
-          // Extract the first word to see if it matches a parameter name
-          const wordMatch = argText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
-          if (wordMatch) {
-            const word = wordMatch[1]
-            // Check if this word exactly matches a parameter name
-            for (const param of signature.parameters) {
-              const cleanName = param.name.replace(/^\.\.\./, '')
-              if (cleanName === word || param.name === word) {
-                // This is a short parameter syntax - mark it as used
-                usedParameterNames.add(cleanName)
-                usedParameterNames.add(param.name)
-                break
+          // Check if this argument looks like a function (contains -> or =>)
+          // If it's a function, don't mark it as a positional argument yet
+          // It will be matched by type later
+          const isFunctionArg = argText.includes('->') || argText.includes('=>')
+
+          if (!isFunctionArg) {
+            // Check if it's a short parameter syntax (parameter name without colon)
+            // Extract the first word to see if it matches a parameter name
+            const wordMatch = argText.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+            if (wordMatch) {
+              const word = wordMatch[1]
+              // Check if this word exactly matches a parameter name
+              for (const param of signature.parameters) {
+                const cleanName = param.name.replace(/^\.\.\./, '')
+                if (cleanName === word || param.name === word) {
+                  // This is a short parameter syntax - mark it as used
+                  usedParameterNames.add(cleanName)
+                  usedParameterNames.add(param.name)
+                  break
+                }
               }
             }
+            // Track as positional (in case it's not a parameter name match)
+            usedPositionalIndices.add(positionalIndex)
+            positionalIndex++
           }
-          // Also track as positional (in case it's not a parameter name match)
-          usedPositionalIndices.add(positionalIndex)
-          positionalIndex++
+          // If it's a function, skip positional tracking - it will be matched by type
         } else {
           // Positional parameter (no signature available)
           usedPositionalIndices.add(positionalIndex)
@@ -633,6 +652,78 @@ export const findFunctionCallContext = (
             }
           }
         }
+      }
+    }
+  }
+
+  // Type-based matching: if current argument is a function, match to first function-type parameter
+  // This should run even if parameter name matching happened, to override positional matching
+  if (signature) {
+    const trimmedCurrentArg = currentArgText.trim()
+    const trimmedFullArg = fullCurrentArgText.trim()
+
+    // Check if argument looks like a function using multiple heuristics
+    // 1. Contains arrow syntax (-> or =>) - strongest indicator
+    const hasArrow = trimmedFullArg.includes('->')
+      || trimmedCurrentArg.includes('->')
+      || trimmedFullArg.includes('=>')
+      || trimmedCurrentArg.includes('=>')
+
+    // 2. Starts with '(' and we're inside nested structures (braces indicate function body)
+    // This catches cases where cursor is inside function body even if arrow isn't in current text
+    const isInsideBraces = braceDepth2 > 0
+    const startsWithParen = trimmedFullArg.startsWith('(') || trimmedCurrentArg.startsWith('(')
+    const hasContent = trimmedFullArg.length > 1 || trimmedCurrentArg.length > 1
+    const isLikelyFunction = isInsideBraces && startsWithParen && hasContent
+
+    // 3. Starts with '(' and contains arrow (function pattern)
+    const matchesFunctionPattern = startsWithParen && hasArrow
+
+    const isFunctionArg = hasArrow || matchesFunctionPattern || isLikelyFunction
+
+    if (isFunctionArg) {
+      // Find first parameter with type matching "function" (case-insensitive)
+      for (let i = 0; i < signature.parameters.length; i++) {
+        const param = signature.parameters[i]
+        if (param.type && /function/i.test(param.type)) {
+          // Check if this parameter hasn't been used yet
+          const paramName = param.name.replace(/^\.\.\./, '')
+          if (!usedParameterNames.has(paramName) && !usedParameterNames.has(param.name)) {
+            commaCount = i
+            // Don't mark skipped parameters as used - they can still be filled in later
+            // Just set the current argument index to the function parameter
+            // Clear currentParameterName if it was set by positional matching, since we're overriding with type matching
+            currentParameterName = undefined
+            break
+          }
+        }
+      }
+    }
+
+  }
+
+  // Final check: if current argument is empty and comma count points to a parameter that's already used,
+  // or if comma count is higher than the first unused parameter, use the first unused one instead
+  // This handles the case where a function was matched to a later parameter and we're now on the next argument
+  if (signature && !currentParameterName && currentArgText.trim().length === 0) {
+    // Find first unused positional parameter
+    let firstUnusedIndex = -1
+    for (let i = 0; i < signature.parameters.length; i++) {
+      if (!usedPositionalIndices.has(i) && !usedParameterNames.has(signature.parameters[i].name)) {
+        const paramName = signature.parameters[i].name.replace(/^\.\.\./, '')
+        if (!usedParameterNames.has(paramName)) {
+          firstUnusedIndex = i
+          break
+        }
+      }
+    }
+    // If we found an unused parameter and either:
+    // 1. The comma count is higher than it (we skipped parameters), OR
+    // 2. The comma count points to a used parameter
+    // Then use the first unused one instead
+    if (firstUnusedIndex >= 0) {
+      if (commaCount > firstUnusedIndex || (commaCount < signature.parameters.length && usedPositionalIndices.has(commaCount))) {
+        commaCount = firstUnusedIndex
       }
     }
   }

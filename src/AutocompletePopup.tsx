@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { type Theme, defaultTheme } from './syntax.ts'
+import { defaultTheme, type Theme } from './syntax.ts'
 
 interface AutocompletePopupProps {
   suggestions: string[]
@@ -44,10 +44,10 @@ const AutocompletePopup = ({
       const filter = style.filter
       const perspective = style.perspective
       if (
-        transform !== 'none' ||
-        (willChange && (willChange.includes('transform') || willChange.includes('filter'))) ||
-        filter !== 'none' ||
-        (perspective !== 'none' && perspective !== '')
+        transform !== 'none'
+        || (willChange && (willChange.includes('transform') || willChange.includes('filter')))
+        || filter !== 'none'
+        || (perspective !== 'none' && perspective !== '')
       ) {
         transformAncestor = element
         break
@@ -66,7 +66,8 @@ const AutocompletePopup = ({
         x: containerRect.left,
         y: containerRect.top,
       })
-    } else {
+    }
+    else {
       setPositionOffset({ x: 0, y: 0 })
     }
   }, [])
@@ -133,8 +134,9 @@ const AutocompletePopup = ({
             <div
               key={suggestion}
               ref={isSelected ? selectedItemRef : undefined}
-              className="px-3 py-1 font-mono text-sm cursor-default"
+              className="px-3 py-1 text-sm cursor-default"
               style={{
+                font: theme.font,
                 backgroundColor: isSelected
                   ? theme.autocompletePopup.selectedBackground
                   : 'transparent',
