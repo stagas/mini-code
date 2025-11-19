@@ -3,6 +3,7 @@ export interface FunctionParameter {
   type?: string
   optional?: boolean
   description?: string
+  defaultValue?: any
 }
 
 export interface FunctionSignature {
@@ -10,6 +11,7 @@ export interface FunctionSignature {
   parameters: FunctionParameter[]
   returnType?: string
   description?: string
+  deprecated?: boolean
 }
 
 export interface FunctionCallInfo {
@@ -41,8 +43,7 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
       {
         name: '...values',
         type: 'number[]',
-        description:
-          'Zero or more numbers among which the largest value will be selected and returned',
+        description: 'Zero or more numbers among which the largest value will be selected and returned',
       },
     ],
     returnType: 'number',
@@ -70,8 +71,7 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
       },
     ],
     returnType: 'number',
-    description:
-      'Sets a timer which executes a function or specified piece of code once the timer expires',
+    description: 'Sets a timer which executes a function or specified piece of code once the timer expires',
   },
   'Array.from': {
     name: 'Array.from',
@@ -95,8 +95,7 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
       },
     ],
     returnType: 'U[]',
-    description:
-      'Creates a new, shallow-copied Array instance from an array-like or iterable object',
+    description: 'Creates a new, shallow-copied Array instance from an array-like or iterable object',
   },
   fibonacci: {
     name: 'fibonacci',
@@ -273,7 +272,8 @@ export const findFunctionCallContext = (
   for (const paren of parens) {
     if (paren.char === '(') {
       stack.push({ position: paren.position, line: paren.line, column: paren.column })
-    } else if (paren.char === ')') {
+    }
+    else if (paren.char === ')') {
       if (stack.length > 0) {
         const openParen = stack.pop()!
 
@@ -347,7 +347,7 @@ export const findFunctionCallContext = (
     const char = allArgsText[i]
 
     // Handle strings
-    if (!inString && (char === '"' || char === "'" || char === '`')) {
+    if (!inString && (char === '"' || char === '\'' || char === '`')) {
       inString = true
       stringChar = char
       continue
@@ -385,7 +385,8 @@ export const findFunctionCallContext = (
               }
             }
           }
-        } else if (signature) {
+        }
+        else if (signature) {
           // Check if this argument looks like a function (contains -> or =>)
           // If it's a function, don't mark it as a positional argument yet
           // It will be matched by type later
@@ -413,7 +414,8 @@ export const findFunctionCallContext = (
             positionalIndex++
           }
           // If it's a function, skip positional tracking - it will be matched by type
-        } else {
+        }
+        else {
           // Positional parameter (no signature available)
           usedPositionalIndices.add(positionalIndex)
           positionalIndex++
@@ -437,7 +439,7 @@ export const findFunctionCallContext = (
     const char = textBetween[i]
 
     // Handle strings
-    if (!inString3 && (char === '"' || char === "'" || char === '`')) {
+    if (!inString3 && (char === '"' || char === '\'' || char === '`')) {
       inString3 = true
       stringChar3 = char
       continue
@@ -473,7 +475,7 @@ export const findFunctionCallContext = (
     const char = fullTextBetween[i]
 
     // Handle strings
-    if (!inString2 && (char === '"' || char === "'" || char === '`')) {
+    if (!inString2 && (char === '"' || char === '\'' || char === '`')) {
       inString2 = true
       stringChar2 = char
       continue
@@ -509,7 +511,7 @@ export const findFunctionCallContext = (
     const char = textFromOpenParen[i]
 
     // Handle strings
-    if (!inString2 && (char === '"' || char === "'" || char === '`')) {
+    if (!inString2 && (char === '"' || char === '\'' || char === '`')) {
       inString2 = true
       stringChar2 = char
       continue
@@ -541,10 +543,9 @@ export const findFunctionCallContext = (
 
   const fullCurrentArgText = textFromOpenParen.substring(argStartInFullText, argEndInFullText).trim()
 
-  const currentArgText =
-    lastCommaIndex >= 0
-      ? fullTextBetween.substring(lastCommaIndex + 1).trim()
-      : fullTextBetween.trim()
+  const currentArgText = lastCommaIndex >= 0
+    ? fullTextBetween.substring(lastCommaIndex + 1).trim()
+    : fullTextBetween.trim()
 
   // Check if current argument is a named parameter (name:value format)
   // First check currentArgText (up to cursor) for immediate feedback when typing
@@ -563,7 +564,8 @@ export const findFunctionCallContext = (
       // If the pattern is at the start of the argument (after trimming), use it
       if (matchIndex === 0) {
         currentParameterName = paramName
-      } else {
+      }
+      else {
         // Pattern is somewhere in the argument - check if cursor is on it
         const argStartInCode = bestMatch.openPos + 1 + argStartInFullText
         const untrimmedArgText = textFromOpenParen.substring(argStartInFullText, argEndInFullText)
@@ -578,7 +580,8 @@ export const findFunctionCallContext = (
         }
       }
     }
-  } else {
+  }
+  else {
     // No colon found - check if the argument text matches a parameter name prefix
     if (signature) {
       // Priority 1: Check currentArgText (text up to cursor) - most accurate when typing
@@ -593,7 +596,7 @@ export const findFunctionCallContext = (
           // Check if there's a colon after the cursor
           const argTextFromCursor = code.substring(cursorGlobalPos, Math.min(
             code.length,
-            bestMatch.openPos + 1 + fullTextBetween.length + 100
+            bestMatch.openPos + 1 + fullTextBetween.length + 100,
           ))
           const hasColonAfterCursor = argTextFromCursor.match(/^\s*:/)
 
@@ -602,22 +605,25 @@ export const findFunctionCallContext = (
             if (!usedParameterNames.has(argWord)) {
               currentParameterName = argWord
             }
-          } else {
+          }
+          else {
             // No colon yet - check if the word matches the start of any unused parameter name
             for (const param of signature.parameters) {
               const paramName = param.name.replace(/^\.\.\./, '')
               // Check if parameter is not used and matches the word
-              if (!usedParameterNames.has(paramName) &&
-                  !usedParameterNames.has(param.name) &&
-                  paramName.startsWith(argWord) &&
-                  argWord.length > 0) {
+              if (!usedParameterNames.has(paramName)
+                && !usedParameterNames.has(param.name)
+                && paramName.startsWith(argWord)
+                && argWord.length > 0)
+              {
                 currentParameterName = paramName
                 break // Use first match
               }
             }
           }
         }
-      } else {
+      }
+      else {
         // Current argument is empty - find next unused positional parameter
         for (let i = 0; i < signature.parameters.length; i++) {
           if (!usedPositionalIndices.has(i) && !usedParameterNames.has(signature.parameters[i].name)) {
@@ -642,10 +648,10 @@ export const findFunctionCallContext = (
             const matchingParam = signature.parameters.find(
               param => {
                 const paramName = param.name.replace(/^\.\.\./, '')
-                return !usedParameterNames.has(paramName) &&
-                       !usedParameterNames.has(param.name) &&
-                       paramName.startsWith(argWord)
-              }
+                return !usedParameterNames.has(paramName)
+                  && !usedParameterNames.has(param.name)
+                  && paramName.startsWith(argWord)
+              },
             )
             if (matchingParam) {
               currentParameterName = matchingParam.name.replace(/^\.\.\./, '')
@@ -699,7 +705,6 @@ export const findFunctionCallContext = (
         }
       }
     }
-
   }
 
   // Final check: if current argument is empty and comma count points to a parameter that's already used,
@@ -722,7 +727,9 @@ export const findFunctionCallContext = (
     // 2. The comma count points to a used parameter
     // Then use the first unused one instead
     if (firstUnusedIndex >= 0) {
-      if (commaCount > firstUnusedIndex || (commaCount < signature.parameters.length && usedPositionalIndices.has(commaCount))) {
+      if (commaCount > firstUnusedIndex
+        || (commaCount < signature.parameters.length && usedPositionalIndices.has(commaCount)))
+      {
         commaCount = firstUnusedIndex
       }
     }
@@ -761,14 +768,12 @@ export const calculatePopupPosition = (
   const textBeforeTarget = targetLine.substring(0, targetPosition.column)
 
   // Content-space coordinates - use caret position if available
-  const contentX =
-    preCalculatedCaretContentX ??
-    preCalculatedContentX ??
-    padding + ctx.measureText(textBeforeTarget).width
-  const contentLineY =
-    preCalculatedCaretContentY ??
-    preCalculatedContentY ??
-    padding + targetPosition.line * lineHeight
+  const contentX = preCalculatedCaretContentX
+    ?? preCalculatedContentX
+    ?? padding + ctx.measureText(textBeforeTarget).width
+  const contentLineY = preCalculatedCaretContentY
+    ?? preCalculatedContentY
+    ?? padding + targetPosition.line * lineHeight
 
   // Convert to canvas-relative viewport coordinates
   const canvasX = contentX - scrollX

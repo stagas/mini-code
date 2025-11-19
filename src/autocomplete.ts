@@ -56,7 +56,11 @@ export const findCurrentWord = (
   let startColumn = cursorColumn
   while (startColumn > 0) {
     const prevChar = line[startColumn - 1]
-    if (prevChar === '.') break
+    if (prevChar === '.') {
+      // Include the dot in the word if it's immediately before the current segment
+      startColumn--
+      break
+    }
     if (!isSegmentChar(prevChar)) break
     startColumn--
   }
@@ -72,7 +76,7 @@ export const findCurrentWord = (
 
   const word = line.substring(startColumn, endColumn)
 
-  // Only return if we have at least some word content
+  // Reject empty words
   if (word.length === 0) return null
 
   // Only show autocomplete if cursor is at the end of the word (indicating active typing)
@@ -196,14 +200,31 @@ export const getAutocompleteSuggestions = (
     suggestions.add(identifier)
   }
 
-  // Add function names from definitions
-  for (const funcName of Object.keys(functionDefinitions)) {
-    suggestions.add(funcName)
+  // Add function names from definitions (excluding deprecated ones)
+  for (const [funcName, funcDef] of Object.entries(functionDefinitions)) {
+    if (!funcDef.deprecated) {
+      suggestions.add(funcName)
+    }
   }
 
-  // Filter by prefix match (case-insensitive)
+  // Handle dot-prefixed matching: if current word starts with '.', match suggestions that start with '.'
+  const startsWithDot = currentWord.startsWith('.')
   const prefix = currentWord.toLowerCase()
-  const filtered = Array.from(suggestions).filter(suggestion => suggestion.toLowerCase().startsWith(prefix))
+
+  let filtered: string[]
+  if (startsWithDot) {
+    // Match suggestions that start with '.' and match the rest
+    filtered = Array.from(suggestions).filter(suggestion => {
+      if (!suggestion.startsWith('.')) return false
+      const suggestionWithoutDot = suggestion.substring(1)
+      const wordWithoutDot = currentWord.substring(1)
+      return suggestionWithoutDot.toLowerCase().startsWith(wordWithoutDot.toLowerCase())
+    })
+  }
+  else {
+    // Regular prefix matching
+    filtered = Array.from(suggestions).filter(suggestion => suggestion.toLowerCase().startsWith(prefix))
+  }
 
   // Remove the current word itself from suggestions
   const withoutSelf = filtered.filter(s => s !== currentWord)
