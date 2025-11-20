@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import AutocompletePopup from './AutocompletePopup.tsx'
-import { CanvasEditor, type CanvasEditorCallbacks } from './CanvasEditor.ts'
+import { CanvasEditor, type CanvasEditorCallbacks, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile } from './CodeFile.ts'
 import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
 import {
@@ -31,6 +31,7 @@ interface CodeEditorProps {
   tokenizer?: Tokenizer
   functionDefinitions?: Record<string, FunctionSignature>
   errors?: EditorError[]
+  widgets?: EditorWidget[]
   canvasRef?: React.RefObject<HTMLCanvasElement>
   autoHeight?: boolean
   keyOverride?: KeyOverrideFunction
@@ -48,6 +49,7 @@ export const CodeEditor = ({
   tokenizer,
   functionDefinitions = defaultFunctionDefinitions,
   errors = [],
+  widgets = [],
   canvasRef: extCanvasRef,
   autoHeight = false,
   keyOverride,
@@ -673,6 +675,7 @@ export const CodeEditor = ({
         gutter,
         theme,
         tokenizer,
+        widgets,
       },
     )
 
@@ -704,18 +707,20 @@ export const CodeEditor = ({
     return () => {
       canvasEditorRef.current?.destroy()
     }
-  }, [wordWrap, gutter, theme, tokenizer])
+  }, [wordWrap, gutter, theme, tokenizer, widgets])
 
   // Update canvas editor state when inputState changes
   useEffect(() => {
     canvasEditorRef.current?.updateState(inputState)
-  }, [inputState])
+    // Also update widgets to ensure they're re-rendered with new value
+    canvasEditorRef.current?.setWidgets(widgets)
+  }, [inputState, widgets])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const handlePointerDown = (event: PointerEvent) => {
+      const handlePointerDown = (event: PointerEvent) => {
       onPointerDown?.(event)
       event.preventDefault()
       isHandlingPointerRef.current = true
@@ -724,6 +729,14 @@ export const CodeEditor = ({
       const rect = canvas.getBoundingClientRect()
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
+
+      // Check if clicking on a widget
+      const widgetHandled = canvasEditorRef.current?.handleWidgetPointerDown(x, y)
+      if (widgetHandled) {
+        setActiveEditor(editorIdRef.current)
+        isHandlingPointerRef.current = false
+        return
+      }
 
       // Check if clicking on scrollbar
       const scrollbar = canvasEditorRef.current?.checkScrollbarHover(x, y)
@@ -868,6 +881,9 @@ export const CodeEditor = ({
 
     const handlePointerUp = (event: PointerEvent) => {
       event.preventDefault()
+
+      // Handle widget pointer up
+      canvasEditorRef.current?.handleWidgetPointerUp()
 
       // Clear scrollbar dragging state
       isDraggingScrollbarRef.current = null

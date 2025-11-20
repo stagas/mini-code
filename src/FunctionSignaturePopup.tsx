@@ -289,7 +289,7 @@ const FunctionSignaturePopup = ({
       className="fixed z-[9999] rounded-lg shadow-2xl pointer-events-none"
       style={{
         left: `${finalX}px`,
-        top: `${finalY}px`,
+        top: `${finalY - 2}px`,
         backgroundColor: theme.functionSignaturePopup.background,
         borderColor: theme.functionSignaturePopup.border,
         borderWidth: '1px',

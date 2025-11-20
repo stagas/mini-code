@@ -170,14 +170,30 @@ const findMatchingBrace = (
   let innermostPair: { openIndex: number; closeIndex: number } | null = null
   let smallestRange = Infinity
 
-  for (const pair of matchedPairs) {
-    // Calculate global positions for this pair
-    const openGlobalPos = getBraceGlobalPos(braces[pair.openIndex])
-    const closeGlobalPos = getBraceGlobalPos(braces[pair.closeIndex])
+  const getTokenLength = (token: Token): number => {
+    if (typeof token.length === 'number') return token.length
+    if (typeof token.content === 'string' && token.content.length > 0) {
+      return token.content.length
+    }
+    return 1
+  }
 
-    // Check if cursor is inside this brace pair (strictly inside, not on the braces themselves)
-    if (cursorGlobalPos > openGlobalPos && cursorGlobalPos <= closeGlobalPos) {
-      const range = closeGlobalPos - openGlobalPos
+  for (const pair of matchedPairs) {
+    const openBrace = braces[pair.openIndex]
+    const closeBrace = braces[pair.closeIndex]
+
+    // Calculate global positions and extents for this pair
+    const openStart = getBraceGlobalPos(openBrace)
+    const closeStart = getBraceGlobalPos(closeBrace)
+    const openEnd = openStart + getTokenLength(openBrace.token)
+    const closeEnd = closeStart + getTokenLength(closeBrace.token)
+
+    const isCursorInside = cursorGlobalPos > openStart && cursorGlobalPos < closeEnd
+    const touchesOuterEdge = cursorGlobalPos === openStart || cursorGlobalPos === closeEnd
+
+    // Check if cursor is inside this brace pair or touching from the outside
+    if (isCursorInside || touchesOuterEdge) {
+      const range = closeEnd - openStart
       if (range < smallestRange) {
         smallestRange = range
         innermostPair = pair
@@ -198,6 +214,25 @@ const findMatchingBrace = (
     matchingTokenIndex: closeBrace.tokenIndex,
     matchingToken: closeBrace.token,
   }
+}
+
+export interface EditorWidget {
+  /** Widget placement type: 'above' | 'overlay' | 'inline' | 'below' */
+  type: 'above' | 'overlay' | 'inline' | 'below'
+  /** Line number (1-based, matching displayed line numbers) */
+  line: number
+  /** Column position (1-based, matching displayed column positions) */
+  column: number
+  /** Width in characters */
+  length: number
+  /** Height in pixels */
+  height: number
+  /** Called to render the widget */
+  render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number): void
+  /** Called when widget is clicked (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
+  pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
+  /** Called when pointer is released */
+  pointerUp?(): void
 }
 
 export interface CanvasEditorCallbacks {
@@ -223,6 +258,7 @@ export interface CanvasEditorOptions {
   gutter?: boolean
   theme?: Theme
   tokenizer?: Tokenizer
+  widgets?: EditorWidget[]
 }
 
 interface WrappedLine {
@@ -279,6 +315,12 @@ export class CanvasEditor {
   private autoScrollRaf: number | null = null
   private autoScrollDirection: { x: number; y: number } | null = null
   private autoScrollLastTime: number | null = null
+  private caretBlinkRaf: number | null = null
+  private caretOpacity: number = 1
+  private caretBlinkStartTime: number = 0
+  private lastCaretActivityTime: number = 0
+  private activeWidget: EditorWidget | null = null
+  private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
 
   // Measurement caches for performance
   private measurementCache: {
@@ -524,9 +566,11 @@ export class CanvasEditor {
     if (!this.isActive) {
       // Don't clear state when deactivating - just hide via rendering
       // This allows popups to reappear when reactivating without recalculation
+      this.stopCaretBlink()
     }
     else {
       this.ensureCaretVisible()
+      this.startCaretBlink()
       this.updateAutocomplete()
       this.updateFunctionSignature()
     }
@@ -777,7 +821,15 @@ export class CanvasEditor {
     }
     const textPadding = this.getTextPadding()
     const width = textPadding + maxLineWidth + this.padding
-    const height = this.padding + wrappedLines.length * this.lineHeight + this.padding
+
+    // Calculate base height
+    let height = this.padding + wrappedLines.length * this.lineHeight + this.padding
+
+    // Add extra height for widgets
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    const lastOffset = widgetLayout.yOffsets.get(wrappedLines.length - 1) || 0
+    height += lastOffset
+
     return { width, height }
   }
 
@@ -787,6 +839,9 @@ export class CanvasEditor {
     wrappedLines: WrappedLine[],
     scrollY: number,
     viewportHeight: number,
+    yOffsets: Map<number, number>,
+    widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>,
+    inlineWidgets: Map<number, { widget: EditorWidget; column: number }[]>,
   ) {
     if (!inputState.selection) return
 
@@ -807,6 +862,19 @@ export class CanvasEditor {
     }
 
     const selectionPadding = 4
+    const selectionHeight = this.lineHeight
+    const selectionY = (visualLine: number, isFirstLine: boolean) => {
+      const yOffset = yOffsets.get(visualLine) || 0
+      // Add heights of 'above' widgets on this line
+      let aboveHeight = 0
+      const widgets = widgetsByVisualLine.get(visualLine)
+      if (widgets?.above) {
+        for (const widget of widgets.above) {
+          aboveHeight += widget.height
+        }
+      }
+      return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 2
+    }
 
     // Convert logical selection to visual positions
     const startVisual = this.logicalToVisualPosition(
@@ -821,8 +889,24 @@ export class CanvasEditor {
     )
 
     // Viewport culling: skip if selection is not visible
-    const selectionStartY = this.padding + startVisual.visualLine * this.lineHeight
-    const selectionEndY = this.padding + (endVisual.visualLine + 1) * this.lineHeight
+    const startYOffset = yOffsets.get(startVisual.visualLine) || 0
+    const endYOffset = yOffsets.get(endVisual.visualLine) || 0
+    let startAboveHeight = 0
+    const startWidgets = widgetsByVisualLine.get(startVisual.visualLine)
+    if (startWidgets?.above) {
+      for (const widget of startWidgets.above) {
+        startAboveHeight += widget.height
+      }
+    }
+    let endAboveHeight = 0
+    const endWidgets = widgetsByVisualLine.get(endVisual.visualLine)
+    if (endWidgets?.above) {
+      for (const widget of endWidgets.above) {
+        endAboveHeight += widget.height
+      }
+    }
+    const selectionStartY = this.padding + startVisual.visualLine * this.lineHeight + startYOffset + startAboveHeight
+    const selectionEndY = this.padding + (endVisual.visualLine + 1) * this.lineHeight + endYOffset + endAboveHeight
     const visibleStartY = scrollY
     const visibleEndY = scrollY + viewportHeight
 
@@ -841,11 +925,30 @@ export class CanvasEditor {
         )
 
         const textPadding = this.getTextPadding()
-        const startX = textPadding + ctx.measureText(startText).width
-        const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-        const y = this.padding + startVisual.visualLine * this.lineHeight - 3
+        let startX = textPadding + ctx.measureText(startText).width
 
-        ctx.fillRect(startX, y, selectedWidth, this.lineHeight - 2)
+        // Account for inline widgets before selection start
+        const inlineWidgetsForLine = inlineWidgets.get(startVisual.visualLine) || []
+        for (const { widget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine < startVisual.visualColumn) {
+            startX += ctx.measureText('X'.repeat(widget.length)).width
+          }
+        }
+
+        // Calculate selected width including inline widgets in selection
+        let selectedWidth = ctx.measureText(selectedText).width
+        for (const { widget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine >= startVisual.visualColumn && columnInWrappedLine < endVisual.visualColumn) {
+            selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
+          }
+        }
+        selectedWidth += selectionPadding
+
+        const y = selectionY(startVisual.visualLine, true)
+
+        ctx.fillRect(startX, y, selectedWidth, selectionHeight)
       }
     }
     else {
@@ -866,26 +969,64 @@ export class CanvasEditor {
         const wrappedLine = wrappedLines[visualLine]
         if (!wrappedLine) continue
 
-        const y = this.padding + visualLine * this.lineHeight - 3
+        const isFirstLine = visualLine === startVisual.visualLine
+        const y = selectionY(visualLine, isFirstLine)
+
+        const inlineWidgetsForLine = inlineWidgets.get(visualLine) || []
 
         if (visualLine === startVisual.visualLine) {
           // First visual line: from start column to end of visual line
           const startText = wrappedLine.text.substring(0, startVisual.visualColumn)
           const selectedText = wrappedLine.text.substring(startVisual.visualColumn)
-          const startX = textPadding + ctx.measureText(startText).width
-          const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-          ctx.fillRect(startX, y, selectedWidth, this.lineHeight - 2)
+          let startX = textPadding + ctx.measureText(startText).width
+
+          // Account for inline widgets before selection start
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            if (columnInWrappedLine < startVisual.visualColumn) {
+              startX += ctx.measureText('X'.repeat(widget.length)).width
+            }
+          }
+
+          // Calculate selected width including inline widgets in selection
+          let selectedWidth = ctx.measureText(selectedText).width
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            if (columnInWrappedLine >= startVisual.visualColumn) {
+              selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
+            }
+          }
+          selectedWidth += selectionPadding
+
+          ctx.fillRect(startX, y, selectedWidth, selectionHeight)
         }
         else if (visualLine === endVisual.visualLine) {
           // Last visual line: from start of visual line to end column
           const selectedText = wrappedLine.text.substring(0, endVisual.visualColumn)
-          const selectedWidth = ctx.measureText(selectedText).width + selectionPadding
-          ctx.fillRect(textPadding, y, selectedWidth, this.lineHeight - 2)
+          let selectedWidth = ctx.measureText(selectedText).width
+
+          // Account for inline widgets in selection
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            if (columnInWrappedLine < endVisual.visualColumn) {
+              selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
+            }
+          }
+          selectedWidth += selectionPadding
+
+          ctx.fillRect(textPadding, y, selectedWidth, selectionHeight)
         }
         else {
           // Middle visual lines: entire visual line
-          const selectedWidth = ctx.measureText(wrappedLine.text).width + selectionPadding
-          ctx.fillRect(textPadding, y, selectedWidth, this.lineHeight - 2)
+          let selectedWidth = ctx.measureText(wrappedLine.text).width
+
+          // Account for all inline widgets on this line
+          for (const { widget } of inlineWidgetsForLine) {
+            selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
+          }
+          selectedWidth += selectionPadding
+
+          ctx.fillRect(textPadding, y, selectedWidth, selectionHeight)
         }
       }
     }
@@ -1054,14 +1195,14 @@ export class CanvasEditor {
 
     this.setFont(ctx)
     const wrappedLines = this.getWrappedLines(ctx)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
 
     // Adjust for scroll offset
     const adjustedY = y + this.scrollY
     const adjustedX = x + this.scrollX
 
-    // Calculate visual line number
-    const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
-    const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+    // Calculate visual line number accounting for widget heights
+    const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
 
     // Get the wrapped line
     const wrappedLine = wrappedLines[clampedVisualLineIndex]
@@ -1069,9 +1210,52 @@ export class CanvasEditor {
       return { line: 0, column: 0, columnIntent: 0 }
     }
 
-    // Calculate column position within the visual line
+    // Calculate column position within the visual line, accounting for inline widgets
     const textPadding = this.getTextPadding()
-    const visualColumn = this.getColumnFromX(adjustedX - textPadding, wrappedLine.text, ctx)
+    const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || []
+    const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+    let xAdjusted = adjustedX - textPadding
+    let visualColumn = 0
+    let currentX = 0
+    let foundPosition = false
+
+    for (const { widget, column } of sortedInlineWidgets) {
+      const columnInWrappedLine = column - wrappedLine.startColumn
+      const textSegment = wrappedLine.text.substring(visualColumn, columnInWrappedLine)
+      const textWidth = ctx.measureText(textSegment).width
+      const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+
+      if (xAdjusted < currentX + textWidth) {
+        // Click is in text before this widget
+        const relativeColumn = this.getColumnFromX(xAdjusted - currentX, textSegment, ctx)
+        visualColumn = visualColumn + relativeColumn
+        foundPosition = true
+        break
+      }
+
+      currentX += textWidth
+      if (xAdjusted < currentX + widgetWidth) {
+        // Click is on the widget - place caret at widget position
+        visualColumn = columnInWrappedLine
+        foundPosition = true
+        break
+      }
+
+      // Move past widget
+      currentX += widgetWidth
+      // After this widget, next text starts at same column (widget doesn't consume text)
+      visualColumn = columnInWrappedLine
+    }
+
+    // Check remaining text after all widgets
+    if (!foundPosition) {
+      const remainingText = wrappedLine.text.substring(visualColumn)
+      if (remainingText.length > 0) {
+        const relativeColumn = this.getColumnFromX(xAdjusted - currentX, remainingText, ctx)
+        visualColumn = visualColumn + relativeColumn
+      }
+    }
 
     // If we're at the start of a wrapped segment (visualColumn = 0) and this is a continuation
     // of the previous segment (same logical line), place caret at end of previous segment instead
@@ -1368,6 +1552,10 @@ export class CanvasEditor {
     // Invalidate wrapped lines cache if lines changed
     const linesChanged = this.inputState.lines !== newState.lines
 
+    // Track caret position change before updating state
+    const caretChanged = this.inputState.caret.line !== newState.caret.line
+      || this.inputState.caret.column !== newState.caret.column
+
     // Track if we were at the bottom before update (must check before invalidating cache)
     const ctx = this.canvas.getContext('2d')
     let wasAtBottom = false
@@ -1388,6 +1576,11 @@ export class CanvasEditor {
     }
 
     this.inputState = newState
+    // Reset caret activity time on input/movement (caret becomes visible when active)
+    if (this.isActive && caretChanged) {
+      this.lastCaretActivityTime = performance.now()
+      this.caretOpacity = 1
+    }
     if (this.isActive) this.ensureCaretVisible(wasAtBottom)
     this.draw()
     this.updateAutocomplete()
@@ -1435,6 +1628,7 @@ export class CanvasEditor {
       this.autocompleteRaf = null
     }
     this.stopAutoScroll()
+    this.stopCaretBlink()
   }
 
   public setScroll(x: number | null, y: number | null) {
@@ -1638,7 +1832,16 @@ export class CanvasEditor {
     }
     const textPadding = this.getTextPadding()
     const width = textPadding + maxLineWidth + this.padding
-    const height = this.padding + this.inputState.lines.length * this.lineHeight + this.padding
+
+    // Calculate base height
+    let height = this.padding + this.inputState.lines.length * this.lineHeight + this.padding
+
+    // Add extra height for widgets
+    const wrappedLines = this.getWrappedLines(ctx)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    const lastOffset = widgetLayout.yOffsets.get(wrappedLines.length - 1) || 0
+    height += lastOffset
+
     return { width, height }
   }
 
@@ -1686,6 +1889,7 @@ export class CanvasEditor {
     if (this.options.wordWrap) {
       // Get wrapped lines and convert logical position to visual position
       const wrappedLines = this.getWrappedLines(ctx)
+      const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
       const visualPos = this.logicalToVisualPosition(
         this.inputState.caret.line,
         this.inputState.caret.column,
@@ -1697,7 +1901,26 @@ export class CanvasEditor {
       if (wrappedLine) {
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
         caretX = textPadding + ctx.measureText(caretText).width
-        caretTop = this.padding + visualPos.visualLine * this.lineHeight
+
+        // Account for inline widgets before the caret
+        const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualPos.visualLine) || []
+        for (const { widget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine <= visualPos.visualColumn) {
+            caretX += ctx.measureText('X'.repeat(widget.length)).width
+          }
+        }
+
+        const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+        // Add heights of 'above' widgets on this line
+        let aboveHeight = 0
+        const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+        if (widgets?.above) {
+          for (const widget of widgets.above) {
+            aboveHeight += widget.height
+          }
+        }
+        caretTop = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
         caretBottom = caretTop + this.lineHeight
       }
       else {
@@ -1712,10 +1935,30 @@ export class CanvasEditor {
     else {
       // Compute caret content-space coordinates (original logic)
       const textPadding = this.getTextPadding()
+      const wrappedLines = this.getWrappedLines(ctx)
+      const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
       const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
       const caretText = caretLine.substring(0, this.inputState.caret.column)
       caretX = textPadding + ctx.measureText(caretText).width
-      caretTop = this.padding + this.inputState.caret.line * this.lineHeight
+
+      // Account for inline widgets before the caret
+      const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(this.inputState.caret.line) || []
+      for (const { widget, column } of inlineWidgetsForLine) {
+        if (column <= this.inputState.caret.column) {
+          caretX += ctx.measureText('X'.repeat(widget.length)).width
+        }
+      }
+      const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
+      // Add heights of 'above' widgets on this line
+      let aboveHeight = 0
+      const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
+      if (widgets?.above) {
+        for (const widget of widgets.above) {
+          aboveHeight += widget.height
+        }
+      }
+      caretTop = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
       caretBottom = caretTop + this.lineHeight
 
       contentSize = this.getContentSize(ctx)
@@ -1946,6 +2189,48 @@ export class CanvasEditor {
     this.autoScrollRaf = requestAnimationFrame(scroll)
   }
 
+  private startCaretBlink() {
+    if (this.caretBlinkRaf !== null) return
+    this.caretBlinkStartTime = performance.now()
+    this.lastCaretActivityTime = performance.now()
+    this.caretOpacity = 1
+
+    const blink = () => {
+      if (!this.isActive) {
+        this.caretBlinkRaf = null
+        return
+      }
+
+      const now = performance.now()
+      const timeSinceActivity = now - this.lastCaretActivityTime
+
+      // Only blink after 500ms of inactivity
+      if (timeSinceActivity < 500) {
+        // Show fully when active
+        this.caretOpacity = 1
+      }
+      else {
+        // Smooth cosine wave for fade in/out (1 second cycle) starting fully visible
+        const blinkElapsed = now - (this.lastCaretActivityTime + 500)
+        const cycle = (blinkElapsed % 1000) / 1000
+        this.caretOpacity = (Math.cos(cycle * Math.PI * 2) + 1) / 2
+      }
+
+      this.draw()
+      this.caretBlinkRaf = requestAnimationFrame(blink)
+    }
+
+    this.caretBlinkRaf = requestAnimationFrame(blink)
+  }
+
+  private stopCaretBlink() {
+    if (this.caretBlinkRaf !== null) {
+      cancelAnimationFrame(this.caretBlinkRaf)
+      this.caretBlinkRaf = null
+    }
+    this.caretOpacity = 1
+  }
+
   private updateCanvasSize() {
     const rect = this.container.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
@@ -1978,6 +2263,139 @@ export class CanvasEditor {
     if (ctx) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     }
+  }
+
+  private getVisualLineFromY(
+    adjustedY: number,
+    wrappedLines: WrappedLine[],
+    widgetLayout: {
+      widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>
+      inlineWidgets: Map<number, { widget: EditorWidget; column: number }[]>
+      overlayWidgets: EditorWidget[]
+      yOffsets: Map<number, number>
+    },
+  ): number {
+    for (let i = 0; i < wrappedLines.length; i++) {
+      const yOffset = widgetLayout.yOffsets.get(i) || 0
+      const widgets = widgetLayout.widgetsByVisualLine.get(i)
+      let aboveHeight = 0
+      if (widgets?.above) {
+        for (const widget of widgets.above) {
+          aboveHeight += widget.height
+        }
+      }
+
+      const lineY = this.padding + i * this.lineHeight + yOffset + aboveHeight
+      const lineEndY = lineY + this.lineHeight
+
+      if (adjustedY < lineEndY) {
+        return i
+      }
+
+      if (i === wrappedLines.length - 1) {
+        return i
+      }
+    }
+    return 0
+  }
+
+  private calculateWidgetLayout(
+    ctx: CanvasRenderingContext2D,
+    wrappedLines: WrappedLine[],
+  ): {
+    widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>
+    inlineWidgets: Map<number, { widget: EditorWidget; column: number }[]>
+    overlayWidgets: EditorWidget[]
+    yOffsets: Map<number, number>
+  } {
+    const widgetsByVisualLine = new Map<number, { above: EditorWidget[]; below: EditorWidget[] }>()
+    const inlineWidgets = new Map<number, { widget: EditorWidget; column: number }[]>()
+    const overlayWidgets: EditorWidget[] = []
+    const yOffsets = new Map<number, number>()
+
+    if (!this.options.widgets) {
+      return { widgetsByVisualLine, inlineWidgets, overlayWidgets, yOffsets }
+    }
+
+    // Map logical lines to visual lines
+    const logicalToVisual = new Map<number, number[]>()
+    wrappedLines.forEach((line, visualIndex) => {
+      const visualLines = logicalToVisual.get(line.logicalLine) || []
+      visualLines.push(visualIndex)
+      logicalToVisual.set(line.logicalLine, visualLines)
+    })
+
+    // Organize widgets by their target visual line
+    for (const widget of this.options.widgets) {
+      // Convert from 1-based line number to 0-based
+      const logicalLine = widget.line - 1
+      const visualLines = logicalToVisual.get(logicalLine) || []
+      if (visualLines.length === 0) continue
+
+      // Find the visual line that contains the widget's column (convert from 1-based to 0-based)
+      const widgetColumn = widget.column - 1
+      let targetVisualLine = visualLines[0]
+      for (const visualIndex of visualLines) {
+        const wrappedLine = wrappedLines[visualIndex]
+        if (
+          widgetColumn >= wrappedLine.startColumn
+          && widgetColumn <= wrappedLine.endColumn
+        ) {
+          targetVisualLine = visualIndex
+          break
+        }
+      }
+
+      if (widget.type === 'overlay') {
+        overlayWidgets.push(widget)
+      }
+      else if (widget.type === 'inline') {
+        const widgets = inlineWidgets.get(targetVisualLine) || []
+        widgets.push({ widget, column: widgetColumn })
+        inlineWidgets.set(targetVisualLine, widgets)
+      }
+      else {
+        const widgets = widgetsByVisualLine.get(targetVisualLine) || { above: [], below: [] }
+        if (widget.type === 'above') {
+          widgets.above.push(widget)
+        }
+        else {
+          widgets.below.push(widget)
+        }
+        widgetsByVisualLine.set(targetVisualLine, widgets)
+      }
+    }
+
+    // Calculate cumulative y offsets for each visual line
+    // yOffset[N] represents the cumulative vertical space added by all widgets before line N
+    let cumulativeOffset = 0
+    for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+      // Set offset for this line (before adding this line's widgets)
+      yOffsets.set(visualIndex, cumulativeOffset)
+
+      const widgets = widgetsByVisualLine.get(visualIndex)
+      if (widgets) {
+        // Add heights of 'above' widgets for this line
+        for (const widget of widgets.above) {
+          cumulativeOffset += widget.height
+        }
+        // Add heights of 'below' widgets for this line
+        for (const widget of widgets.below) {
+          cumulativeOffset += widget.height
+        }
+      }
+
+      // Add height for inline widgets (if they exceed line height)
+      const inline = inlineWidgets.get(visualIndex)
+      if (inline && inline.length > 0) {
+        const maxHeight = Math.max(...inline.map(w => w.widget.height))
+        if (maxHeight > this.lineHeight) {
+          cumulativeOffset += maxHeight - this.lineHeight
+        }
+      }
+    }
+
+    return { widgetsByVisualLine, inlineWidgets, overlayWidgets, yOffsets }
   }
 
   private draw() {
@@ -2054,10 +2472,23 @@ export class CanvasEditor {
     ctx.save()
     ctx.translate(-this.scrollX, -this.scrollY)
 
+    // Calculate widget layout once for all drawing operations
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    this.widgetPositions.clear()
+
     // Draw selection background if exists
     if (this.inputState.selection) {
       ctx.fillStyle = theme.selection
-      this.drawSelectionWithWrapping(ctx, this.inputState, wrappedLines, this.scrollY, height)
+      this.drawSelectionWithWrapping(
+        ctx,
+        this.inputState,
+        wrappedLines,
+        this.scrollY,
+        height,
+        widgetLayout.yOffsets,
+        widgetLayout.widgetsByVisualLine,
+        widgetLayout.inlineWidgets,
+      )
     }
 
     // Draw wrapped lines
@@ -2066,6 +2497,44 @@ export class CanvasEditor {
     // Calculate visible line range for viewport culling
     const visibleStartY = this.scrollY
     const visibleEndY = this.scrollY + height
+
+    // Draw overlay widgets behind text (no pointer events, truly behind)
+    for (const widget of widgetLayout.overlayWidgets) {
+      // Find the visual line for this widget (convert from 1-based to 0-based)
+      const visualPos = this.logicalToVisualPosition(widget.line - 1, widget.column - 1, wrappedLines)
+      const wrappedLine = wrappedLines[visualPos.visualLine]
+      if (wrappedLine) {
+        const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+        // Add heights of 'above' widgets on this line
+        let aboveHeight = 0
+        const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+        if (widgets?.above) {
+          for (const widget of widgets.above) {
+            aboveHeight += widget.height
+          }
+        }
+        const widgetY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
+        const textBeforeWidget = wrappedLine.text.substring(0, visualPos.visualColumn)
+        let widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+
+        // Account for inline widgets before the overlay widget
+        const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualPos.visualLine) || []
+        for (const { widget: inlineWidget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine <= visualPos.visualColumn) {
+            widgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+          }
+        }
+
+        const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+
+        // Don't add overlay widgets to widgetPositions (no pointer events)
+
+        if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
+          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widget.height)
+        }
+      }
+    }
 
     // Build a Set of error line numbers for faster lookups
     const errorLineSet = new Set(this.errors.map(e => e.line))
@@ -2076,7 +2545,33 @@ export class CanvasEditor {
       : null
 
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
-      const y = this.padding + visualIndex * this.lineHeight
+      const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
+      let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
+
+      // Draw 'above' widgets before the line
+      const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
+      if (widgets?.above) {
+        for (const widget of widgets.above) {
+          const widgetY = y
+          // Calculate position based on widget's column (convert from 1-based to 0-based)
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          // Calculate width based on widget's length
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          }
+          y += widget.height
+        }
+      }
 
       // Skip lines outside the visible viewport
       if (y + this.lineHeight < visibleStartY || y > visibleEndY) {
@@ -2108,6 +2603,9 @@ export class CanvasEditor {
         }
       }
 
+      // Get inline widgets for this line
+      const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
+
       // Get syntax highlighting for this logical line
       const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
       if (logicalHighlighted) {
@@ -2118,8 +2616,84 @@ export class CanvasEditor {
           wrappedLine.endColumn,
         )
 
+        // Draw tokens and inline widgets together
         let currentX = textPadding
-        currentX = this.drawTokensWithCustomLigatures(ctx, segmentTokens, currentX, y, theme)
+        const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
+
+        // Sort inline widgets by column
+        const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+        let tokenIndex = 0
+        let tokenOffset = 0 // offset within current token
+
+        for (const { widget, column } of sortedInlineWidgets) {
+          const targetColumn = columnInWrappedLine(column)
+
+          // Draw tokens up to widget
+          let accumulatedLength = 0
+          while (tokenIndex < segmentTokens.length
+            && accumulatedLength + segmentTokens[tokenIndex].length - tokenOffset <= targetColumn)
+          {
+            const token = segmentTokens[tokenIndex]
+            const remainingContent = token.content.substring(tokenOffset)
+            currentX = this.drawTokensWithCustomLigatures(
+              ctx,
+              [{ ...token, content: remainingContent, length: remainingContent.length }],
+              currentX,
+              y,
+              theme,
+            )
+            accumulatedLength += token.length - tokenOffset
+            tokenIndex++
+            tokenOffset = 0
+          }
+
+          // If widget is in the middle of a token, draw partial token
+          if (tokenIndex < segmentTokens.length && accumulatedLength < targetColumn) {
+            const token = segmentTokens[tokenIndex]
+            const charsNeeded = targetColumn - accumulatedLength
+            const partialContent = token.content.substring(tokenOffset, tokenOffset + charsNeeded)
+            currentX = this.drawTokensWithCustomLigatures(
+              ctx,
+              [{ ...token, content: partialContent, length: partialContent.length }],
+              currentX,
+              y,
+              theme,
+            )
+            tokenOffset += charsNeeded
+            accumulatedLength += charsNeeded
+          }
+
+          // Draw widget
+          const widgetX = currentX
+          const widgetY = y - 0.5
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          }
+          currentX += widgetWidth
+        }
+
+        // Draw remaining tokens after last widget
+        while (tokenIndex < segmentTokens.length) {
+          const token = segmentTokens[tokenIndex]
+          const remainingContent = token.content.substring(tokenOffset)
+          currentX = this.drawTokensWithCustomLigatures(
+            ctx,
+            [{ ...token, content: remainingContent, length: remainingContent.length }],
+            currentX,
+            y,
+            theme,
+          )
+          tokenIndex++
+          tokenOffset = 0
+        }
 
         // Draw brace matching for any line that might contain braces (only when active)
         if (matchingBraces) {
@@ -2135,20 +2709,93 @@ export class CanvasEditor {
         }
       }
       else {
-        // Fallback: draw plain text with custom ligatures across a single token
-        this.drawTokensWithCustomLigatures(
-          ctx,
-          [{ type: 'plain', content: wrappedLine.text, length: wrappedLine.text.length }],
-          textPadding,
-          y,
-          theme,
-        )
+        // Fallback: draw plain text with inline widgets
+        let currentX = textPadding
+        const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+        let lastColumn = 0
+        for (const { widget, column } of sortedInlineWidgets) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+
+          // Draw text before widget
+          if (columnInWrappedLine > lastColumn) {
+            const textSegment = wrappedLine.text.substring(lastColumn, columnInWrappedLine)
+            currentX = this.drawTokensWithCustomLigatures(
+              ctx,
+              [{ type: 'plain', content: textSegment, length: textSegment.length }],
+              currentX,
+              y,
+              theme,
+            )
+          }
+
+          // Draw widget
+          const widgetX = currentX
+          const widgetY = y - 0.5
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          }
+          currentX += widgetWidth
+          lastColumn = columnInWrappedLine
+        }
+
+        // Draw remaining text after last widget
+        if (lastColumn < wrappedLine.text.length) {
+          const textSegment = wrappedLine.text.substring(lastColumn)
+          this.drawTokensWithCustomLigatures(
+            ctx,
+            [{ type: 'plain', content: textSegment, length: textSegment.length }],
+            currentX,
+            y,
+            theme,
+          )
+        }
+      }
+
+      // Draw 'below' widgets after the line
+      if (widgets?.below) {
+        let belowY = y + this.lineHeight
+        for (const widget of widgets.below) {
+          const widgetY = belowY
+          // Calculate position based on widget's column (convert from 1-based to 0-based)
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          // Calculate width based on widget's length
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          }
+          belowY += widget.height
+        }
       }
     })
 
     // Draw error squiggles
     if (this.errors.length > 0) {
-      this.drawErrorSquiggles(ctx, wrappedLines, theme, this.scrollY, height)
+      this.drawErrorSquiggles(
+        ctx,
+        wrappedLines,
+        theme,
+        this.scrollY,
+        height,
+        widgetLayout.yOffsets,
+        widgetLayout.widgetsByVisualLine,
+      )
     }
 
     // Draw caret only if active
@@ -2160,16 +2807,48 @@ export class CanvasEditor {
       )
       const wrappedLine = wrappedLines[visualPos.visualLine]
       if (wrappedLine) {
-        const caretY = this.padding + visualPos.visualLine * this.lineHeight - 3
+        const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+        // Add heights of 'above' widgets on this line to position caret in text area
+        let aboveHeight = 0
+        const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+        if (widgets?.above) {
+          for (const widget of widgets.above) {
+            aboveHeight += widget.height
+          }
+        }
+        const caretY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight - 2
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
-        const caretX = textPadding + ctx.measureText(caretText).width
+        let caretX = textPadding + ctx.measureText(caretText).width
 
+        // Account for inline widgets before the caret
+        const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualPos.visualLine) || []
+        for (const { widget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine <= visualPos.visualColumn) {
+            caretX += ctx.measureText('X'.repeat(widget.length)).width
+          }
+        }
+
+        // Apply opacity for smooth blinking
+        ctx.save()
+        ctx.globalAlpha = this.caretOpacity
         ctx.fillStyle = theme.caret
-        ctx.fillRect(caretX, caretY, 2, this.lineHeight - 2)
+        ctx.fillRect(caretX, caretY, 2, this.lineHeight - 1)
+        ctx.restore()
 
         // Record caret content-space coordinates precisely for popup positioning
-        this.lastCaretContentX = textPadding + ctx.measureText(caretText).width
-        this.lastCaretContentY = this.padding + visualPos.visualLine * this.lineHeight
+        let lastCaretContentX = textPadding + ctx.measureText(caretText).width
+
+        // Account for inline widgets before the caret
+        for (const { widget, column } of inlineWidgetsForLine) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          if (columnInWrappedLine <= visualPos.visualColumn) {
+            lastCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+          }
+        }
+
+        this.lastCaretContentX = lastCaretContentX
+        this.lastCaretContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
       }
     }
 
@@ -2233,6 +2912,7 @@ export class CanvasEditor {
       this.inputState.lines,
       this.inputState.caret.line,
       this.inputState.caret.column,
+      this.functionDefinitions,
     )
 
     // Only update function call info if it actually changed
@@ -2256,12 +2936,22 @@ export class CanvasEditor {
         let preCalculatedCaretContentX: number | undefined
         if (this.options.wordWrap) {
           const wrappedLines = this.getWrappedLines(ctx)
+          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
           const visualPos = this.logicalToVisualPosition(
             callInfo.openParenPosition.line,
             callInfo.openParenPosition.column,
             wrappedLines,
           )
-          preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+          const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+          let aboveHeight = 0
+          const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+          if (widgets?.above) {
+            for (const widget of widgets.above) {
+              aboveHeight += widget.height
+            }
+          }
+          preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
           // Calculate X position based on wrapped line segment
           const wrappedLine = wrappedLines[visualPos.visualLine]
@@ -2275,7 +2965,16 @@ export class CanvasEditor {
             this.inputState.caret.column,
             wrappedLines,
           )
-          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight
+          const caretYOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
+          let caretAboveHeight = 0
+          const caretWidgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
+          if (caretWidgets?.above) {
+            for (const widget of caretWidgets.above) {
+              caretAboveHeight += widget.height
+            }
+          }
+          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + caretYOffset
+            + caretAboveHeight
 
           // Calculate caret X position based on wrapped line segment
           const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
@@ -2285,6 +2984,15 @@ export class CanvasEditor {
               caretVisualPos.visualColumn,
             )
             preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
+
+            // Account for inline widgets before the caret
+            const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
+            for (const { widget, column } of inlineWidgetsForLine) {
+              const columnInWrappedLine = column - caretWrappedLine.startColumn
+              if (columnInWrappedLine <= caretVisualPos.visualColumn) {
+                preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+              }
+            }
           }
         }
 
@@ -2535,12 +3243,24 @@ export class CanvasEditor {
         const textPadding = this.getTextPadding()
         if (this.options.wordWrap) {
           const wrappedLines = this.getWrappedLines(ctx)
+          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
           const caretVisualPos = this.logicalToVisualPosition(
             this.inputState.caret.line,
             this.inputState.caret.column,
             wrappedLines,
           )
-          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight
+          const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
+          let aboveHeight = 0
+          const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
+          if (widgets?.above) {
+            for (const widget of widgets.above) {
+              aboveHeight += widget.height
+            }
+          }
+          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset
+            + aboveHeight
+
           const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
           if (caretWrappedLine) {
             const textBeforeCaretInSegment = caretWrappedLine.text.substring(
@@ -2548,14 +3268,45 @@ export class CanvasEditor {
               caretVisualPos.visualColumn,
             )
             preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
+
+            // Account for inline widgets before the caret
+            const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
+            for (const { widget, column } of inlineWidgetsForLine) {
+              const columnInWrappedLine = column - caretWrappedLine.startColumn
+              if (columnInWrappedLine <= caretVisualPos.visualColumn) {
+                preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+              }
+            }
           }
         }
         else {
           // Non-wrapped: compute caret X/Y in content space
+          const wrappedLines = this.getWrappedLines(ctx)
+          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
+          const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
+          let aboveHeight = 0
+          const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
+          if (widgets?.above) {
+            for (const widget of widgets.above) {
+              aboveHeight += widget.height
+            }
+          }
+
           const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
           const textBeforeCaret = caretLine.substring(0, this.inputState.caret.column)
           preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaret).width
-          preCalculatedCaretContentY = this.padding + this.inputState.caret.line * this.lineHeight
+
+          // Account for inline widgets before the caret
+          const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(this.inputState.caret.line) || []
+          for (const { widget, column } of inlineWidgetsForLine) {
+            if (column <= this.inputState.caret.column) {
+              preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+            }
+          }
+
+          preCalculatedCaretContentY = this.padding + this.inputState.caret.line * this.lineHeight + yOffset
+            + aboveHeight
         }
 
         const computeAndPublish = () => {
@@ -2643,6 +3394,11 @@ export class CanvasEditor {
     }
   }
 
+  public setWidgets(widgets: EditorWidget[]) {
+    this.options.widgets = widgets
+    this.draw()
+  }
+
   public setErrors(errors: EditorError[]) {
     // Track if we were at the bottom before updating errors
     const ctx = this.canvas.getContext('2d')
@@ -2700,6 +3456,7 @@ export class CanvasEditor {
 
     this.setFont(ctx)
     const wrappedLines = this.getWrappedLines(ctx)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
     const textPadding = this.getTextPadding()
 
     // Reset gutter hover flag first
@@ -2713,13 +3470,9 @@ export class CanvasEditor {
       // Check if mouse is in gutter area (including padding area)
       if (x >= 0 && x < gutterEnd) {
         // Mouse is in gutter area, find which line it corresponds to
-        // Line numbers scroll with content, so we need to account for scroll
+        // Line numbers scroll with content, so we need to account for scroll and widgets
         const adjustedY = y + this.scrollY
-        const visualLineIndex = Math.max(
-          0,
-          Math.floor((adjustedY - this.padding) / this.lineHeight),
-        )
-        const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+        const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
 
         const wrappedLine = wrappedLines[clampedVisualLineIndex]
         if (wrappedLine !== undefined) {
@@ -2736,8 +3489,7 @@ export class CanvasEditor {
     // Not in gutter, check normal error hover on text content
     const adjustedY = y + this.scrollY
     const adjustedX = x + this.scrollX
-    const visualLineIndex = Math.max(0, Math.floor((adjustedY - this.padding) / this.lineHeight))
-    const clampedVisualLineIndex = Math.min(visualLineIndex, wrappedLines.length - 1)
+    const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
 
     const wrappedLine = wrappedLines[clampedVisualLineIndex]
     if (!wrappedLine) return null
@@ -2804,16 +3556,33 @@ export class CanvasEditor {
         // If hovering over gutter, position popup near the gutter
         if (this.isHoveringGutter && this.options.gutter) {
           const wrappedLines = this.getWrappedLines(ctx)
+          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
           const gutterWidth = this.getGutterWidth()
 
           // Position at the line start, just after the gutter
           if (this.options.wordWrap) {
             const visualPos = this.logicalToVisualPosition(error.line, 0, wrappedLines)
-            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+            const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+            let aboveHeight = 0
+            const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+            if (widgets?.above) {
+              for (const widget of widgets.above) {
+                aboveHeight += widget.height
+              }
+            }
+            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
           }
           else {
-            preCalculatedContentY = this.padding + error.line * this.lineHeight
+            const yOffset = widgetLayout.yOffsets.get(error.line) || 0
+            let aboveHeight = 0
+            const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
+            if (widgets?.above) {
+              for (const widget of widgets.above) {
+                aboveHeight += widget.height
+              }
+            }
+            preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
           }
         }
@@ -2821,12 +3590,21 @@ export class CanvasEditor {
           // Normal positioning at error location
           if (this.options.wordWrap) {
             const wrappedLines = this.getWrappedLines(ctx)
+            const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
             const visualPos = this.logicalToVisualPosition(
               error.line,
               error.startColumn,
               wrappedLines,
             )
-            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight
+            const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+            let aboveHeight = 0
+            const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+            if (widgets?.above) {
+              for (const widget of widgets.above) {
+                aboveHeight += widget.height
+              }
+            }
+            preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
             const wrappedLine = wrappedLines[visualPos.visualLine]
             if (wrappedLine) {
@@ -2835,7 +3613,17 @@ export class CanvasEditor {
             }
           }
           else {
-            preCalculatedContentY = this.padding + error.line * this.lineHeight
+            const wrappedLines = this.getWrappedLines(ctx)
+            const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+            const yOffset = widgetLayout.yOffsets.get(error.line) || 0
+            let aboveHeight = 0
+            const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
+            if (widgets?.above) {
+              for (const widget of widgets.above) {
+                aboveHeight += widget.height
+              }
+            }
+            preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             const line = this.inputState.lines[error.line] || ''
             const textBeforeError = line.substring(0, error.startColumn)
             preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
@@ -2863,6 +3651,8 @@ export class CanvasEditor {
     theme: Theme,
     scrollY: number,
     viewportHeight: number,
+    yOffsets: Map<number, number>,
+    widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>,
   ) {
     const textPadding = this.getTextPadding()
     const visibleStartY = scrollY
@@ -2873,8 +3663,24 @@ export class CanvasEditor {
       const visualEnd = this.logicalToVisualPosition(error.line, error.endColumn, wrappedLines)
 
       // Viewport culling: skip if error is not visible
-      const errorStartY = this.padding + visualStart.visualLine * this.lineHeight
-      const errorEndY = this.padding + (visualEnd.visualLine + 1) * this.lineHeight
+      const startYOffset = yOffsets.get(visualStart.visualLine) || 0
+      const endYOffset = yOffsets.get(visualEnd.visualLine) || 0
+      let startAboveHeight = 0
+      const startWidgets = widgetsByVisualLine.get(visualStart.visualLine)
+      if (startWidgets?.above) {
+        for (const widget of startWidgets.above) {
+          startAboveHeight += widget.height
+        }
+      }
+      let endAboveHeight = 0
+      const endWidgets = widgetsByVisualLine.get(visualEnd.visualLine)
+      if (endWidgets?.above) {
+        for (const widget of endWidgets.above) {
+          endAboveHeight += widget.height
+        }
+      }
+      const errorStartY = this.padding + visualStart.visualLine * this.lineHeight + startYOffset + startAboveHeight
+      const errorEndY = this.padding + (visualEnd.visualLine + 1) * this.lineHeight + endYOffset + endAboveHeight
 
       if (errorEndY < visibleStartY || errorStartY > visibleEndY) {
         continue
@@ -2891,7 +3697,17 @@ export class CanvasEditor {
 
           const startX = textPadding + ctx.measureText(startText).width
           const errorWidth = ctx.measureText(errorText).width
-          const y = this.padding + visualStart.visualLine * this.lineHeight + this.lineHeight - 3
+          const yOffset = yOffsets.get(visualStart.visualLine) || 0
+          // Add heights of 'above' widgets on this line
+          let aboveHeight = 0
+          const widgets = widgetsByVisualLine.get(visualStart.visualLine)
+          if (widgets?.above) {
+            for (const widget of widgets.above) {
+              aboveHeight += widget.height
+            }
+          }
+          const y = this.padding + visualStart.visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight
+            - 3
 
           ctx.strokeStyle = theme.errorSquigglyColor
           ctx.lineWidth = 1.5
@@ -2932,7 +3748,16 @@ export class CanvasEditor {
           const wrappedLine = wrappedLines[visualLine]
           if (!wrappedLine) continue
 
-          const y = this.padding + visualLine * this.lineHeight + this.lineHeight - 3
+          const yOffset = yOffsets.get(visualLine) || 0
+          // Add heights of 'above' widgets on this line
+          let aboveHeight = 0
+          const widgets = widgetsByVisualLine.get(visualLine)
+          if (widgets?.above) {
+            for (const widget of widgets.above) {
+              aboveHeight += widget.height
+            }
+          }
+          const y = this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight - 3
           let startX: number, errorWidth: number
 
           if (visualLine === visualStart.visualLine) {
@@ -2975,6 +3800,36 @@ export class CanvasEditor {
           ctx.stroke()
         }
       }
+    }
+  }
+
+  public handleWidgetPointerDown(x: number, y: number): boolean {
+    const adjustedX = x + this.scrollX
+    const adjustedY = y + this.scrollY
+
+    // Check if any widget was clicked
+    for (const [widget, pos] of this.widgetPositions.entries()) {
+      if (
+        adjustedX >= pos.x
+        && adjustedX <= pos.x + pos.width
+        && adjustedY >= pos.y
+        && adjustedY <= pos.y + pos.height
+      ) {
+        this.activeWidget = widget
+        const offsetX = adjustedX - pos.x
+        const offsetY = adjustedY - pos.y
+        widget.pointerDown?.(adjustedX, adjustedY, offsetX, offsetY)
+        return true
+      }
+    }
+
+    return false
+  }
+
+  public handleWidgetPointerUp(): void {
+    if (this.activeWidget) {
+      this.activeWidget.pointerUp?.()
+      this.activeWidget = null
     }
   }
 }
