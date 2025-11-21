@@ -320,6 +320,7 @@ export class CanvasEditor {
   private caretBlinkStartTime: number = 0
   private lastCaretActivityTime: number = 0
   private activeWidget: EditorWidget | null = null
+  private isWidgetPointerDown = false
   private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
 
   // Measurement caches for performance
@@ -547,6 +548,7 @@ export class CanvasEditor {
     callbacks: CanvasEditorCallbacks = {},
     options: CanvasEditorOptions = {},
   ) {
+    console.log('new editor')
     this.canvas = canvas
     this.container = container
     this.inputState = initialState
@@ -569,7 +571,6 @@ export class CanvasEditor {
       this.stopCaretBlink()
     }
     else {
-      this.ensureCaretVisible()
       this.startCaretBlink()
       this.updateAutocomplete()
       this.updateFunctionSignature()
@@ -616,9 +617,27 @@ export class CanvasEditor {
 
     const wrappedLines: WrappedLine[] = []
 
+    // Collect widget ranges per line (convert from 1-based to 0-based)
+    const widgetRangesByLine = new Map<number, { start: number; end: number }[]>()
+    if (this.options.widgets) {
+      for (const widget of this.options.widgets) {
+        const logicalLine = widget.line - 1
+        const widgetColumn = widget.column - 1
+        if (widget.length !== undefined && widget.length > 0) {
+          const ranges = widgetRangesByLine.get(logicalLine) || []
+          ranges.push({
+            start: widgetColumn,
+            end: widgetColumn + widget.length,
+          })
+          widgetRangesByLine.set(logicalLine, ranges)
+        }
+      }
+    }
+
     for (let lineIndex = 0; lineIndex < this.inputState.lines.length; lineIndex++) {
       const line = this.inputState.lines[lineIndex] || ''
       const tokens = highlightedCode[lineIndex]?.tokens || []
+      const widgetRanges = widgetRangesByLine.get(lineIndex) || []
 
       if (line.length === 0) {
         // Empty line
@@ -667,10 +686,28 @@ export class CanvasEditor {
         }
 
         // Try to break at better boundaries (in order of preference):
-        // 1. Token boundary
-        // 2. Word boundary (space)
-        // 3. Character boundary
+        // 1. Widget boundary (don't break within widget ranges)
+        // 2. Token boundary
+        // 3. Word boundary (space)
+        // 4. Character boundary
         let finalEnd = bestEnd
+
+        // Check if finalEnd would break a widget range
+        // If so, move the break point to before the widget starts
+        for (const range of widgetRanges) {
+          // If the break point is within a widget range (would split it)
+          if (finalEnd > range.start && finalEnd < range.end) {
+            // Move break point to before the widget
+            if (range.start > startColumn) {
+              finalEnd = range.start
+            }
+            else {
+              // Widget starts at or before startColumn, we can't break it
+              // Force include the entire widget
+              finalEnd = range.end
+            }
+          }
+        }
 
         // Find token boundaries within the segment
         let currentColumn = 0
@@ -704,21 +741,36 @@ export class CanvasEditor {
         }
 
         // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth)
+        // But only if it doesn't conflict with widget boundaries
         const tokenBoundaryDistance = lastTokenBoundary > 0 ? bestEnd - lastTokenBoundary : Infinity
         const spaceBoundaryDistance = lastSpaceBoundary > 0 ? bestEnd - lastSpaceBoundary : Infinity
 
+        let candidateEnd = finalEnd
         if (
           lastTokenBoundary > startColumn
           && tokenBoundaryDistance < maxWidth * 0.2
           && bestEnd < line.length
         ) {
-          finalEnd = lastTokenBoundary
+          candidateEnd = lastTokenBoundary
         }
         else if (lastSpaceBoundary > startColumn && bestEnd < line.length) {
-          finalEnd = lastSpaceBoundary
+          candidateEnd = lastSpaceBoundary
         }
         else {
-          finalEnd = bestEnd
+          candidateEnd = bestEnd
+        }
+
+        // Verify candidate doesn't break widget ranges
+        let candidateBreaksWidget = false
+        for (const range of widgetRanges) {
+          if (candidateEnd > range.start && candidateEnd < range.end) {
+            candidateBreaksWidget = true
+            break
+          }
+        }
+
+        if (!candidateBreaksWidget) {
+          finalEnd = candidateEnd
         }
 
         wrappedLines.push({
@@ -865,13 +917,11 @@ export class CanvasEditor {
     const selectionHeight = this.lineHeight
     const selectionY = (visualLine: number, isFirstLine: boolean) => {
       const yOffset = yOffsets.get(visualLine) || 0
-      // Add heights of 'above' widgets on this line
+      // Add max height of 'above' widgets on this line (they are in the same row)
       let aboveHeight = 0
       const widgets = widgetsByVisualLine.get(visualLine)
-      if (widgets?.above) {
-        for (const widget of widgets.above) {
-          aboveHeight += widget.height
-        }
+      if (widgets?.above && widgets.above.length > 0) {
+        aboveHeight = Math.max(...widgets.above.map(w => w.height))
       }
       return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 2
     }
@@ -893,20 +943,21 @@ export class CanvasEditor {
     const endYOffset = yOffsets.get(endVisual.visualLine) || 0
     let startAboveHeight = 0
     const startWidgets = widgetsByVisualLine.get(startVisual.visualLine)
-    if (startWidgets?.above) {
-      for (const widget of startWidgets.above) {
-        startAboveHeight += widget.height
-      }
+    if (startWidgets?.above && startWidgets.above.length > 0) {
+      startAboveHeight = Math.max(...startWidgets.above.map(w => w.height))
     }
     let endAboveHeight = 0
+    let endBelowHeight = 0
     const endWidgets = widgetsByVisualLine.get(endVisual.visualLine)
-    if (endWidgets?.above) {
-      for (const widget of endWidgets.above) {
-        endAboveHeight += widget.height
-      }
+    if (endWidgets?.above && endWidgets.above.length > 0) {
+      endAboveHeight = Math.max(...endWidgets.above.map(w => w.height))
+    }
+    if (endWidgets?.below && endWidgets.below.length > 0) {
+      endBelowHeight = Math.max(...endWidgets.below.map(w => w.height))
     }
     const selectionStartY = this.padding + startVisual.visualLine * this.lineHeight + startYOffset + startAboveHeight
     const selectionEndY = this.padding + (endVisual.visualLine + 1) * this.lineHeight + endYOffset + endAboveHeight
+      + endBelowHeight
     const visibleStartY = scrollY
     const visibleEndY = scrollY + viewportHeight
 
@@ -955,15 +1006,50 @@ export class CanvasEditor {
       // Multi-visual-line selection
       const textPadding = this.getTextPadding()
 
-      // Clamp the visual line range to only visible lines
-      const firstVisibleLine = Math.max(
-        startVisual.visualLine,
-        Math.floor((visibleStartY - this.padding) / this.lineHeight),
-      )
-      const lastVisibleLine = Math.min(
-        endVisual.visualLine,
-        Math.ceil((visibleEndY - this.padding) / this.lineHeight),
-      )
+      // Clamp the visual line range to only visible lines, accounting for widget heights
+      const getLineY = (visualLine: number) => {
+        const yOffset = yOffsets.get(visualLine) || 0
+        let aboveHeight = 0
+        const widgets = widgetsByVisualLine.get(visualLine)
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+        }
+        return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight
+      }
+
+      const getLineBottomY = (visualLine: number) => {
+        const yOffset = yOffsets.get(visualLine) || 0
+        let aboveHeight = 0
+        let belowHeight = 0
+        const widgets = widgetsByVisualLine.get(visualLine)
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+        }
+        if (widgets?.below && widgets.below.length > 0) {
+          belowHeight = Math.max(...widgets.below.map(w => w.height))
+        }
+        return this.padding + (visualLine + 1) * this.lineHeight + yOffset + aboveHeight + belowHeight
+      }
+
+      // Find first visible line by checking actual Y positions
+      let firstVisibleLine = startVisual.visualLine
+      for (let visualLine = startVisual.visualLine; visualLine <= endVisual.visualLine; visualLine++) {
+        const lineBottomY = getLineBottomY(visualLine)
+        if (lineBottomY >= visibleStartY) {
+          firstVisibleLine = visualLine
+          break
+        }
+      }
+
+      // Find last visible line by checking actual Y positions
+      let lastVisibleLine = endVisual.visualLine
+      for (let visualLine = endVisual.visualLine; visualLine >= startVisual.visualLine; visualLine--) {
+        const lineY = getLineY(visualLine)
+        if (lineY <= visibleEndY) {
+          lastVisibleLine = visualLine
+          break
+        }
+      }
 
       for (let visualLine = firstVisibleLine; visualLine <= lastVisibleLine; visualLine++) {
         const wrappedLine = wrappedLines[visualLine]
@@ -1548,13 +1634,90 @@ export class CanvasEditor {
     return line.length
   }
 
-  public updateState(newState: InputState) {
+  private adjustWidgetsOptimistically(oldState: InputState, newState: InputState) {
+    if (!this.options.widgets || this.options.widgets.length === 0) return
+
+    const oldLines = oldState.lines
+    const newLines = newState.lines
+    const oldCaret = oldState.caret
+    const newCaret = newState.caret
+
+    // Detect line insertion (newline inserted)
+    if (newLines.length > oldLines.length) {
+      // When a newline is inserted, the caret moves to the new line
+      // oldCaret.line (0-based) is where the line was split
+      // newCaret.line (0-based) is the new line
+      // Widgets at newCaret.line + 1 (1-based) and below should move down
+      const insertLine1Based = newCaret.line + 1
+      for (const widget of this.options.widgets) {
+        if (widget.line >= insertLine1Based) {
+          widget.line++
+        }
+      }
+      return
+    }
+
+    // Detect line deletion (line merged with previous)
+    if (newLines.length < oldLines.length) {
+      // When a line is deleted (merged), the caret typically moves to the previous line
+      // oldCaret.line (0-based) is the line that was deleted
+      // Widgets at oldCaret.line + 1 (1-based) and below should move up
+      const deleteLine1Based = oldCaret.line + 1
+      for (const widget of this.options.widgets) {
+        if (widget.line > deleteLine1Based) {
+          widget.line--
+        }
+      }
+      return
+    }
+
+    // Detect character insertion/deletion on a line
+    if (oldLines.length === newLines.length) {
+      const caretLine = newCaret.line
+      if (caretLine >= 0 && caretLine < oldLines.length && caretLine < newLines.length) {
+        const oldLine = oldLines[caretLine]
+        const newLine = newLines[caretLine]
+        const oldCol = oldCaret.column
+        const newCol = newCaret.column
+
+        // Character inserted: line got longer and caret moved forward
+        if (newLine.length > oldLine.length && newCol > oldCol) {
+          // oldCol is 0-based, widgets are 1-based
+          // Insert at oldCol means widgets at column > oldCol (0-based) = column >= oldCol + 1 (1-based) should move
+          const insertCol1Based = oldCol + 1
+          for (const widget of this.options.widgets) {
+            if (widget.line === caretLine + 1 && widget.column >= insertCol1Based) {
+              widget.column++
+            }
+          }
+        }
+        // Character deleted: line got shorter
+        else if (newLine.length < oldLine.length) {
+          // newCol is 0-based, widgets are 1-based
+          // Delete at newCol means widgets at column > newCol (0-based) = column > newCol + 1 (1-based) should move
+          const deleteCol1Based = newCol + 1
+          for (const widget of this.options.widgets) {
+            if (widget.line === caretLine + 1 && widget.column > deleteCol1Based) {
+              widget.column--
+            }
+          }
+        }
+      }
+    }
+  }
+
+  public updateState(newState: InputState, ensureCaretVisible = false) {
     // Invalidate wrapped lines cache if lines changed
     const linesChanged = this.inputState.lines !== newState.lines
 
     // Track caret position change before updating state
     const caretChanged = this.inputState.caret.line !== newState.caret.line
       || this.inputState.caret.column !== newState.caret.column
+
+    // Optimistically adjust widget positions before updating state
+    if (linesChanged || caretChanged) {
+      this.adjustWidgetsOptimistically(this.inputState, newState)
+    }
 
     // Track if we were at the bottom before update (must check before invalidating cache)
     const ctx = this.canvas.getContext('2d')
@@ -1581,7 +1744,7 @@ export class CanvasEditor {
       this.lastCaretActivityTime = performance.now()
       this.caretOpacity = 1
     }
-    if (this.isActive) this.ensureCaretVisible(wasAtBottom)
+    if (this.isActive && ensureCaretVisible) this.ensureCaretVisible(wasAtBottom)
     this.draw()
     this.updateAutocomplete()
     this.updateFunctionSignature()
@@ -1605,7 +1768,6 @@ export class CanvasEditor {
     // Adjust scroll position to keep content properly visible after resize
     this.adjustScrollAfterResize(oldWidth, oldHeight, newWidth, newHeight)
 
-    if (this.isActive) this.ensureCaretVisible()
     this.draw()
     this.updateFunctionSignature() // Need to update popup positions when canvas resizes
   }
@@ -1873,6 +2035,7 @@ export class CanvasEditor {
   }
 
   private ensureCaretVisible(wasAtBottom = false) {
+    if (this.isWidgetPointerDown) return
     // return
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
@@ -1912,13 +2075,11 @@ export class CanvasEditor {
         }
 
         const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
-        // Add heights of 'above' widgets on this line
+        // Add max height of 'above' widgets on this line (they are in the same row)
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-        if (widgets?.above) {
-          for (const widget of widgets.above) {
-            aboveHeight += widget.height
-          }
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => w.height))
         }
         caretTop = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
         caretBottom = caretTop + this.lineHeight
@@ -1950,13 +2111,11 @@ export class CanvasEditor {
         }
       }
       const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
-      // Add heights of 'above' widgets on this line
+      // Add max height of 'above' widgets on this line (they are in the same row)
       let aboveHeight = 0
       const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
-      if (widgets?.above) {
-        for (const widget of widgets.above) {
-          aboveHeight += widget.height
-        }
+      if (widgets?.above && widgets.above.length > 0) {
+        aboveHeight = Math.max(...widgets.above.map(w => w.height))
       }
       caretTop = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
       caretBottom = caretTop + this.lineHeight
@@ -2279,10 +2438,8 @@ export class CanvasEditor {
       const yOffset = widgetLayout.yOffsets.get(i) || 0
       const widgets = widgetLayout.widgetsByVisualLine.get(i)
       let aboveHeight = 0
-      if (widgets?.above) {
-        for (const widget of widgets.above) {
-          aboveHeight += widget.height
-        }
+      if (widgets?.above && widgets.above.length > 0) {
+        aboveHeight = Math.max(...widgets.above.map(w => w.height))
       }
 
       const lineY = this.padding + i * this.lineHeight + yOffset + aboveHeight
@@ -2334,15 +2491,22 @@ export class CanvasEditor {
 
       // Find the visual line that contains the widget's column (convert from 1-based to 0-based)
       const widgetColumn = widget.column - 1
-      let targetVisualLine = visualLines[0]
+      let targetVisualLine = visualLines[visualLines.length - 1]
       for (const visualIndex of visualLines) {
         const wrappedLine = wrappedLines[visualIndex]
         if (
           widgetColumn >= wrappedLine.startColumn
-          && widgetColumn <= wrappedLine.endColumn
+          && widgetColumn < wrappedLine.endColumn
         ) {
           targetVisualLine = visualIndex
           break
+        }
+      }
+      // If widget column is at the exact end of a line, place it on that line
+      if (targetVisualLine === visualLines[visualLines.length - 1]) {
+        const lastWrappedLine = wrappedLines[targetVisualLine]
+        if (widgetColumn === lastWrappedLine.endColumn && lastWrappedLine.endColumn > lastWrappedLine.startColumn) {
+          // Widget is at the end of the line, keep it there
         }
       }
 
@@ -2375,13 +2539,15 @@ export class CanvasEditor {
 
       const widgets = widgetsByVisualLine.get(visualIndex)
       if (widgets) {
-        // Add heights of 'above' widgets for this line
-        for (const widget of widgets.above) {
-          cumulativeOffset += widget.height
+        // Add max height of 'above' widgets for this line (they are in the same row)
+        if (widgets.above.length > 0) {
+          const maxAboveHeight = Math.max(...widgets.above.map(w => w.height))
+          cumulativeOffset += maxAboveHeight
         }
-        // Add heights of 'below' widgets for this line
-        for (const widget of widgets.below) {
-          cumulativeOffset += widget.height
+        // Add max height of 'below' widgets for this line (they are in the same row)
+        if (widgets.below.length > 0) {
+          const maxBelowHeight = Math.max(...widgets.below.map(w => w.height))
+          cumulativeOffset += maxBelowHeight
         }
       }
 
@@ -2505,13 +2671,11 @@ export class CanvasEditor {
       const wrappedLine = wrappedLines[visualPos.visualLine]
       if (wrappedLine) {
         const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
-        // Add heights of 'above' widgets on this line
+        // Add max height of 'above' widgets on this line (they are in the same row)
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-        if (widgets?.above) {
-          for (const widget of widgets.above) {
-            aboveHeight += widget.height
-          }
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => w.height))
         }
         const widgetY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
         const textBeforeWidget = wrappedLine.text.substring(0, visualPos.visualColumn)
@@ -2550,9 +2714,11 @@ export class CanvasEditor {
 
       // Draw 'above' widgets before the line
       const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
-      if (widgets?.above) {
+      if (widgets?.above && widgets.above.length > 0) {
+        // All 'above' widgets on the same line share the same Y position (horizontal row)
+        const widgetY = y
+        const maxAboveHeight = Math.max(...widgets.above.map(w => w.height))
         for (const widget of widgets.above) {
-          const widgetY = y
           // Calculate position based on widget's column (convert from 1-based to 0-based)
           const widgetColumn = widget.column - 1
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
@@ -2569,8 +2735,9 @@ export class CanvasEditor {
           if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
             widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
           }
-          y += widget.height
         }
+        // Advance y by the maximum height among all above widgets
+        y += maxAboveHeight
       }
 
       // Skip lines outside the visible viewport
@@ -2760,10 +2927,10 @@ export class CanvasEditor {
       }
 
       // Draw 'below' widgets after the line
-      if (widgets?.below) {
-        let belowY = y + this.lineHeight
+      if (widgets?.below && widgets.below.length > 0) {
+        // All 'below' widgets on the same line share the same Y position (horizontal row)
+        const widgetY = y + this.lineHeight
         for (const widget of widgets.below) {
-          const widgetY = belowY
           // Calculate position based on widget's column (convert from 1-based to 0-based)
           const widgetColumn = widget.column - 1
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
@@ -2780,7 +2947,6 @@ export class CanvasEditor {
           if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
             widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
           }
-          belowY += widget.height
         }
       }
     })
@@ -2808,13 +2974,11 @@ export class CanvasEditor {
       const wrappedLine = wrappedLines[visualPos.visualLine]
       if (wrappedLine) {
         const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
-        // Add heights of 'above' widgets on this line to position caret in text area
+        // Add max height of 'above' widgets on this line (they are in the same row)
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-        if (widgets?.above) {
-          for (const widget of widgets.above) {
-            aboveHeight += widget.height
-          }
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => w.height))
         }
         const caretY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight - 2
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
@@ -2946,10 +3110,8 @@ export class CanvasEditor {
           const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-          if (widgets?.above) {
-            for (const widget of widgets.above) {
-              aboveHeight += widget.height
-            }
+          if (widgets?.above && widgets.above.length > 0) {
+            aboveHeight = Math.max(...widgets.above.map(w => w.height))
           }
           preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
@@ -3253,10 +3415,8 @@ export class CanvasEditor {
           const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
-          if (widgets?.above) {
-            for (const widget of widgets.above) {
-              aboveHeight += widget.height
-            }
+          if (widgets?.above && widgets.above.length > 0) {
+            aboveHeight = Math.max(...widgets.above.map(w => w.height))
           }
           preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset
             + aboveHeight
@@ -3287,10 +3447,8 @@ export class CanvasEditor {
           const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
-          if (widgets?.above) {
-            for (const widget of widgets.above) {
-              aboveHeight += widget.height
-            }
+          if (widgets?.above && widgets.above.length > 0) {
+            aboveHeight = Math.max(...widgets.above.map(w => w.height))
           }
 
           const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
@@ -3395,7 +3553,24 @@ export class CanvasEditor {
   }
 
   public setWidgets(widgets: EditorWidget[]) {
+    if (this.options.widgets === widgets) return
     this.options.widgets = widgets
+    this.draw()
+  }
+
+  public updateWidgets(widgets: EditorWidget[]) {
+    this.options.widgets = widgets
+  }
+
+  public setTheme(theme: Theme) {
+    this.options.theme = theme
+    this.highlightCache = null
+    this.draw()
+  }
+
+  public setTokenizer(tokenizer: Tokenizer) {
+    this.options.tokenizer = tokenizer
+    this.highlightCache = null
     this.draw()
   }
 
@@ -3565,10 +3740,8 @@ export class CanvasEditor {
             const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-            if (widgets?.above) {
-              for (const widget of widgets.above) {
-                aboveHeight += widget.height
-              }
+            if (widgets?.above && widgets.above.length > 0) {
+              aboveHeight = Math.max(...widgets.above.map(w => w.height))
             }
             preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
@@ -3577,10 +3750,8 @@ export class CanvasEditor {
             const yOffset = widgetLayout.yOffsets.get(error.line) || 0
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
-            if (widgets?.above) {
-              for (const widget of widgets.above) {
-                aboveHeight += widget.height
-              }
+            if (widgets?.above && widgets.above.length > 0) {
+              aboveHeight = Math.max(...widgets.above.map(w => w.height))
             }
             preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
@@ -3599,10 +3770,8 @@ export class CanvasEditor {
             const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-            if (widgets?.above) {
-              for (const widget of widgets.above) {
-                aboveHeight += widget.height
-              }
+            if (widgets?.above && widgets.above.length > 0) {
+              aboveHeight = Math.max(...widgets.above.map(w => w.height))
             }
             preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
@@ -3618,10 +3787,8 @@ export class CanvasEditor {
             const yOffset = widgetLayout.yOffsets.get(error.line) || 0
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
-            if (widgets?.above) {
-              for (const widget of widgets.above) {
-                aboveHeight += widget.height
-              }
+            if (widgets?.above && widgets.above.length > 0) {
+              aboveHeight = Math.max(...widgets.above.map(w => w.height))
             }
             preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             const line = this.inputState.lines[error.line] || ''
@@ -3698,13 +3865,11 @@ export class CanvasEditor {
           const startX = textPadding + ctx.measureText(startText).width
           const errorWidth = ctx.measureText(errorText).width
           const yOffset = yOffsets.get(visualStart.visualLine) || 0
-          // Add heights of 'above' widgets on this line
+          // Add max height of 'above' widgets on this line (they are in the same row)
           let aboveHeight = 0
           const widgets = widgetsByVisualLine.get(visualStart.visualLine)
-          if (widgets?.above) {
-            for (const widget of widgets.above) {
-              aboveHeight += widget.height
-            }
+          if (widgets?.above && widgets.above.length > 0) {
+            aboveHeight = Math.max(...widgets.above.map(w => w.height))
           }
           const y = this.padding + visualStart.visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight
             - 3
@@ -3749,13 +3914,11 @@ export class CanvasEditor {
           if (!wrappedLine) continue
 
           const yOffset = yOffsets.get(visualLine) || 0
-          // Add heights of 'above' widgets on this line
+          // Add max height of 'above' widgets on this line (they are in the same row)
           let aboveHeight = 0
           const widgets = widgetsByVisualLine.get(visualLine)
-          if (widgets?.above) {
-            for (const widget of widgets.above) {
-              aboveHeight += widget.height
-            }
+          if (widgets?.above && widgets.above.length > 0) {
+            aboveHeight = Math.max(...widgets.above.map(w => w.height))
           }
           const y = this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight - 3
           let startX: number, errorWidth: number
@@ -3803,7 +3966,80 @@ export class CanvasEditor {
     }
   }
 
+  private ensureWidgetPositions(): void {
+    if (this.widgetPositions.size > 0) return
+    if (!this.options.widgets || this.options.widgets.length === 0) return
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+
+    this.setFont(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    const textPadding = this.getTextPadding()
+
+    wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
+      const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
+      let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
+
+      const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
+      if (widgets?.above && widgets.above.length > 0) {
+        const widgetY = y
+        for (const widget of widgets.above) {
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+        }
+        y += Math.max(...widgets.above.map(w => w.height))
+      }
+
+      const inlineWidgets = widgetLayout.inlineWidgets.get(visualIndex) || []
+      if (inlineWidgets.length > 0) {
+        let currentX = textPadding
+        for (const { widget, column } of inlineWidgets) {
+          const columnInWrappedLine = column - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          currentX = textPadding + ctx.measureText(textBeforeWidget).width
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: currentX,
+            y: y - 0.5,
+            width: widgetWidth,
+            height: widget.height,
+          })
+          currentX += widgetWidth
+        }
+      }
+
+      if (widgets?.below && widgets.below.length > 0) {
+        const widgetY = y + this.lineHeight
+        for (const widget of widgets.below) {
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widget.height,
+          })
+        }
+      }
+    })
+  }
+
   public handleWidgetPointerDown(x: number, y: number): boolean {
+    this.ensureWidgetPositions()
     const adjustedX = x + this.scrollX
     const adjustedY = y + this.scrollY
 
@@ -3816,6 +4052,7 @@ export class CanvasEditor {
         && adjustedY <= pos.y + pos.height
       ) {
         this.activeWidget = widget
+        this.isWidgetPointerDown = true
         const offsetX = adjustedX - pos.x
         const offsetY = adjustedY - pos.y
         widget.pointerDown?.(adjustedX, adjustedY, offsetX, offsetY)
@@ -3823,6 +4060,7 @@ export class CanvasEditor {
       }
     }
 
+    this.isWidgetPointerDown = false
     return false
   }
 
@@ -3831,5 +4069,6 @@ export class CanvasEditor {
       this.activeWidget.pointerUp?.()
       this.activeWidget = null
     }
+    this.isWidgetPointerDown = false
   }
 }

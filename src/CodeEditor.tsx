@@ -126,6 +126,9 @@ export const CodeEditor = ({
     y: 0,
     event: null,
   })
+  const skipEnsureCaretVisibleRef = useRef(false)
+  const lastCanvasUpdateValueRef = useRef<string | null>(null)
+  const isUserInputRef = useRef(false)
 
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
@@ -154,6 +157,7 @@ export const CodeEditor = ({
         return
       }
 
+      isUserInputRef.current = true
       setInputStateInternal(newState)
       inputStateRef.current = newState
 
@@ -217,6 +221,10 @@ export const CodeEditor = ({
     }
   }, [value, externalCodeFile])
 
+  // Keep widgets in a ref so subscription callback always has latest value
+  const widgetsRef = useRef(widgets)
+  widgetsRef.current = widgets
+
   // Subscribe to CodeFile changes and initialize state when external codeFile changes
   useLayoutEffect(() => {
     if (!externalCodeFile) return
@@ -242,9 +250,15 @@ export const CodeEditor = ({
 
       // Only update if the value actually changed
       if (newValue !== currentValue) {
+        skipEnsureCaretVisibleRef.current = true
+        lastCanvasUpdateValueRef.current = newValue
         setInputStateInternal(state.inputState)
         inputStateRef.current = state.inputState
         lastTextRef.current = newValue
+        // Update widgets without drawing, then updateState will draw once
+        canvasEditorRef.current?.updateWidgets(widgetsRef.current)
+        // Update canvas editor directly without ensuring caret visibility
+        canvasEditorRef.current?.updateState(state.inputState, false)
       }
 
       // Update scroll position if it changed from what we last set
@@ -583,7 +597,12 @@ export const CodeEditor = ({
         // Save the new state after the change
         inputHandlerRef.current.saveAfterStateToHistory(newState)
       }
+      // Mark as user input so useEffect knows to ensure caret visible
+      isUserInputRef.current = true
+      // Call setInputState first - it needs to see oldState in the ref for comparison
       setInputStateRef.current(newState)
+      // Now update ref synchronously so it's available immediately for updateState call
+      inputStateRef.current = newState
     })
   }, []) // Remove setInputState dependency since it's stable
 
@@ -707,20 +726,67 @@ export const CodeEditor = ({
     return () => {
       canvasEditorRef.current?.destroy()
     }
-  }, [wordWrap, gutter, theme, tokenizer, widgets])
+  }, [wordWrap, gutter])
 
   // Update canvas editor state when inputState changes
+  const prevInputStateRef = useRef(inputState)
+  const prevWidgetsRef = useRef(widgets)
+
   useEffect(() => {
-    canvasEditorRef.current?.updateState(inputState)
-    // Also update widgets to ensure they're re-rendered with new value
-    canvasEditorRef.current?.setWidgets(widgets)
+    const currentValue = inputState.lines.join('\n')
+    const inputStateChanged = prevInputStateRef.current !== inputState
+    const widgetsChanged = prevWidgetsRef.current !== widgets
+
+    // Skip if we already updated the canvas editor for this value (from CodeFile subscription)
+    if (lastCanvasUpdateValueRef.current === currentValue) {
+      lastCanvasUpdateValueRef.current = null
+      prevInputStateRef.current = inputState
+      prevWidgetsRef.current = widgets
+      if (widgetsChanged) {
+        canvasEditorRef.current?.setWidgets(widgets)
+      }
+      return
+    }
+
+    prevInputStateRef.current = inputState
+    prevWidgetsRef.current = widgets
+
+    if (inputStateChanged && widgetsChanged) {
+      // Both changed: update widgets without drawing, then updateState will draw once
+      canvasEditorRef.current?.updateWidgets(widgets)
+      const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
+      isUserInputRef.current = false
+      skipEnsureCaretVisibleRef.current = false
+      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
+    }
+    else if (inputStateChanged) {
+      // Only inputState changed
+      const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
+      isUserInputRef.current = false
+      skipEnsureCaretVisibleRef.current = false
+      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
+    }
+    else if (widgetsChanged) {
+      // Only widgets changed
+      canvasEditorRef.current?.setWidgets(widgets)
+    }
   }, [inputState, widgets])
+
+  // Update theme and tokenizer when they change
+  useEffect(() => {
+    if (theme) {
+      canvasEditorRef.current?.setTheme(theme)
+    }
+    if (tokenizer) {
+      canvasEditorRef.current?.setTokenizer(tokenizer)
+    }
+  }, [theme, tokenizer])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-      const handlePointerDown = (event: PointerEvent) => {
+    const handlePointerDown = (event: PointerEvent) => {
       onPointerDown?.(event)
       event.preventDefault()
       isHandlingPointerRef.current = true
@@ -760,14 +826,16 @@ export const CodeEditor = ({
         mouseHandlerRef.current?.setWordWrapCoordinateConverter(wordWrapConverter)
 
         // Let MouseHandler handle everything (including double/triple clicks)
+        // This will call the callback which updates inputStateRef.current synchronously
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
       else {
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
 
-      // Update canvas editor state synchronously before activating to ensure ensureCaretVisible uses the correct caret position
-      canvasEditorRef.current?.updateState(inputStateRef.current)
+      // Update canvas editor state synchronously with the updated ref from mouse handler callback
+      // The callback already updated inputStateRef.current, so this will have the latest state
+      canvasEditorRef.current?.updateState(inputStateRef.current, true)
 
       // Activate and focus after updating state so ensureCaretVisible sees the correct position
       setActiveEditor(editorIdRef.current)
@@ -809,8 +877,8 @@ export const CodeEditor = ({
         mouseHandlerRef.current?.handlePointerMove(event, inputStateRef.current)
       }
       else {
-        // Window handler will handle selection updates and auto-scroll
-        canvasEditorRef.current?.updateAutoScroll(event.clientX, event.clientY)
+        // When dragging, also handle selection updates via window handler for consistent boundary zone logic
+        handleWindowPointerMove(event)
       }
     }
 
