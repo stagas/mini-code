@@ -1,5 +1,5 @@
 // Tokenizer function type - takes a line of code and returns tokens
-export type Tokenizer = (line: string) => Token[]
+export type Tokenizer = (line: string, isBeginOfCode: boolean) => Token[]
 
 export interface Theme {
   colors: {
@@ -130,7 +130,7 @@ export interface HighlightedLine {
 }
 
 // Simple tokenizer that treats each character as a default token
-export const defaultTokenizer: Tokenizer = (line: string): Token[] => {
+export const defaultTokenizer: Tokenizer = (line: string, isBeginOfCode: boolean): Token[] => {
   return [{ type: 'default', content: line, length: line.length }]
 }
 
@@ -145,7 +145,8 @@ export const highlightCode = (
     let globalBraceDepth = 0
     const globalBraceStack: { char: string; depth: number }[] = []
 
-    for (const line of lines) {
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex]
       if (line.trim() === '') {
         // Empty line
         highlightedLines.push({
@@ -156,7 +157,8 @@ export const highlightCode = (
       }
 
       // Use the provided tokenizer to tokenize the line
-      const tokens = tokenizer(line)
+      const isBeginOfCode = lineIndex === 0
+      const tokens = tokenizer(line, isBeginOfCode)
       const tokensWithBraces = addRainbowBraces(tokens, globalBraceDepth, globalBraceStack, theme)
 
       // Update global brace depth for next line
@@ -192,75 +194,52 @@ const addRainbowBraces = (
 ): Token[] => {
   const result: Token[] = []
   let currentDepth = startDepth
-  // Use the global brace stack to maintain state across lines
   const braceStack = [...globalBraceStack]
-
-  // Helper function to get matching brace
-  const getMatchingBrace = (brace: string): string => {
-    switch (brace) {
-      case ')':
-        return '('
-      case '}':
-        return '{'
-      case ']':
-        return '['
-      default:
-        return ''
-    }
-  }
+  const rainbowLength = theme.rainbowColors.length
+  const matchingBrace: Record<string, string> = { ')': '(', '}': '{', ']': '[' }
+  const openingBraces = new Set(['{', '(', '['])
+  const closingBraces = new Set(['}', ')', ']'])
 
   for (const token of tokens) {
-    if (token.type === 'punctuation') {
-      const char = token.content
-      if (char === '{' || char === '(' || char === '[') {
-        // Opening brace
-        braceStack.push({ char, depth: currentDepth })
+    if (token.type !== 'punctuation') {
+      result.push(token)
+      continue
+    }
+
+    const char = token.content
+    if (openingBraces.has(char)) {
+      braceStack.push({ char, depth: currentDepth })
+      result.push({
+        type: `brace-open-${currentDepth % rainbowLength}`,
+        content: char,
+        length: char.length,
+      })
+      currentDepth++
+    } else if (closingBraces.has(char)) {
+      const expectedOpening = matchingBrace[char]
+      const lastBrace = braceStack[braceStack.length - 1]
+
+      if (lastBrace?.char === expectedOpening) {
+        const matchedDepth = lastBrace.depth
+        braceStack.pop()
+        currentDepth = Math.max(0, currentDepth - 1)
         result.push({
-          type: `brace-open-${currentDepth % theme.rainbowColors.length}`,
+          type: `brace-close-${matchedDepth % rainbowLength}`,
           content: char,
           length: char.length,
         })
-        currentDepth++
-      } else if (char === '}' || char === ')' || char === ']') {
-        // Closing brace
-        const expectedOpening = getMatchingBrace(char)
-        let isMatched = false
-
-        // Check if there's a matching opening brace
-        if (braceStack.length > 0) {
-          const lastBrace = braceStack[braceStack.length - 1]
-          if (lastBrace.char === expectedOpening) {
-            // Matched - use the depth from the opening brace
-            const matchedDepth = lastBrace.depth
-            braceStack.pop()
-            currentDepth = Math.max(0, currentDepth - 1)
-            result.push({
-              type: `brace-close-${matchedDepth % theme.rainbowColors.length}`,
-              content: char,
-              length: char.length,
-            })
-            isMatched = true
-          }
-        }
-
-        if (!isMatched) {
-          // Unmatched closing brace - mark as error
-          result.push({
-            type: 'brace-unmatched',
-            content: char,
-            length: char.length,
-          })
-          // Don't change currentDepth for unmatched braces
-        }
       } else {
-        result.push(token)
+        result.push({
+          type: 'brace-unmatched',
+          content: char,
+          length: char.length,
+        })
       }
     } else {
       result.push(token)
     }
   }
 
-  // Update the global brace stack with the current state
   globalBraceStack.length = 0
   globalBraceStack.push(...braceStack)
 

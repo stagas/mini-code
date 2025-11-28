@@ -98,6 +98,7 @@ export class InputHandler {
   private history: History
   private movementCallbacks: MovementCallbacks
   private keyOverride: KeyOverrideFunction | null = null
+  private getWidgets: (() => Array<{ line: number; column: number; type: string; length: number; height?: number }>) | null = null
 
   constructor(
     onStateChange: (state: InputState) => void,
@@ -119,6 +120,10 @@ export class InputHandler {
 
   setHistory(history: History) {
     this.history = history
+  }
+
+  setGetWidgets(fn: (() => Array<{ line: number; column: number; type: string; length: number; height?: number }>) | null) {
+    this.getWidgets = fn
   }
 
   handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
@@ -370,6 +375,7 @@ export class InputHandler {
       lines: [...state.lines],
       caret: null, // Don't save caret position - it's not relevant for most operations
       selection: null, // Don't save selection in history - it's not relevant for most operations
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -378,6 +384,7 @@ export class InputHandler {
       lines: [...state.lines],
       caret: { ...state.caret }, // Save final caret position after content changes
       selection: null, // Don't save selection in history - it's not relevant for most operations
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -386,6 +393,7 @@ export class InputHandler {
       lines: [...state.lines],
       caret: { ...state.caret }, // Save caret position for character input to restore properly on undo
       selection: null, // Don't save selection in history - it's not relevant for most operations
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -394,6 +402,7 @@ export class InputHandler {
       lines: [...state.lines],
       caret: { ...state.caret }, // Save final caret position after content changes
       selection: null, // Don't save selection in history - it's not relevant for most operations
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -408,6 +417,7 @@ export class InputHandler {
             end: { ...state.selection.end },
           }
         : null,
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -421,6 +431,7 @@ export class InputHandler {
             end: { ...state.selection.end },
           }
         : null,
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -435,6 +446,7 @@ export class InputHandler {
             end: { ...state.selection.end },
           }
         : null,
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -443,6 +455,7 @@ export class InputHandler {
       lines: [...state.lines],
       caret: { ...state.caret }, // Save caret position before operation
       selection: null, // Don't save selection in history - it's not relevant for most operations
+      widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
   }
 
@@ -597,9 +610,27 @@ export class InputHandler {
       }
     }
 
-    // Default logical movement
-    state.caret.column = 0
-    state.caret.columnIntent = 0
+    // Smart Home behavior:
+    // 1. If at beginning (column 0) → move to first non-whitespace
+    // 2. If at first non-whitespace → move to beginning (column 0)
+    // 3. If in middle (after first non-whitespace) → move to first non-whitespace
+    const currentLine = state.lines[state.caret.line] || ''
+    const firstNonWhitespace = currentLine.search(/\S/)
+    const firstNonWhitespaceColumn = firstNonWhitespace === -1 ? currentLine.length : firstNonWhitespace
+
+    if (state.caret.column === 0) {
+      // At beginning → move to first non-whitespace
+      state.caret.column = firstNonWhitespaceColumn
+      state.caret.columnIntent = firstNonWhitespaceColumn
+    } else if (state.caret.column === firstNonWhitespaceColumn) {
+      // At first non-whitespace → move to beginning
+      state.caret.column = 0
+      state.caret.columnIntent = 0
+    } else {
+      // In middle → move to first non-whitespace
+      state.caret.column = firstNonWhitespaceColumn
+      state.caret.columnIntent = firstNonWhitespaceColumn
+    }
   }
 
   private moveCaretToLineEnd(state: InputState) {
@@ -1233,11 +1264,13 @@ export class InputHandler {
     state.selection = null
   }
 
-  handleUndo(state: InputState) {
+  handleUndo(state: InputState, skipHistoryUndo: boolean = false): Array<{ line: number; column: number; type: string; length: number; height?: number }> | null {
     // Flush any pending debounced state before undo
     this.history.flushDebouncedState(state)
 
-    const previousState = this.history.undo()
+    // If skipHistoryUndo is true, the caller already called history.undo() and has the previousState
+    // We just need to update the state without calling undo again
+    const previousState = skipHistoryUndo ? null : this.history.undo()
     if (previousState) {
       state.lines = [...previousState.lines]
       // Only restore caret if it was saved in history
@@ -1263,10 +1296,14 @@ export class InputHandler {
             }
           : null,
       })
+
+      const widgetData = previousState.widgets ? previousState.widgets.map(w => ({ ...w })) : null
+      return widgetData
     }
+    return null
   }
 
-  handleRedo(state: InputState) {
+  handleRedo(state: InputState): Array<{ line: number; column: number; type: string; length: number; height?: number }> | null {
     // Flush any pending debounced state before redo
     this.history.flushDebouncedState(state)
 
@@ -1296,7 +1333,10 @@ export class InputHandler {
             }
           : null,
       })
+
+      return nextState.widgets ? nextState.widgets.map(w => ({ ...w })) : null
     }
+    return null
   }
 
   handleSelectAll(currentState: InputState) {

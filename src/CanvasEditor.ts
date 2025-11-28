@@ -225,12 +225,14 @@ export interface EditorWidget {
   column: number
   /** Width in characters */
   length: number
-  /** Height in pixels */
-  height: number
+  /** Height in pixels (optional: defaults to 20 for above/below, lineHeight for overlay/inline) */
+  height?: number
   /** Called to render the widget */
   render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number): void
   /** Called when widget is clicked (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
   pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
+  /** Called when pointer moves (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
+  pointerMove?(x: number, y: number, offsetX: number, offsetY: number): void
   /** Called when pointer is released */
   pointerUp?(): void
 }
@@ -259,6 +261,8 @@ export interface CanvasEditorOptions {
   theme?: Theme
   tokenizer?: Tokenizer
   widgets?: EditorWidget[]
+  isAnimating?: boolean
+  onBeforeDraw?: () => void
 }
 
 interface WrappedLine {
@@ -276,6 +280,24 @@ export class CanvasEditor {
   private options: CanvasEditorOptions
   private resizeHandler: (() => void) | null = null
   private wheelHandler: ((e: WheelEvent) => void) | null = null
+  private touchStartHandler: ((e: TouchEvent) => void) | null = null
+  private touchMoveHandler: ((e: TouchEvent) => void) | null = null
+  private touchEndHandler: ((e: TouchEvent) => void) | null = null
+  private touchStartX: number | null = null
+  private touchStartY: number | null = null
+  private touchStartScrollX: number = 0
+  private touchStartScrollY: number = 0
+  private isTouchScrolling: boolean = false
+  private isTouchGesture: boolean = false
+  private touchScrolled: boolean = false
+  private touchVelocityX: number = 0
+  private touchVelocityY: number = 0
+  private lastTouchMoveTime: number = 0
+  private lastTouchMoveX: number = 0
+  private lastTouchMoveY: number = 0
+  private momentumRaf: number | null = null
+  private touchStartTime: number = 0
+  private velocitySamples: Array<{ time: number; vx: number; vy: number }> = []
   private lastFunctionCallInfo: FunctionCallInfo | null = null
   private lastPopupPosition: {
     x: number
@@ -296,6 +318,9 @@ export class CanvasEditor {
   private readonly lineHeight = 20
   private isActive = false
   private autocompleteRaf: number | null = null
+  private autocompleteDebounceTimer: number | null = null
+  private wheelScrollDebounceTimer: number | null = null
+  private isWheelScrolling: boolean = false
   private lastCaretContentX: number | null = null
   private lastCaretContentY: number | null = null
   private signatureEnabled = true
@@ -319,9 +344,16 @@ export class CanvasEditor {
   private caretOpacity: number = 1
   private caretBlinkStartTime: number = 0
   private lastCaretActivityTime: number = 0
+  private animationRaf: number | null = null
+  private drawRaf: number | null = null
   private activeWidget: EditorWidget | null = null
   private isWidgetPointerDown = false
   private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
+  private activeWidgetPosition: { x: number; y: number; width: number; height: number } | null = null
+  private widgetUpdateTimeout: number | null = null
+  private pendingWidgets: EditorWidget[] | null = null
+  private currentCodeFileRef: unknown = null
+  private justRestoredFromHistory: boolean = false
 
   // Measurement caches for performance
   private measurementCache: {
@@ -343,6 +375,7 @@ export class CanvasEditor {
     this.gutterWidthCache = null
     this.textPaddingCache = null
     this.lineWidthCache.clear()
+    this.widgetPositions.clear()
   }
 
   // Draw a custom right arrow for the ligature sequence "|>" with given color and width reservation
@@ -426,6 +459,16 @@ export class CanvasEditor {
     let currentX = startX
     let pendingSkipNextLeading = false
 
+    // Pre-compute measurement cache values to avoid repeated checks
+    if (!this.measurementCache.ligatureArrowWidth) {
+      this.measurementCache.ligatureArrowWidth = ctx.measureText('|>').width
+    }
+    if (!this.measurementCache.ligatureLineArrowWidth) {
+      this.measurementCache.ligatureLineArrowWidth = ctx.measureText('->').width
+    }
+    const arrowWidth = this.measurementCache.ligatureArrowWidth
+    const lineArrowWidth = this.measurementCache.ligatureLineArrowWidth
+
     for (let ti = 0; ti < tokens.length; ti++) {
       const token = tokens[ti]
       const color = getTokenColor(token.type, theme)
@@ -436,7 +479,6 @@ export class CanvasEditor {
       pendingSkipNextLeading = false
 
       // Batch consecutive characters to reduce canvas API calls
-      let batchStart = i
       let batchText = ''
 
       const flushBatch = () => {
@@ -448,23 +490,23 @@ export class CanvasEditor {
         }
       }
 
-      for (; i < text.length; i++) {
-        const ch = text[i]
-        const nextCharInSame = i + 1 < text.length ? text[i + 1] : null
-        const nextCharAcross = i + 1 >= text.length && ti + 1 < tokens.length ? tokens[ti + 1].content[0] : null
+      const textLen = text.length
+      const isLastToken = ti + 1 >= tokens.length
+      const nextTokenFirstChar = !isLastToken ? tokens[ti + 1].content[0] : null
 
-        if (ch === '|' && (nextCharInSame === '>' || nextCharAcross === '>')) {
+      for (; i < textLen; i++) {
+        const ch = text[i]
+        const isLastChar = i + 1 >= textLen
+        const nextCharInSame = !isLastChar ? text[i + 1] : null
+        const nextChar = nextCharInSame ?? nextTokenFirstChar
+
+        if (ch === '|' && nextChar === '>') {
           flushBatch()
-          if (!this.measurementCache.ligatureArrowWidth) {
-            this.measurementCache.ligatureArrowWidth = ctx.measureText('|>').width
-          }
-          const reserved = this.measurementCache.ligatureArrowWidth
-          this.drawArrowLigature(ctx, currentX, y, color, reserved / 2)
-          currentX += reserved
+          this.drawArrowLigature(ctx, currentX, y, color, arrowWidth / 2)
+          currentX += arrowWidth
 
           if (nextCharInSame === '>') {
             i++
-            batchStart = i + 1
             continue
           }
 
@@ -472,18 +514,13 @@ export class CanvasEditor {
           break
         }
 
-        if (ch === '-' && (nextCharInSame === '>' || nextCharAcross === '>')) {
+        if (ch === '-' && nextChar === '>') {
           flushBatch()
-          if (!this.measurementCache.ligatureLineArrowWidth) {
-            this.measurementCache.ligatureLineArrowWidth = ctx.measureText('->').width
-          }
-          const reserved = this.measurementCache.ligatureLineArrowWidth
-          this.drawLineArrowLigature(ctx, currentX, y, color, reserved)
-          currentX += reserved
+          this.drawLineArrowLigature(ctx, currentX, y, color, lineArrowWidth)
+          currentX += lineArrowWidth
 
           if (nextCharInSame === '>') {
             i++
-            batchStart = i + 1
             continue
           }
 
@@ -495,9 +532,6 @@ export class CanvasEditor {
       }
 
       flushBatch()
-
-      // If we finished the token without hitting a cross-token ligature, ensure no skip carries over
-      // (pendingSkipNextLeading is already false unless we broke on a ligature)
     }
 
     return currentX
@@ -540,6 +574,7 @@ export class CanvasEditor {
     viewportWidth: number
     result: WrappedLine[]
   } | null = null
+  private pendingWrappedLines: WrappedLine[] | null = null
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -548,7 +583,6 @@ export class CanvasEditor {
     callbacks: CanvasEditorCallbacks = {},
     options: CanvasEditorOptions = {},
   ) {
-    console.log('new editor')
     this.canvas = canvas
     this.container = container
     this.inputState = initialState
@@ -556,15 +590,20 @@ export class CanvasEditor {
     this.options = { tokenizer: defaultTokenizer, ...options }
 
     this.updateCanvasSize()
-    this.draw()
+    this.maybeDraw()
     this.setupResize()
     this.setupWheel()
+    this.setupTouch()
+
+    if (this.options.isAnimating) {
+      this.startAnimationLoop()
+    }
   }
 
   public setActive(active: boolean) {
     if (this.isActive === active) return
     this.isActive = active
-    this.draw()
+    this.maybeDraw()
     if (!this.isActive) {
       // Don't clear state when deactivating - just hide via rendering
       // This allows popups to reappear when reactivating without recalculation
@@ -575,6 +614,16 @@ export class CanvasEditor {
       this.updateAutocomplete()
       this.updateFunctionSignature()
     }
+  }
+
+  private getWidgetHeight(widget: EditorWidget): number {
+    if (widget.height !== undefined) {
+      return widget.height
+    }
+    if (widget.type === 'above' || widget.type === 'below') {
+      return 20
+    }
+    return this.lineHeight
   }
 
   private getWrappedLines(ctx: CanvasRenderingContext2D): WrappedLine[] {
@@ -593,8 +642,8 @@ export class CanvasEditor {
     const maxWidth = Math.max(100, viewportWidth - textPadding - this.padding)
 
     // Check cache
+    const code = this.inputState.lines.join('\n')
     if (this.wrappedLinesCache) {
-      const code = this.inputState.lines.join('\n')
       if (
         this.wrappedLinesCache.code === code
         && this.wrappedLinesCache.viewportWidth === viewportWidth
@@ -604,7 +653,6 @@ export class CanvasEditor {
     }
 
     // Get syntax highlighting for token-aware wrapping
-    const code = this.inputState.lines.join('\n')
     const theme = this.options.theme || defaultTheme
     const tokenizer = this.options.tokenizer || defaultTokenizer
     let highlightedCode: HighlightedLine[]
@@ -650,19 +698,37 @@ export class CanvasEditor {
         continue
       }
 
+      // Pre-compute token boundaries and space positions once per line
+      const tokenBoundaries: number[] = []
+      const spacePositions: number[] = []
+      let currentColumn = 0
+      for (const token of tokens) {
+        const tokenEnd = currentColumn + token.content.length
+        tokenBoundaries.push(tokenEnd)
+
+        // Find all spaces in this token
+        let spaceIndex = token.content.indexOf(' ')
+        while (spaceIndex >= 0) {
+          spacePositions.push(currentColumn + spaceIndex + 1)
+          spaceIndex = token.content.indexOf(' ', spaceIndex + 1)
+        }
+
+        currentColumn = tokenEnd
+      }
+
       let startColumn = 0
       while (startColumn < line.length) {
         // Try to fit as much as possible
-        let endColumn = line.length
-        let testText = line.substring(startColumn, endColumn)
+        const fullText = line.substring(startColumn)
+        const fullWidth = ctx.measureText(fullText).width
 
         // If everything fits, use it all
-        if (ctx.measureText(testText).width <= maxWidth) {
+        if (fullWidth <= maxWidth) {
           wrappedLines.push({
             logicalLine: lineIndex,
-            text: testText,
+            text: fullText,
             startColumn,
-            endColumn,
+            endColumn: line.length,
           })
           break
         }
@@ -674,9 +740,10 @@ export class CanvasEditor {
 
         while (left <= right) {
           const mid = Math.floor((left + right) / 2)
-          testText = line.substring(startColumn, mid)
+          const testText = line.substring(startColumn, mid)
+          const width = ctx.measureText(testText).width
 
-          if (ctx.measureText(testText).width <= maxWidth) {
+          if (width <= maxWidth) {
             bestEnd = mid
             left = mid + 1
           }
@@ -695,49 +762,35 @@ export class CanvasEditor {
         // Check if finalEnd would break a widget range
         // If so, move the break point to before the widget starts
         for (const range of widgetRanges) {
-          // If the break point is within a widget range (would split it)
           if (finalEnd > range.start && finalEnd < range.end) {
-            // Move break point to before the widget
             if (range.start > startColumn) {
               finalEnd = range.start
             }
             else {
-              // Widget starts at or before startColumn, we can't break it
-              // Force include the entire widget
               finalEnd = range.end
             }
+            break
           }
         }
 
-        // Find token boundaries within the segment
-        let currentColumn = 0
+        // Find best token boundary before bestEnd
         let lastTokenBoundary = -1
+        for (let i = tokenBoundaries.length - 1; i >= 0; i--) {
+          const boundary = tokenBoundaries[i]
+          if (boundary <= bestEnd && boundary > startColumn) {
+            lastTokenBoundary = boundary
+            break
+          }
+        }
+
+        // Find best space boundary before bestEnd
         let lastSpaceBoundary = -1
-
-        for (const token of tokens) {
-          const tokenStart = currentColumn
-          const tokenEnd = currentColumn + token.content.length
-
-          // Check if this token boundary is before our bestEnd and after startColumn
-          if (tokenEnd <= bestEnd && tokenEnd > startColumn) {
-            lastTokenBoundary = tokenEnd
+        for (let i = spacePositions.length - 1; i >= 0; i--) {
+          const spacePos = spacePositions[i]
+          if (spacePos <= bestEnd && spacePos > startColumn) {
+            lastSpaceBoundary = spacePos
+            break
           }
-
-          // Look for spaces within this token if it overlaps our segment
-          if (tokenStart < bestEnd && tokenEnd > startColumn) {
-            const overlapStart = Math.max(tokenStart, startColumn)
-            const overlapEnd = Math.min(tokenEnd, bestEnd)
-            const segmentWithinToken = token.content.substring(
-              overlapStart - tokenStart,
-              overlapEnd - tokenStart,
-            )
-            const lastSpace = segmentWithinToken.lastIndexOf(' ')
-            if (lastSpace >= 0) {
-              lastSpaceBoundary = overlapStart + lastSpace + 1
-            }
-          }
-
-          currentColumn = tokenEnd
         }
 
         // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth)
@@ -786,7 +839,7 @@ export class CanvasEditor {
 
     // Cache the result
     this.wrappedLinesCache = {
-      code: this.inputState.lines.join('\n'),
+      code,
       viewportWidth,
       result: wrappedLines,
     }
@@ -921,9 +974,9 @@ export class CanvasEditor {
       let aboveHeight = 0
       const widgets = widgetsByVisualLine.get(visualLine)
       if (widgets?.above && widgets.above.length > 0) {
-        aboveHeight = Math.max(...widgets.above.map(w => w.height))
+        aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
-      return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 2
+      return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 3
     }
 
     // Convert logical selection to visual positions
@@ -944,16 +997,16 @@ export class CanvasEditor {
     let startAboveHeight = 0
     const startWidgets = widgetsByVisualLine.get(startVisual.visualLine)
     if (startWidgets?.above && startWidgets.above.length > 0) {
-      startAboveHeight = Math.max(...startWidgets.above.map(w => w.height))
+      startAboveHeight = Math.max(...startWidgets.above.map(w => this.getWidgetHeight(w)))
     }
     let endAboveHeight = 0
     let endBelowHeight = 0
     const endWidgets = widgetsByVisualLine.get(endVisual.visualLine)
     if (endWidgets?.above && endWidgets.above.length > 0) {
-      endAboveHeight = Math.max(...endWidgets.above.map(w => w.height))
+      endAboveHeight = Math.max(...endWidgets.above.map(w => this.getWidgetHeight(w)))
     }
     if (endWidgets?.below && endWidgets.below.length > 0) {
-      endBelowHeight = Math.max(...endWidgets.below.map(w => w.height))
+      endBelowHeight = Math.max(...endWidgets.below.map(w => this.getWidgetHeight(w)))
     }
     const selectionStartY = this.padding + startVisual.visualLine * this.lineHeight + startYOffset + startAboveHeight
     const selectionEndY = this.padding + (endVisual.visualLine + 1) * this.lineHeight + endYOffset + endAboveHeight
@@ -995,7 +1048,17 @@ export class CanvasEditor {
             selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
           }
         }
-        selectedWidth += selectionPadding
+        // Add padding if selection ends at end of logical line (newline included)
+        const logicalLine = wrappedLine.logicalLine
+        const logicalLineLength = this.inputState.lines[logicalLine]?.length || 0
+        const isLastWrappedSegment = wrappedLine.endColumn === logicalLineLength
+        if (isLastWrappedSegment) {
+          if (logicalLine < normalizedEnd.line
+            || (logicalLine === normalizedEnd.line && normalizedEnd.column === logicalLineLength))
+          {
+            selectedWidth += selectionPadding
+          }
+        }
 
         const y = selectionY(startVisual.visualLine, true)
 
@@ -1012,7 +1075,7 @@ export class CanvasEditor {
         let aboveHeight = 0
         const widgets = widgetsByVisualLine.get(visualLine)
         if (widgets?.above && widgets.above.length > 0) {
-          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         }
         return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight
       }
@@ -1023,10 +1086,10 @@ export class CanvasEditor {
         let belowHeight = 0
         const widgets = widgetsByVisualLine.get(visualLine)
         if (widgets?.above && widgets.above.length > 0) {
-          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         }
         if (widgets?.below && widgets.below.length > 0) {
-          belowHeight = Math.max(...widgets.below.map(w => w.height))
+          belowHeight = Math.max(...widgets.below.map(w => this.getWidgetHeight(w)))
         }
         return this.padding + (visualLine + 1) * this.lineHeight + yOffset + aboveHeight + belowHeight
       }
@@ -1082,7 +1145,17 @@ export class CanvasEditor {
               selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
             }
           }
-          selectedWidth += selectionPadding
+          // Add padding if this is the last wrapped segment of the logical line and newline is included
+          const logicalLine = wrappedLine.logicalLine
+          const logicalLineLength = this.inputState.lines[logicalLine]?.length || 0
+          const isLastWrappedSegment = wrappedLine.endColumn === logicalLineLength
+          if (isLastWrappedSegment) {
+            if (logicalLine < normalizedEnd.line
+              || (logicalLine === normalizedEnd.line && normalizedEnd.column === logicalLineLength))
+            {
+              selectedWidth += selectionPadding
+            }
+          }
 
           ctx.fillRect(startX, y, selectedWidth, selectionHeight)
         }
@@ -1098,7 +1171,17 @@ export class CanvasEditor {
               selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
             }
           }
-          selectedWidth += selectionPadding
+          // Add padding if this is the last wrapped segment of the logical line and newline is included
+          const logicalLine = wrappedLine.logicalLine
+          const logicalLineLength = this.inputState.lines[logicalLine]?.length || 0
+          const isLastWrappedSegment = wrappedLine.endColumn === logicalLineLength
+          if (isLastWrappedSegment) {
+            if (logicalLine < normalizedEnd.line
+              || (logicalLine === normalizedEnd.line && normalizedEnd.column === logicalLineLength))
+            {
+              selectedWidth += selectionPadding
+            }
+          }
 
           ctx.fillRect(textPadding, y, selectedWidth, selectionHeight)
         }
@@ -1110,7 +1193,17 @@ export class CanvasEditor {
           for (const { widget } of inlineWidgetsForLine) {
             selectedWidth += ctx.measureText('X'.repeat(widget.length)).width
           }
-          selectedWidth += selectionPadding
+          // Add padding if this is the last wrapped segment of the logical line and newline is included
+          const logicalLine = wrappedLine.logicalLine
+          const logicalLineLength = this.inputState.lines[logicalLine]?.length || 0
+          const isLastWrappedSegment = wrappedLine.endColumn === logicalLineLength
+          if (isLastWrappedSegment) {
+            if (logicalLine < normalizedEnd.line
+              || (logicalLine === normalizedEnd.line && normalizedEnd.column === logicalLineLength))
+            {
+              selectedWidth += selectionPadding
+            }
+          }
 
           ctx.fillRect(textPadding, y, selectedWidth, selectionHeight)
         }
@@ -1247,7 +1340,11 @@ export class CanvasEditor {
     const maxScrollY = Math.max(0, contentSize.height - newHeight)
 
     // Adjust horizontal scroll to keep content visible
-    if (newWidth < oldWidth) {
+    // When wordWrap is false, preserve the leftmost scroll position
+    if (!this.options.wordWrap) {
+      // Preserve scrollX (leftmost position) - just clamp to new maximum
+    }
+    else if (newWidth < oldWidth) {
       // Canvas got narrower - adjust scroll to keep right edge visible
       const rightEdge = this.scrollX + oldWidth
       if (rightEdge > newWidth) {
@@ -1551,30 +1648,57 @@ export class CanvasEditor {
     line: number,
     column: number,
   ): { line: number; column: number; columnIntent: number } | null {
-    if (!this.options.wordWrap) {
-      return null // Fall back to normal handling
+    // Smart Home behavior at logical line level:
+    // 1. If at beginning (column 0) → move to first non-whitespace
+    // 2. If at first non-whitespace → move to beginning (column 0)
+    // 3. If in middle (after first non-whitespace) → move to first non-whitespace
+    const currentLine = this.inputState.lines[line] || ''
+    const firstNonWhitespace = currentLine.search(/\S/)
+    const firstNonWhitespaceColumn = firstNonWhitespace === -1 ? currentLine.length : firstNonWhitespace
+
+    let targetColumn: number
+    if (column === 0) {
+      // At beginning → move to first non-whitespace
+      targetColumn = firstNonWhitespaceColumn
+    }
+    else if (column === firstNonWhitespaceColumn) {
+      // At first non-whitespace → move to beginning
+      targetColumn = 0
+    }
+    else {
+      // In middle → move to first non-whitespace
+      targetColumn = firstNonWhitespaceColumn
     }
 
-    const ctx = this.canvas.getContext('2d')
-    if (!ctx) return null
+    if (this.options.wordWrap) {
+      // For word wrap mode, we need to handle visual positioning
+      const ctx = this.canvas.getContext('2d')
+      if (!ctx) return null
 
-    this.setFont(ctx)
-    const wrappedLines = this.getWrappedLines(ctx)
+      this.setFont(ctx)
+      const wrappedLines = this.getWrappedLines(ctx)
 
-    // Find current visual position
-    const currentVisual = this.logicalToVisualPosition(line, column, wrappedLines)
-    if (currentVisual.visualLine < 0 || currentVisual.visualLine >= wrappedLines.length) {
-      return null
+      // Find visual position for target column
+      const targetVisual = this.logicalToVisualPosition(line, targetColumn, wrappedLines)
+      if (targetVisual.visualLine < 0 || targetVisual.visualLine >= wrappedLines.length) {
+        return null
+      }
+
+      // Get the logical position for the start of the visual line containing the target
+      const logical = this.visualToLogicalPosition(targetVisual.visualLine, 0, wrappedLines)
+
+      return {
+        line: logical.logicalLine,
+        column: targetColumn,
+        columnIntent: targetColumn,
+      }
     }
 
-    // Move to start of current wrapped line segment
-    const wrapped = wrappedLines[currentVisual.visualLine]
-    const logical = this.visualToLogicalPosition(currentVisual.visualLine, 0, wrappedLines)
-
+    // For non-word-wrap mode, just return the target column
     return {
-      line: logical.logicalLine,
-      column: logical.logicalColumn,
-      columnIntent: logical.logicalColumn,
+      line,
+      column: targetColumn,
+      columnIntent: targetColumn,
     }
   }
 
@@ -1634,79 +1758,9 @@ export class CanvasEditor {
     return line.length
   }
 
-  private adjustWidgetsOptimistically(oldState: InputState, newState: InputState) {
-    if (!this.options.widgets || this.options.widgets.length === 0) return
-
-    const oldLines = oldState.lines
-    const newLines = newState.lines
-    const oldCaret = oldState.caret
-    const newCaret = newState.caret
-
-    // Detect line insertion (newline inserted)
-    if (newLines.length > oldLines.length) {
-      // When a newline is inserted, the caret moves to the new line
-      // oldCaret.line (0-based) is where the line was split
-      // newCaret.line (0-based) is the new line
-      // Widgets at newCaret.line + 1 (1-based) and below should move down
-      const insertLine1Based = newCaret.line + 1
-      for (const widget of this.options.widgets) {
-        if (widget.line >= insertLine1Based) {
-          widget.line++
-        }
-      }
-      return
-    }
-
-    // Detect line deletion (line merged with previous)
-    if (newLines.length < oldLines.length) {
-      // When a line is deleted (merged), the caret typically moves to the previous line
-      // oldCaret.line (0-based) is the line that was deleted
-      // Widgets at oldCaret.line + 1 (1-based) and below should move up
-      const deleteLine1Based = oldCaret.line + 1
-      for (const widget of this.options.widgets) {
-        if (widget.line > deleteLine1Based) {
-          widget.line--
-        }
-      }
-      return
-    }
-
-    // Detect character insertion/deletion on a line
-    if (oldLines.length === newLines.length) {
-      const caretLine = newCaret.line
-      if (caretLine >= 0 && caretLine < oldLines.length && caretLine < newLines.length) {
-        const oldLine = oldLines[caretLine]
-        const newLine = newLines[caretLine]
-        const oldCol = oldCaret.column
-        const newCol = newCaret.column
-
-        // Character inserted: line got longer and caret moved forward
-        if (newLine.length > oldLine.length && newCol > oldCol) {
-          // oldCol is 0-based, widgets are 1-based
-          // Insert at oldCol means widgets at column > oldCol (0-based) = column >= oldCol + 1 (1-based) should move
-          const insertCol1Based = oldCol + 1
-          for (const widget of this.options.widgets) {
-            if (widget.line === caretLine + 1 && widget.column >= insertCol1Based) {
-              widget.column++
-            }
-          }
-        }
-        // Character deleted: line got shorter
-        else if (newLine.length < oldLine.length) {
-          // newCol is 0-based, widgets are 1-based
-          // Delete at newCol means widgets at column > newCol (0-based) = column > newCol + 1 (1-based) should move
-          const deleteCol1Based = newCol + 1
-          for (const widget of this.options.widgets) {
-            if (widget.line === caretLine + 1 && widget.column > deleteCol1Based) {
-              widget.column--
-            }
-          }
-        }
-      }
-    }
-  }
-
-  public updateState(newState: InputState, ensureCaretVisible = false) {
+  public updateState(newState: InputState, ensureCaretVisible = false,
+    widgetData?: Array<{ line: number; column: number; type: string; length: number; height?: number }>)
+  {
     // Invalidate wrapped lines cache if lines changed
     const linesChanged = this.inputState.lines !== newState.lines
 
@@ -1714,9 +1768,68 @@ export class CanvasEditor {
     const caretChanged = this.inputState.caret.line !== newState.caret.line
       || this.inputState.caret.column !== newState.caret.column
 
-    // Optimistically adjust widget positions before updating state
-    if (linesChanged || caretChanged) {
-      this.adjustWidgetsOptimistically(this.inputState, newState)
+    // Apply widget data from history if provided (undo/redo)
+    if (widgetData && widgetData.length > 0) {
+      if (!this.options.widgets || this.options.widgets.length === 0) {
+        // No widgets to restore to - this shouldn't happen but handle gracefully
+      }
+      else {
+        // Restore widgets exactly as they were in history
+        // Match widgets from history to existing widgets by type and length, then update positions
+        const usedWidgets = new Set<EditorWidget>()
+        let restoredCount = 0
+
+        for (const data of widgetData) {
+          // Find best matching widget by type and length, preferring closest position
+          let bestMatch: EditorWidget | null = null
+          let bestDistance = Infinity
+
+          for (const widget of this.options.widgets) {
+            if (usedWidgets.has(widget)) continue
+
+            if (widget.type === data.type && widget.length === data.length) {
+              // Calculate distance to prefer widgets that are closer to the history position
+              const distance = Math.abs(widget.line - data.line) + Math.abs(widget.column - data.column)
+              if (distance < bestDistance) {
+                bestDistance = distance
+                bestMatch = widget
+              }
+            }
+          }
+
+          if (bestMatch) {
+            // Update position and height from history
+            bestMatch.line = data.line
+            bestMatch.column = data.column
+            if (data.height !== undefined) {
+              bestMatch.height = data.height
+            }
+            usedWidgets.add(bestMatch)
+            restoredCount++
+          }
+          else {
+          }
+        }
+
+        // Clear any pending widget updates to prevent props from overwriting restored positions
+        if (this.widgetUpdateTimeout !== null) {
+          clearTimeout(this.widgetUpdateTimeout)
+          this.widgetUpdateTimeout = null
+        }
+        this.pendingWidgets = null
+
+        // Mark that we just restored from history - prevent props from overwriting for 1 second
+        this.justRestoredFromHistory = true
+        setTimeout(() => {
+          this.justRestoredFromHistory = false
+        }, 1000)
+
+        // Force a redraw to show restored positions
+        this.maybeDraw()
+      }
+    }
+    else {
+      this.justRestoredFromHistory = false
     }
 
     // Track if we were at the bottom before update (must check before invalidating cache)
@@ -1739,14 +1852,27 @@ export class CanvasEditor {
     }
 
     this.inputState = newState
+
+    // Pre-calculate wrapped lines for draw() to avoid double calculation
+    if (ctx) {
+      this.setFont(ctx)
+      this.pendingWrappedLines = this.getWrappedLines(ctx)
+    }
+    else {
+      this.pendingWrappedLines = null
+    }
+
     // Reset caret activity time on input/movement (caret becomes visible when active)
     if (this.isActive && caretChanged) {
       this.lastCaretActivityTime = performance.now()
       this.caretOpacity = 1
     }
     if (this.isActive && ensureCaretVisible) this.ensureCaretVisible(wasAtBottom)
-    this.draw()
-    this.updateAutocomplete()
+    this.maybeDraw()
+    // Only update autocomplete when text changes (typing), not on navigation
+    if (linesChanged) {
+      this.updateAutocomplete()
+    }
     this.updateFunctionSignature()
   }
 
@@ -1768,7 +1894,7 @@ export class CanvasEditor {
     // Adjust scroll position to keep content properly visible after resize
     this.adjustScrollAfterResize(oldWidth, oldHeight, newWidth, newHeight)
 
-    this.draw()
+    this.maybeDraw()
     this.updateFunctionSignature() // Need to update popup positions when canvas resizes
   }
 
@@ -1781,6 +1907,23 @@ export class CanvasEditor {
       this.canvas.removeEventListener('wheel', this.wheelHandler as EventListener)
       this.wheelHandler = null
     }
+    if (this.wheelScrollDebounceTimer !== null) {
+      clearTimeout(this.wheelScrollDebounceTimer)
+      this.wheelScrollDebounceTimer = null
+    }
+    if (this.touchStartHandler) {
+      this.canvas.removeEventListener('touchstart', this.touchStartHandler as EventListener)
+      this.touchStartHandler = null
+    }
+    if (this.touchMoveHandler) {
+      this.canvas.removeEventListener('touchmove', this.touchMoveHandler as EventListener)
+      this.touchMoveHandler = null
+    }
+    if (this.touchEndHandler) {
+      this.canvas.removeEventListener('touchend', this.touchEndHandler as EventListener)
+      this.canvas.removeEventListener('touchcancel', this.touchEndHandler as EventListener)
+      this.touchEndHandler = null
+    }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect()
       this.resizeObserver = null
@@ -1789,8 +1932,22 @@ export class CanvasEditor {
       cancelAnimationFrame(this.autocompleteRaf)
       this.autocompleteRaf = null
     }
+    if (this.autocompleteDebounceTimer !== null) {
+      clearTimeout(this.autocompleteDebounceTimer)
+      this.autocompleteDebounceTimer = null
+    }
+    if (this.drawRaf !== null) {
+      cancelAnimationFrame(this.drawRaf)
+      this.drawRaf = null
+    }
+    if (this.widgetUpdateTimeout !== null) {
+      clearTimeout(this.widgetUpdateTimeout)
+      this.widgetUpdateTimeout = null
+    }
     this.stopAutoScroll()
+    this.stopMomentumScroll()
     this.stopCaretBlink()
+    this.stopAnimationLoop()
   }
 
   public setScroll(x: number | null, y: number | null) {
@@ -1821,9 +1978,48 @@ export class CanvasEditor {
         contentSize.width,
         contentSize.height,
       )
-      this.draw()
+      this.maybeDraw()
       this.updateFunctionSignature()
-      this.updateAutocomplete()
+    }
+    else {
+      this.publishScrollMetrics(
+        ctx,
+        viewportWidth,
+        viewportHeight,
+        contentSize.width,
+        contentSize.height,
+      )
+    }
+  }
+
+  public setScrollWithoutDraw(x: number | null, y: number | null) {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+    this.setFont(ctx)
+
+    const dpr = window.devicePixelRatio || 1
+    const viewportWidth = this.canvas.width / dpr
+    const viewportHeight = this.canvas.height / dpr
+    const contentSize = this.options.wordWrap
+      ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+      : this.getContentSize(ctx)
+    const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+    const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+    const nextScrollX = x === null ? this.scrollX : Math.min(Math.max(x, 0), maxScrollX)
+    const nextScrollY = y === null ? this.scrollY : Math.min(Math.max(y, 0), maxScrollY)
+
+    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+      this.scrollX = nextScrollX
+      this.scrollY = nextScrollY
+      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      this.publishScrollMetrics(
+        ctx,
+        viewportWidth,
+        viewportHeight,
+        contentSize.width,
+        contentSize.height,
+      )
     }
     else {
       this.publishScrollMetrics(
@@ -1864,6 +2060,35 @@ export class CanvasEditor {
       contentWidth: content.width,
       contentHeight: content.height,
     }
+  }
+
+  public isTouchScrollingActive(): boolean {
+    return this.isTouchScrolling
+  }
+
+  public isTouchGestureActive(): boolean {
+    return this.isTouchGesture || this.touchStartX !== null
+  }
+
+  public didTouchScroll(): boolean {
+    // Check if total movement exceeds tap threshold
+    if (this.touchStartX !== null && this.touchStartY !== null) {
+      const totalMovement = Math.sqrt(
+        Math.pow(this.touchStartX - this.lastTouchMoveX, 2)
+          + Math.pow(this.touchStartY - this.lastTouchMoveY, 2),
+      )
+      const tapThreshold = 15
+      return totalMovement >= tapThreshold
+    }
+    return this.touchScrolled
+  }
+
+  public clearTouchScrollFlag(): void {
+    this.touchScrolled = false
+  }
+
+  public getTextPaddingValue(): number {
+    return this.getTextPadding()
   }
 
   private setupResize() {
@@ -1950,10 +2175,54 @@ export class CanvasEditor {
         && ((effectiveDeltaY > 0 && this.scrollY < maxScrollY)
           || (effectiveDeltaY < 0 && this.scrollY > 0))
 
-      const shouldPrevent = horizontalIntent ? canScrollXInDirection : canScrollYInDirection
+      // Check if there's more scroll available in the y direction
+      // For vertical scrolling, check if we can scroll in that direction
+      // For horizontal scrolling, check if there's any vertical scroll room
+      const hasMoreScrollY = maxScrollY > epsilon
+        && (effectiveDeltaY !== 0
+          ? canScrollYInDirection
+          : (this.scrollY < maxScrollY || this.scrollY > 0))
+
+      // Check if we're at the end of vertical scroll
+      const isAtEndY = maxScrollY > epsilon
+        && ((effectiveDeltaY > 0 && this.scrollY >= maxScrollY)
+          || (effectiveDeltaY < 0 && this.scrollY <= 0)
+          || (effectiveDeltaY === 0 && this.scrollY >= maxScrollY))
+
+      // Clear existing debounce timer
+      if (this.wheelScrollDebounceTimer !== null) {
+        clearTimeout(this.wheelScrollDebounceTimer)
+        this.wheelScrollDebounceTimer = null
+      }
+
+      // If we're actively scrolling (debounce active), always prevent default (even at the end)
+      // If we're not actively scrolling (debounce completed), only prevent if there's more scroll (not at the end)
+      // If there's more vertical scroll available, always prevent default regardless of dominant scroll intent
+      const hasScrollToPrevent = hasMoreScrollY
+        ? true
+        : (horizontalIntent ? canScrollXInDirection : canScrollYInDirection)
+
+      const shouldPrevent = this.isWheelScrolling
+        ? (hasScrollToPrevent || isAtEndY)
+        : hasScrollToPrevent
+
       if (!shouldPrevent) {
+        // Set debounce timer to mark scrolling as stopped
+        this.wheelScrollDebounceTimer = window.setTimeout(() => {
+          this.isWheelScrolling = false
+          this.wheelScrollDebounceTimer = null
+        }, 100)
         return
       }
+
+      // Mark as actively scrolling
+      this.isWheelScrolling = true
+
+      // Set debounce timer to mark scrolling as stopped after inactivity
+      this.wheelScrollDebounceTimer = window.setTimeout(() => {
+        this.isWheelScrolling = false
+        this.wheelScrollDebounceTimer = null
+      }, 100)
 
       e.preventDefault()
 
@@ -1971,14 +2240,240 @@ export class CanvasEditor {
           contentSize.width,
           contentSize.height,
         )
-        this.draw()
+        this.maybeDraw()
         this.updateFunctionSignature()
-        this.updateAutocomplete()
       }
     }
 
     this.canvas.addEventListener('wheel', handleWheel, { passive: false })
     this.wheelHandler = handleWheel
+  }
+
+  private setupTouch() {
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return
+
+      // Don't start touch scrolling if a widget is being handled
+      if (this.isWidgetPointerDown) return
+
+      // Stop any active momentum scroll first to get the current scroll position
+      this.stopMomentumScroll()
+
+      const touch = e.touches[0]
+      const now = performance.now()
+      this.touchStartX = touch.clientX
+      this.touchStartY = touch.clientY
+      this.touchStartTime = now
+      // Capture scroll position after stopping momentum to avoid jumps
+      this.touchStartScrollX = this.scrollX
+      this.touchStartScrollY = this.scrollY
+      this.isTouchScrolling = false
+      this.isTouchGesture = true
+      this.touchScrolled = false
+      this.lastTouchMoveTime = now
+      this.lastTouchMoveX = touch.clientX
+      this.lastTouchMoveY = touch.clientY
+      this.touchVelocityX = 0
+      this.touchVelocityY = 0
+      this.velocitySamples = []
+
+      const dpr = window.devicePixelRatio || 1
+      const viewportWidth = this.canvas.width / dpr
+      const viewportHeight = this.canvas.height / dpr
+
+      const ctx = this.canvas.getContext('2d')
+      if (!ctx) return
+      this.setFont(ctx)
+
+      const contentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+
+      const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+      if (maxScrollX > 0 || maxScrollY > 0) {
+        e.preventDefault()
+      }
+    }
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1 || this.touchStartX === null || this.touchStartY === null) return
+
+      // Don't handle touch scrolling if a widget is being handled
+      if (this.isWidgetPointerDown) return
+
+      const touch = e.touches[0]
+      const now = performance.now()
+      const deltaX = this.touchStartX - touch.clientX
+      const deltaY = this.touchStartY - touch.clientY
+
+      const absX = Math.abs(deltaX)
+      const absY = Math.abs(deltaY)
+      const movementThreshold = 10
+
+      if (absX > movementThreshold || absY > movementThreshold) {
+        this.isTouchScrolling = true
+        e.preventDefault()
+      }
+
+      // Calculate velocity for momentum scrolling (pixels per frame, assuming ~60fps)
+      if (this.lastTouchMoveTime > 0) {
+        const timeDelta = now - this.lastTouchMoveTime
+        if (timeDelta > 0 && timeDelta < 100) {
+          const moveDeltaX = this.lastTouchMoveX - touch.clientX
+          const moveDeltaY = this.lastTouchMoveY - touch.clientY
+          // Convert to pixels per frame (assuming 60fps = 16.67ms per frame)
+          const frames = timeDelta / 16.67
+          const vx = moveDeltaX / frames
+          const vy = moveDeltaY / frames
+
+          // Store velocity sample for averaging
+          this.velocitySamples.push({ time: now, vx, vy })
+          // Keep only last 5 samples (last ~80ms at 60fps)
+          if (this.velocitySamples.length > 5) {
+            this.velocitySamples.shift()
+          }
+
+          // Use weighted average of recent samples (more recent = higher weight)
+          let totalWeight = 0
+          let weightedVx = 0
+          let weightedVy = 0
+          for (let i = 0; i < this.velocitySamples.length; i++) {
+            const weight = i + 1
+            weightedVx += this.velocitySamples[i].vx * weight
+            weightedVy += this.velocitySamples[i].vy * weight
+            totalWeight += weight
+          }
+          this.touchVelocityX = weightedVx / totalWeight
+          this.touchVelocityY = weightedVy / totalWeight
+        }
+      }
+      this.lastTouchMoveTime = now
+      this.lastTouchMoveX = touch.clientX
+      this.lastTouchMoveY = touch.clientY
+
+      const dpr = window.devicePixelRatio || 1
+      const viewportWidth = this.canvas.width / dpr
+      const viewportHeight = this.canvas.height / dpr
+
+      const ctx = this.canvas.getContext('2d')
+      if (!ctx) return
+      this.setFont(ctx)
+
+      const contentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+
+      const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+      if (maxScrollX === 0 && maxScrollY === 0) {
+        return
+      }
+
+      const horizontalIntent = absX > absY
+
+      const epsilon = 1
+      const canScrollHorizontally = deltaX !== 0 && maxScrollX > epsilon
+      const canScrollVertically = deltaY !== 0 && maxScrollY > epsilon
+
+      const canScrollXInDirection = canScrollHorizontally
+        && ((deltaX > 0 && this.touchStartScrollX < maxScrollX)
+          || (deltaX < 0 && this.touchStartScrollX > 0))
+      const canScrollYInDirection = canScrollVertically
+        && ((deltaY > 0 && this.touchStartScrollY < maxScrollY)
+          || (deltaY < 0 && this.touchStartScrollY > 0))
+
+      const shouldPrevent = horizontalIntent ? canScrollXInDirection : canScrollYInDirection
+      if (!shouldPrevent) {
+        return
+      }
+
+      e.preventDefault()
+
+      const nextScrollX = Math.min(Math.max(this.touchStartScrollX + deltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.touchStartScrollY + deltaY, 0), maxScrollY)
+
+      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+        this.scrollX = nextScrollX
+        this.scrollY = nextScrollY
+        this.touchScrolled = true
+        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        this.publishScrollMetrics(
+          ctx,
+          viewportWidth,
+          viewportHeight,
+          contentSize.width,
+          contentSize.height,
+        )
+        this.maybeDraw()
+        this.updateFunctionSignature()
+      }
+    }
+
+    const handleTouchEnd = () => {
+      // Check if total movement was small enough to be considered a tap
+      const totalMovement = this.touchStartX !== null && this.touchStartY !== null
+        ? Math.sqrt(
+          Math.pow(this.touchStartX - this.lastTouchMoveX, 2)
+            + Math.pow(this.touchStartY - this.lastTouchMoveY, 2),
+        )
+        : 0
+
+      const tapThreshold = 15
+      const isTap = totalMovement < tapThreshold
+
+      // Only calculate momentum if it wasn't a tap
+      if (!isTap) {
+        // Calculate overall gesture velocity based on total distance and time
+        const now = performance.now()
+        const totalTime = now - this.touchStartTime
+        if (totalTime > 0 && this.touchStartX !== null && this.touchStartY !== null) {
+          const totalDeltaX = this.touchStartX - this.lastTouchMoveX
+          const totalDeltaY = this.touchStartY - this.lastTouchMoveY
+          const overallVx = (totalDeltaX / totalTime) * 16.67
+          const overallVy = (totalDeltaY / totalTime) * 16.67
+
+          // Use the maximum of instantaneous velocity and overall velocity
+          // This gives stronger momentum for fast gestures
+          const speed = Math.sqrt(overallVx * overallVx + overallVy * overallVy)
+          const speedMultiplier = Math.min(speed / 20, 1.5)
+          this.touchVelocityX = Math.max(Math.abs(this.touchVelocityX), Math.abs(overallVx))
+            * Math.sign(this.touchVelocityX || overallVx) * (1 + speedMultiplier * 0.4)
+          this.touchVelocityY = Math.max(Math.abs(this.touchVelocityY), Math.abs(overallVy))
+            * Math.sign(this.touchVelocityY || overallVy) * (1 + speedMultiplier * 0.4)
+        }
+
+        // Start momentum scrolling if there's velocity
+        const velocityThreshold = 0.1
+        if (Math.abs(this.touchVelocityX) > velocityThreshold || Math.abs(this.touchVelocityY) > velocityThreshold) {
+          this.startMomentumScroll()
+        }
+      }
+      else {
+        // Clear velocity for taps
+        this.touchVelocityX = 0
+        this.touchVelocityY = 0
+      }
+
+      this.touchStartX = null
+      this.touchStartY = null
+      this.isTouchScrolling = false
+      this.isTouchGesture = false
+      this.lastTouchMoveTime = 0
+      this.velocitySamples = []
+      // Keep touchScrolled flag until pointerup checks it
+    }
+
+    this.canvas.addEventListener('touchstart', handleTouchStart, { passive: false })
+    this.canvas.addEventListener('touchmove', handleTouchMove, { passive: false })
+    this.canvas.addEventListener('touchend', handleTouchEnd, { passive: true })
+    this.canvas.addEventListener('touchcancel', handleTouchEnd, { passive: true })
+
+    this.touchStartHandler = handleTouchStart
+    this.touchMoveHandler = handleTouchMove
+    this.touchEndHandler = handleTouchEnd
   }
 
   private getContentSize(ctx: CanvasRenderingContext2D): { width: number; height: number } {
@@ -2079,7 +2574,7 @@ export class CanvasEditor {
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
         if (widgets?.above && widgets.above.length > 0) {
-          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         }
         caretTop = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
         caretBottom = caretTop + this.lineHeight
@@ -2115,7 +2610,7 @@ export class CanvasEditor {
       let aboveHeight = 0
       const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
       if (widgets?.above && widgets.above.length > 0) {
-        aboveHeight = Math.max(...widgets.above.map(w => w.height))
+        aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
       caretTop = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
       caretBottom = caretTop + this.lineHeight
@@ -2265,6 +2760,108 @@ export class CanvasEditor {
     this.autoScrollLastTime = null
   }
 
+  private startMomentumScroll() {
+    // Stop any existing momentum scroll first
+    if (this.momentumRaf !== null) {
+      cancelAnimationFrame(this.momentumRaf)
+      this.momentumRaf = null
+    }
+
+    const deceleration = 0.95
+    const minVelocity = 0.5
+    let velocityX = this.touchVelocityX
+    let velocityY = this.touchVelocityY
+
+    const momentum = () => {
+      // Check if momentum was cancelled (new touch started)
+      if (this.momentumRaf === null) {
+        return
+      }
+
+      const dpr = window.devicePixelRatio || 1
+      const viewportWidth = this.canvas.width / dpr
+      const viewportHeight = this.canvas.height / dpr
+
+      const ctx = this.canvas.getContext('2d')
+      if (!ctx) {
+        this.momentumRaf = null
+        return
+      }
+
+      this.setFont(ctx)
+
+      const contentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+
+      const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+
+      // Apply velocity
+      let nextScrollX = this.scrollX + velocityX
+      let nextScrollY = this.scrollY + velocityY
+
+      // Clamp to bounds
+      if (nextScrollX < 0) {
+        nextScrollX = 0
+        velocityX = 0
+      }
+      else if (nextScrollX > maxScrollX) {
+        nextScrollX = maxScrollX
+        velocityX = 0
+      }
+
+      if (nextScrollY < 0) {
+        nextScrollY = 0
+        velocityY = 0
+      }
+      else if (nextScrollY > maxScrollY) {
+        nextScrollY = maxScrollY
+        velocityY = 0
+      }
+
+      // Update scroll position
+      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+        this.scrollX = nextScrollX
+        this.scrollY = nextScrollY
+        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        this.publishScrollMetrics(
+          ctx,
+          viewportWidth,
+          viewportHeight,
+          contentSize.width,
+          contentSize.height,
+        )
+        this.maybeDraw()
+        this.updateFunctionSignature()
+      }
+
+      // Apply deceleration
+      velocityX *= deceleration
+      velocityY *= deceleration
+
+      // Stop if velocity is too low
+      if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
+        this.momentumRaf = null
+        return
+      }
+
+      // Continue animation
+      this.momentumRaf = requestAnimationFrame(momentum)
+    }
+
+    this.momentumRaf = requestAnimationFrame(momentum)
+  }
+
+  private stopMomentumScroll() {
+    if (this.momentumRaf !== null) {
+      cancelAnimationFrame(this.momentumRaf)
+      this.momentumRaf = null
+    }
+    this.touchVelocityX = 0
+    this.touchVelocityY = 0
+  }
+
   private startAutoScroll() {
     if (this.autoScrollRaf !== null) {
       cancelAnimationFrame(this.autoScrollRaf)
@@ -2331,9 +2928,8 @@ export class CanvasEditor {
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
-        this.draw()
+        this.maybeDraw()
         this.updateFunctionSignature()
-        this.updateAutocomplete()
       }
 
       if (this.autoScrollDirection) {
@@ -2375,7 +2971,7 @@ export class CanvasEditor {
         this.caretOpacity = (Math.cos(cycle * Math.PI * 2) + 1) / 2
       }
 
-      this.draw()
+      this.maybeDraw()
       this.caretBlinkRaf = requestAnimationFrame(blink)
     }
 
@@ -2388,6 +2984,37 @@ export class CanvasEditor {
       this.caretBlinkRaf = null
     }
     this.caretOpacity = 1
+  }
+
+  public setAnimating(animating: boolean) {
+    if (animating) {
+      this.startAnimationLoop()
+    }
+    else {
+      this.stopAnimationLoop()
+    }
+  }
+
+  public setOnBeforeDraw(callback: (() => void) | undefined) {
+    this.options.onBeforeDraw = callback
+  }
+
+  private startAnimationLoop() {
+    if (this.animationRaf !== null) return
+
+    const animate = () => {
+      this.draw()
+      this.animationRaf = requestAnimationFrame(animate)
+    }
+
+    this.animationRaf = requestAnimationFrame(animate)
+  }
+
+  private stopAnimationLoop() {
+    if (this.animationRaf !== null) {
+      cancelAnimationFrame(this.animationRaf)
+      this.animationRaf = null
+    }
   }
 
   private updateCanvasSize() {
@@ -2439,7 +3066,7 @@ export class CanvasEditor {
       const widgets = widgetLayout.widgetsByVisualLine.get(i)
       let aboveHeight = 0
       if (widgets?.above && widgets.above.length > 0) {
-        aboveHeight = Math.max(...widgets.above.map(w => w.height))
+        aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
 
       const lineY = this.padding + i * this.lineHeight + yOffset + aboveHeight
@@ -2541,12 +3168,12 @@ export class CanvasEditor {
       if (widgets) {
         // Add max height of 'above' widgets for this line (they are in the same row)
         if (widgets.above.length > 0) {
-          const maxAboveHeight = Math.max(...widgets.above.map(w => w.height))
+          const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           cumulativeOffset += maxAboveHeight
         }
         // Add max height of 'below' widgets for this line (they are in the same row)
         if (widgets.below.length > 0) {
-          const maxBelowHeight = Math.max(...widgets.below.map(w => w.height))
+          const maxBelowHeight = Math.max(...widgets.below.map(w => this.getWidgetHeight(w)))
           cumulativeOffset += maxBelowHeight
         }
       }
@@ -2554,7 +3181,7 @@ export class CanvasEditor {
       // Add height for inline widgets (if they exceed line height)
       const inline = inlineWidgets.get(visualIndex)
       if (inline && inline.length > 0) {
-        const maxHeight = Math.max(...inline.map(w => w.widget.height))
+        const maxHeight = Math.max(...inline.map(w => this.getWidgetHeight(w.widget)))
         if (maxHeight > this.lineHeight) {
           cumulativeOffset += maxHeight - this.lineHeight
         }
@@ -2565,6 +3192,8 @@ export class CanvasEditor {
   }
 
   private draw() {
+    this.options.onBeforeDraw?.()
+
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
 
@@ -2576,8 +3205,9 @@ export class CanvasEditor {
     this.setFont(ctx)
     ctx.textBaseline = 'top'
 
-    // Get wrapped lines
-    const wrappedLines = this.getWrappedLines(ctx)
+    // Get wrapped lines - use pre-calculated from updateState if available
+    const wrappedLines = this.pendingWrappedLines ?? this.getWrappedLines(ctx)
+    this.pendingWrappedLines = null
 
     // Cache syntax highlighting to avoid re-processing the same code
     const code = this.inputState.lines.join('\n')
@@ -2618,29 +3248,13 @@ export class CanvasEditor {
       this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
     }
 
-    // Draw gutter if enabled (before scroll transform so it stays fixed)
-    if (this.options.gutter) {
-      const gutterWidth = this.getGutterWidth()
-      ctx.fillStyle = theme.gutterBackground
-      // Extend gutter to full canvas height, not just content height
-      ctx.fillRect(0, 0, this.padding + gutterWidth, height)
-
-      // Draw gutter separator line
-      ctx.strokeStyle = theme.gutterBorder
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(this.padding + gutterWidth - 1, 0)
-      ctx.lineTo(this.padding + gutterWidth - 1, height)
-      ctx.stroke()
-    }
+    // Calculate widget layout once for all drawing operations
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    this.widgetPositions.clear()
 
     // Apply scroll offset for content rendering
     ctx.save()
     ctx.translate(-this.scrollX, -this.scrollY)
-
-    // Calculate widget layout once for all drawing operations
-    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
-    this.widgetPositions.clear()
 
     // Draw selection background if exists
     if (this.inputState.selection) {
@@ -2667,15 +3281,30 @@ export class CanvasEditor {
     // Draw overlay widgets behind text (no pointer events, truly behind)
     for (const widget of widgetLayout.overlayWidgets) {
       // Find the visual line for this widget (convert from 1-based to 0-based)
-      const visualPos = this.logicalToVisualPosition(widget.line - 1, widget.column - 1, wrappedLines)
-      const wrappedLine = wrappedLines[visualPos.visualLine]
+      let visualPos = this.logicalToVisualPosition(widget.line - 1, widget.column - 1, wrappedLines)
+      let wrappedLine = wrappedLines[visualPos.visualLine]
+
+      // If the widget's column is at the end of a wrapped line segment, wrap to the next visible line
+      if (wrappedLine && visualPos.visualColumn === wrappedLine.text.length) {
+        // Check if there's a next wrapped line segment for the same logical line
+        const nextVisualLine = visualPos.visualLine + 1
+        if (nextVisualLine < wrappedLines.length) {
+          const nextWrappedLine = wrappedLines[nextVisualLine]
+          if (nextWrappedLine && nextWrappedLine.logicalLine === wrappedLine.logicalLine) {
+            // Use the next visual line with column 0
+            visualPos = { visualLine: nextVisualLine, visualColumn: 0 }
+            wrappedLine = nextWrappedLine
+          }
+        }
+      }
+
       if (wrappedLine) {
         const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
         // Add max height of 'above' widgets on this line (they are in the same row)
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
         if (widgets?.above && widgets.above.length > 0) {
-          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         }
         const widgetY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
         const textBeforeWidget = wrappedLine.text.substring(0, visualPos.visualColumn)
@@ -2694,8 +3323,9 @@ export class CanvasEditor {
 
         // Don't add overlay widgets to widgetPositions (no pointer events)
 
-        if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
-          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widget.height)
+        const widgetHeight = this.getWidgetHeight(widget)
+        if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight)
         }
       }
     }
@@ -2717,7 +3347,7 @@ export class CanvasEditor {
       if (widgets?.above && widgets.above.length > 0) {
         // All 'above' widgets on the same line share the same Y position (horizontal row)
         const widgetY = y
-        const maxAboveHeight = Math.max(...widgets.above.map(w => w.height))
+        const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         for (const widget of widgets.above) {
           // Calculate position based on widget's column (convert from 1-based to 0-based)
           const widgetColumn = widget.column - 1
@@ -2726,14 +3356,15 @@ export class CanvasEditor {
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           // Calculate width based on widget's length
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
-          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
           }
         }
         // Advance y by the maximum height among all above widgets
@@ -2743,31 +3374,6 @@ export class CanvasEditor {
       // Skip lines outside the visible viewport
       if (y + this.lineHeight < visibleStartY || y > visibleEndY) {
         return
-      }
-
-      // Draw line number in gutter if enabled
-      if (this.options.gutter) {
-        const lineNumber = wrappedLine.logicalLine + 1
-        // Only show line number on the first visual line for each logical line
-        const isFirstVisualLine = visualIndex === 0
-          || (visualIndex > 0 && wrappedLines[visualIndex - 1].logicalLine !== wrappedLine.logicalLine)
-
-        if (isFirstVisualLine) {
-          const gutterWidth = this.getGutterWidth()
-          const hasErrorOnLine = errorLineSet.has(wrappedLine.logicalLine)
-
-          if (hasErrorOnLine) {
-            // Draw red background strip for the line's gutter area
-            ctx.fillStyle = theme.errorGutterColor
-            ctx.fillRect(0, y - 3, this.padding + gutterWidth - 1, this.lineHeight - 2)
-          }
-
-          // Draw the line number on top
-          ctx.fillStyle = hasErrorOnLine ? '#ffffff' : theme.gutterText
-          ctx.textAlign = 'right'
-          ctx.fillText(lineNumber.toString(), this.padding + gutterWidth - 8, y)
-          ctx.textAlign = 'left' // Reset text alignment
-        }
       }
 
       // Get inline widgets for this line
@@ -2835,14 +3441,15 @@ export class CanvasEditor {
           const widgetX = currentX
           const widgetY = y - 0.5
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
-          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
           }
           currentX += widgetWidth
         }
@@ -2900,14 +3507,15 @@ export class CanvasEditor {
           const widgetX = currentX
           const widgetY = y - 0.5
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
-          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
           }
           currentX += widgetWidth
           lastColumn = columnInWrappedLine
@@ -2938,14 +3546,15 @@ export class CanvasEditor {
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           // Calculate width based on widget's length
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
-          if (widgetY + widget.height >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widget.height)
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
           }
         }
       }
@@ -2978,7 +3587,7 @@ export class CanvasEditor {
         let aboveHeight = 0
         const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
         if (widgets?.above && widgets.above.length > 0) {
-          aboveHeight = Math.max(...widgets.above.map(w => w.height))
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         }
         const caretY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight - 2
         const caretText = wrappedLine.text.substring(0, visualPos.visualColumn)
@@ -3018,8 +3627,83 @@ export class CanvasEditor {
 
     ctx.restore()
 
+    // Draw gutter on top of text (after restore so it's not affected by scroll transform and covers text)
+    if (this.options.gutter) {
+      const gutterWidth = this.getGutterWidth()
+      const errorLineSet = new Set(this.errors.map(e => e.line))
+
+      // Draw gutter background
+      ctx.fillStyle = theme.gutterBackground
+      ctx.fillRect(0, 0, this.padding + gutterWidth, height)
+
+      // Draw gutter separator line
+      ctx.strokeStyle = theme.gutterBorder
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(this.padding + gutterWidth - 1, 0)
+      ctx.lineTo(this.padding + gutterWidth - 1, height)
+      ctx.stroke()
+
+      // Draw line numbers (convert from content space to screen space)
+      const visibleStartY = this.scrollY
+      const visibleEndY = this.scrollY + height
+
+      wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
+        const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
+        const yContent = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
+        let yScreen = yContent - this.scrollY
+
+        // Check if this line has 'above' widgets - if so, position line number at bottom (next to code)
+        const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
+        let aboveHeight = 0
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+          // Adjust yScreen to position line number at the bottom (next to the code)
+          yScreen += aboveHeight
+        }
+
+        // Skip lines outside the visible viewport
+        if (yScreen + this.lineHeight < 0 || yScreen > height) {
+          return
+        }
+
+        const lineNumber = wrappedLine.logicalLine + 1
+        const isFirstVisualLine = visualIndex === 0
+          || (visualIndex > 0 && wrappedLines[visualIndex - 1].logicalLine !== wrappedLine.logicalLine)
+
+        if (isFirstVisualLine) {
+          const hasErrorOnLine = errorLineSet.has(wrappedLine.logicalLine)
+
+          if (hasErrorOnLine) {
+            ctx.fillStyle = theme.errorGutterColor
+            ctx.fillRect(0, yScreen - 3, this.padding + gutterWidth - 1, this.lineHeight - 2)
+          }
+
+          ctx.fillStyle = hasErrorOnLine ? '#ffffff' : theme.gutterText
+          ctx.textAlign = 'right'
+          ctx.fillText(lineNumber.toString(), this.padding + gutterWidth - 8, yScreen)
+          ctx.textAlign = 'left'
+        }
+      })
+    }
+
     // Draw scrollbars (after restore so they're not affected by scroll transform)
     this.drawScrollbars(ctx, width, height, theme)
+  }
+
+  private maybeDraw() {
+    // Only draw if not animating (animation loop handles drawing)
+    if (this.animationRaf !== null) {
+      return
+    }
+
+    // Batch multiple draw calls in the same frame using requestAnimationFrame
+    if (this.drawRaf === null) {
+      this.drawRaf = requestAnimationFrame(() => {
+        this.drawRaf = null
+        this.draw()
+      })
+    }
   }
 
   private drawScrollbars(
@@ -3111,7 +3795,7 @@ export class CanvasEditor {
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
           if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => w.height))
+            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
           preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
@@ -3132,7 +3816,7 @@ export class CanvasEditor {
           const caretWidgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
           if (caretWidgets?.above) {
             for (const widget of caretWidgets.above) {
-              caretAboveHeight += widget.height
+              caretAboveHeight += this.getWidgetHeight(widget)
             }
           }
           preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + caretYOffset
@@ -3245,7 +3929,7 @@ export class CanvasEditor {
   public setScrollbarHover(scrollbar: 'vertical' | 'horizontal' | null) {
     if (this.hoveredScrollbar !== scrollbar) {
       this.hoveredScrollbar = scrollbar
-      this.draw()
+      this.maybeDraw()
     }
   }
 
@@ -3342,6 +4026,10 @@ export class CanvasEditor {
   }
 
   public hideAutocomplete() {
+    if (this.autocompleteDebounceTimer !== null) {
+      clearTimeout(this.autocompleteDebounceTimer)
+      this.autocompleteDebounceTimer = null
+    }
     if (this.lastAutocompleteInfo !== null) {
       this.lastAutocompleteInfo = null
       this.callbacks.onAutocompleteChange?.(null)
@@ -3360,6 +4048,28 @@ export class CanvasEditor {
     if (!this.isActive) return
     if (this.autocompleteInputSource !== 'keyboard') return
 
+    if (forceImmediate) {
+      if (this.autocompleteDebounceTimer !== null) {
+        clearTimeout(this.autocompleteDebounceTimer)
+        this.autocompleteDebounceTimer = null
+      }
+      this.executeAutocompleteUpdate()
+    }
+    else {
+      if (this.autocompleteDebounceTimer !== null) {
+        clearTimeout(this.autocompleteDebounceTimer)
+      }
+      this.autocompleteDebounceTimer = window.setTimeout(() => {
+        this.autocompleteDebounceTimer = null
+        this.executeAutocompleteUpdate()
+      }, 150)
+    }
+  }
+
+  private executeAutocompleteUpdate() {
+    if (!this.isActive) return
+    if (this.autocompleteInputSource !== 'keyboard') return
+
     const wordInfo = findCurrentWord(
       this.inputState.lines,
       this.inputState.caret.line,
@@ -3370,6 +4080,9 @@ export class CanvasEditor {
       if (this.lastAutocompleteInfo !== null) {
         this.lastAutocompleteInfo = null
         this.callbacks.onAutocompleteChange?.(null)
+      }
+      if (this.lastAutocompletePosition !== null) {
+        this.lastAutocompletePosition = null
       }
       return
     }
@@ -3416,7 +4129,7 @@ export class CanvasEditor {
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
           if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => w.height))
+            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
           preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset
             + aboveHeight
@@ -3448,7 +4161,7 @@ export class CanvasEditor {
           let aboveHeight = 0
           const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
           if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => w.height))
+            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
 
           const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
@@ -3500,10 +4213,7 @@ export class CanvasEditor {
         // If autocomplete info hasn't changed, update position immediately (e.g., during scroll)
         // Only delay when autocomplete info is changing (new suggestions, etc.)
         // Force immediate update if canvas state is already finalized (e.g., after error updates)
-        if (forceImmediate || (!changed && this.lastAutocompleteInfo !== null)) {
-          computeAndPublish()
-        }
-        else {
+        if (changed && this.lastAutocompleteInfo !== null) {
           // Schedule three frames to ensure caret/layout state is finalized before measuring
           if (this.autocompleteRaf !== null) cancelAnimationFrame(this.autocompleteRaf)
           this.autocompleteRaf = requestAnimationFrame(() => {
@@ -3514,6 +4224,9 @@ export class CanvasEditor {
               })
             })
           })
+        }
+        else {
+          computeAndPublish()
         }
       }
     }
@@ -3555,23 +4268,65 @@ export class CanvasEditor {
   public setWidgets(widgets: EditorWidget[]) {
     if (this.options.widgets === widgets) return
     this.options.widgets = widgets
-    this.draw()
+    this.maybeDraw()
+  }
+
+  public setWidgetsWithoutDraw(widgets: EditorWidget[]) {
+    this.options.widgets = widgets
+  }
+
+  public setCodeFileRef(codeFileRef: unknown) {
+    const codeFileChanged = this.currentCodeFileRef !== codeFileRef
+    this.currentCodeFileRef = codeFileRef
+
+    // If codefile changed, clear any pending widget update
+    if (codeFileChanged) {
+      if (this.pendingWidgets) {
+        if (this.widgetUpdateTimeout !== null) {
+          clearTimeout(this.widgetUpdateTimeout)
+          this.widgetUpdateTimeout = null
+        }
+        // Clear pending widgets if any
+        this.pendingWidgets = null
+      }
+    }
   }
 
   public updateWidgets(widgets: EditorWidget[]) {
+    // Update widgets immediately
+    // Clear any pending update
+    if (this.widgetUpdateTimeout !== null) {
+      clearTimeout(this.widgetUpdateTimeout)
+      this.widgetUpdateTimeout = null
+    }
+    this.pendingWidgets = null
+
+    // Simply set widgets directly - no matching, debouncing, or delays
     this.options.widgets = widgets
+    this.maybeDraw()
+  }
+
+  public getWidgets(): Array<{ line: number; column: number; type: string; length: number; height?: number }> {
+    if (!this.options.widgets) return []
+    return this.options.widgets.map(w => ({
+      line: w.line,
+      column: w.column,
+      type: w.type,
+      length: w.length,
+      height: w.height,
+    }))
   }
 
   public setTheme(theme: Theme) {
     this.options.theme = theme
     this.highlightCache = null
-    this.draw()
+    this.maybeDraw()
   }
 
   public setTokenizer(tokenizer: Tokenizer) {
     this.options.tokenizer = tokenizer
     this.highlightCache = null
-    this.draw()
+    this.maybeDraw()
   }
 
   public setErrors(errors: EditorError[]) {
@@ -3599,7 +4354,7 @@ export class CanvasEditor {
       const drawCtx = this.canvas.getContext('2d')
       if (!drawCtx) return
 
-      this.draw()
+      this.maybeDraw()
       this.updateFunctionSignature()
       this.updateAutocomplete(true)
 
@@ -3617,7 +4372,7 @@ export class CanvasEditor {
           this.scrollY = maxScrollY
           this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
           // Redraw to reflect the corrected scroll position
-          this.draw()
+          this.maybeDraw()
           this.updateFunctionSignature()
           this.updateAutocomplete(true)
         }
@@ -3741,7 +4496,7 @@ export class CanvasEditor {
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
             if (widgets?.above && widgets.above.length > 0) {
-              aboveHeight = Math.max(...widgets.above.map(w => w.height))
+              aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
             }
             preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
@@ -3751,7 +4506,7 @@ export class CanvasEditor {
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
             if (widgets?.above && widgets.above.length > 0) {
-              aboveHeight = Math.max(...widgets.above.map(w => w.height))
+              aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
             }
             preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             preCalculatedContentX = textPadding
@@ -3771,7 +4526,7 @@ export class CanvasEditor {
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
             if (widgets?.above && widgets.above.length > 0) {
-              aboveHeight = Math.max(...widgets.above.map(w => w.height))
+              aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
             }
             preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
 
@@ -3788,7 +4543,7 @@ export class CanvasEditor {
             let aboveHeight = 0
             const widgets = widgetLayout.widgetsByVisualLine.get(error.line)
             if (widgets?.above && widgets.above.length > 0) {
-              aboveHeight = Math.max(...widgets.above.map(w => w.height))
+              aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
             }
             preCalculatedContentY = this.padding + error.line * this.lineHeight + yOffset + aboveHeight
             const line = this.inputState.lines[error.line] || ''
@@ -3836,14 +4591,14 @@ export class CanvasEditor {
       const startWidgets = widgetsByVisualLine.get(visualStart.visualLine)
       if (startWidgets?.above) {
         for (const widget of startWidgets.above) {
-          startAboveHeight += widget.height
+          startAboveHeight += this.getWidgetHeight(widget)
         }
       }
       let endAboveHeight = 0
       const endWidgets = widgetsByVisualLine.get(visualEnd.visualLine)
       if (endWidgets?.above) {
         for (const widget of endWidgets.above) {
-          endAboveHeight += widget.height
+          endAboveHeight += this.getWidgetHeight(widget)
         }
       }
       const errorStartY = this.padding + visualStart.visualLine * this.lineHeight + startYOffset + startAboveHeight
@@ -3869,7 +4624,7 @@ export class CanvasEditor {
           let aboveHeight = 0
           const widgets = widgetsByVisualLine.get(visualStart.visualLine)
           if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => w.height))
+            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
           const y = this.padding + visualStart.visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight
             - 3
@@ -3918,7 +4673,7 @@ export class CanvasEditor {
           let aboveHeight = 0
           const widgets = widgetsByVisualLine.get(visualLine)
           if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => w.height))
+            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
           const y = this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight - 3
           let startX: number, errorWidth: number
@@ -3991,14 +4746,15 @@ export class CanvasEditor {
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
         }
-        y += Math.max(...widgets.above.map(w => w.height))
+        y += Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
 
       const inlineWidgets = widgetLayout.inlineWidgets.get(visualIndex) || []
@@ -4009,11 +4765,12 @@ export class CanvasEditor {
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           currentX = textPadding + ctx.measureText(textBeforeWidget).width
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: currentX,
             y: y - 0.5,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
           currentX += widgetWidth
         }
@@ -4027,11 +4784,12 @@ export class CanvasEditor {
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
             width: widgetWidth,
-            height: widget.height,
+            height: widgetHeight,
           })
         }
       }
@@ -4053,9 +4811,13 @@ export class CanvasEditor {
       ) {
         this.activeWidget = widget
         this.isWidgetPointerDown = true
-        const offsetX = adjustedX - pos.x
-        const offsetY = adjustedY - pos.y
-        widget.pointerDown?.(adjustedX, adjustedY, offsetX, offsetY)
+        this.activeWidgetPosition = { ...pos }
+        const widgetViewportX = pos.x - this.scrollX
+        const widgetViewportY = pos.y - this.scrollY
+        const offsetX = x - widgetViewportX
+        const offsetY = y - widgetViewportY
+        widget.pointerDown?.(x, y, offsetX, offsetY)
+        widget.pointerMove?.(x, y, offsetX, offsetY)
         return true
       }
     }
@@ -4064,11 +4826,27 @@ export class CanvasEditor {
     return false
   }
 
+  public handleWidgetPointerMove(x: number, y: number): void {
+    if (!this.activeWidget || !this.isWidgetPointerDown || !this.activeWidgetPosition) return
+
+    const pos = this.activeWidgetPosition
+    const widgetViewportX = pos.x - this.scrollX
+    const widgetViewportY = pos.y - this.scrollY
+    const offsetX = x - widgetViewportX
+    const offsetY = y - widgetViewportY
+    this.activeWidget.pointerMove?.(x, y, offsetX, offsetY)
+  }
+
+  public isWidgetPointerActive(): boolean {
+    return this.isWidgetPointerDown && this.activeWidget !== null
+  }
+
   public handleWidgetPointerUp(): void {
     if (this.activeWidget) {
       this.activeWidget.pointerUp?.()
       this.activeWidget = null
     }
     this.isWidgetPointerDown = false
+    this.activeWidgetPosition = null
   }
 }

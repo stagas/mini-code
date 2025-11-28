@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import AutocompletePopup from './AutocompletePopup.tsx'
@@ -37,6 +38,8 @@ interface CodeEditorProps {
   keyOverride?: KeyOverrideFunction
   hideFunctionSignatures?: boolean
   onPointerDown?: (event: PointerEvent) => void
+  isAnimating?: boolean
+  onBeforeDraw?: () => void
 }
 
 export const CodeEditor = ({
@@ -55,6 +58,8 @@ export const CodeEditor = ({
   keyOverride,
   hideFunctionSignatures = false,
   onPointerDown,
+  isAnimating = false,
+  onBeforeDraw,
 }: CodeEditorProps) => {
   const ownCanvasRef = useRef<HTMLCanvasElement>(null)
   const canvasRef = extCanvasRef ?? ownCanvasRef
@@ -89,6 +94,7 @@ export const CodeEditor = ({
   })
   const [autocompleteReady, setAutocompleteReady] = useState(false)
   const [autocompleteSelectedIndex, setAutocompleteSelectedIndex] = useState(0)
+  const [viewportWidth, setViewportWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1920)
 
   // Error popup state
   const [hoveredError, setHoveredError] = useState<EditorError | null>(null)
@@ -103,6 +109,12 @@ export const CodeEditor = ({
   const setInputStateRef = useRef<(state: InputState) => void>(() => {})
   const lastTextRef = useRef<string>(codeFile.value)
   const lastScrollRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const pendingWidgetPositionsRef = useRef<
+    Array<{ line: number; column: number; type: string; length: number; height?: number }> | null
+  >(null)
+  const [pendingWidgetData, setPendingWidgetData] = useState<
+    Array<{ line: number; column: number; type: string; length: number; height?: number }> | null
+  >(null)
 
   const [scrollMetrics, setScrollMetrics] = useState<{
     scrollX: number
@@ -238,9 +250,16 @@ export const CodeEditor = ({
     lastTextRef.current = state.value
     lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
 
-    rafId = requestAnimationFrame(() => {
-      canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
-    })
+    // Update canvas editor synchronously to prevent flicker
+    // Mark that we've updated so the useEffect doesn't update again
+    lastCanvasUpdateValueRef.current = state.value
+    skipEnsureCaretVisibleRef.current = true
+    // Update widgets without drawing, then updateState will draw once
+    canvasEditorRef.current?.setWidgetsWithoutDraw(widgetsRef.current)
+    // Update canvas editor directly without ensuring caret visibility
+    canvasEditorRef.current?.updateState(state.inputState, false)
+    // Set scroll after updating state so content size is correct (synchronously, no delay)
+    canvasEditorRef.current?.setScrollWithoutDraw(state.scrollX, state.scrollY)
 
     // Subscribe to external CodeFile changes
     const unsubscribe = externalCodeFile.subscribe(() => {
@@ -415,6 +434,106 @@ export const CodeEditor = ({
       setAutocompleteSelectedIndex(0)
     }
 
+    // Intercept undo/redo to get widget data before InputHandler processes them
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      // Get widget data from history BEFORE calling handleUndo (which triggers state change)
+      const history = inputHandlerRef.current?.['history']
+      if (history && inputStateRef.current) {
+        history.flushDebouncedState(inputStateRef.current)
+        const previousState = history.undo()
+        if (previousState) {
+          const widgetData = previousState.widgets ? previousState.widgets.map(w => ({ ...w })) : null
+
+          // Update state manually without calling history.undo() again
+          inputStateRef.current.lines = [...previousState.lines]
+          if (previousState.caret) {
+            inputStateRef.current.caret = { ...previousState.caret }
+          }
+          inputStateRef.current.selection = previousState.selection
+            ? {
+              start: { ...previousState.selection.start },
+              end: { ...previousState.selection.end },
+            }
+            : null
+
+          // Set widgets first so they exist for restoration
+          if (canvasEditorRef.current) {
+            canvasEditorRef.current.setWidgetsWithoutDraw(widgets)
+          }
+
+          // Directly update canvas editor with widget data from history
+          canvasEditorRef.current?.updateState(inputStateRef.current, false, widgetData || undefined)
+
+          // Update React state
+          setInputState({
+            lines: [...inputStateRef.current.lines],
+            caret: { ...inputStateRef.current.caret },
+            selection: inputStateRef.current.selection
+              ? {
+                start: { ...inputStateRef.current.selection.start },
+                end: { ...inputStateRef.current.selection.end },
+              }
+              : null,
+          })
+          return
+        }
+      }
+      // Fallback: call handleUndo normally
+      const widgetData = inputHandlerRef.current?.handleUndo(inputStateRef.current) || null
+      pendingWidgetPositionsRef.current = widgetData
+      return
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+      e.preventDefault()
+      // Get widget data from history BEFORE calling handleRedo (which triggers state change)
+      const history = inputHandlerRef.current?.['history']
+      if (history && inputStateRef.current) {
+        history.flushDebouncedState(inputStateRef.current)
+        const nextState = history.redo()
+        if (nextState) {
+          const widgetData = nextState.widgets ? nextState.widgets.map(w => ({ ...w })) : null
+
+          // Update state manually without calling history.redo() again
+          inputStateRef.current.lines = [...nextState.lines]
+          if (nextState.caret) {
+            inputStateRef.current.caret = { ...nextState.caret }
+          }
+          inputStateRef.current.selection = nextState.selection
+            ? {
+              start: { ...nextState.selection.start },
+              end: { ...nextState.selection.end },
+            }
+            : null
+
+          // Set widgets first so they exist for restoration
+          if (canvasEditorRef.current) {
+            canvasEditorRef.current.setWidgetsWithoutDraw(widgets)
+          }
+
+          // Directly update canvas editor with widget data from history
+          canvasEditorRef.current?.updateState(inputStateRef.current, false, widgetData || undefined)
+
+          // Update React state
+          setInputState({
+            lines: [...inputStateRef.current.lines],
+            caret: { ...inputStateRef.current.caret },
+            selection: inputStateRef.current.selection
+              ? {
+                start: { ...inputStateRef.current.selection.start },
+                end: { ...inputStateRef.current.selection.end },
+              }
+              : null,
+          })
+          return
+        }
+      }
+      // Fallback: call handleRedo normally
+      const widgetData = inputHandlerRef.current?.handleRedo(inputStateRef.current) || null
+      pendingWidgetPositionsRef.current = widgetData
+      return
+    }
+
     inputHandlerRef.current?.handleKeyDown(e, inputStateRef.current)
   }
 
@@ -425,6 +544,10 @@ export const CodeEditor = ({
     if (!autocompleteInfo) {
       setAutocompleteReady(false)
       setAutocompletePosition({ x: 0, y: 0 })
+    }
+    else if (autocompleteInfo.suggestions.length > 0) {
+      // Set ready when autocomplete info is available (position will be calculated asynchronously)
+      setAutocompleteReady(true)
     }
   }, [autocompleteInfo])
 
@@ -459,6 +582,16 @@ export const CodeEditor = ({
     else {
       // Update history when codeFile changes
       inputHandlerRef.current.setHistory(codeFile.history)
+    }
+
+    // Set up widget positions callback
+    if (inputHandlerRef.current && canvasEditorRef.current) {
+      inputHandlerRef.current.setGetWidgets(() => canvasEditorRef.current?.getWidgets() || [])
+    }
+
+    // Update codefile reference in canvas editor when it changes
+    if (canvasEditorRef.current) {
+      canvasEditorRef.current.setCodeFileRef(codeFile)
     }
 
     // Set up key override function for word wrap handling and external overrides
@@ -585,6 +718,15 @@ export const CodeEditor = ({
   }, [])
 
   useEffect(() => {
+    const handleResize = () => {
+      setViewportWidth(window.innerWidth)
+    }
+    window.addEventListener('resize', handleResize)
+    handleResize()
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -599,11 +741,37 @@ export const CodeEditor = ({
       }
       // Mark as user input so useEffect knows to ensure caret visible
       isUserInputRef.current = true
+
+      // Check if caret was set (new caret position or caret changed)
+      const caretWasSet = newState.caret !== null && (
+        !inputStateRef.current.caret
+        || newState.caret.line !== inputStateRef.current.caret.line
+        || newState.caret.column !== inputStateRef.current.caret.column
+      )
+
       // Call setInputState first - it needs to see oldState in the ref for comparison
       setInputStateRef.current(newState)
       // Now update ref synchronously so it's available immediately for updateState call
       inputStateRef.current = newState
+
+      // If caret was set, ensure editor is focused
+      if (caretWasSet) {
+        setActiveEditor(editorIdRef.current)
+        // Use setTimeout to ensure focus happens after state update
+        // Blur and focus consecutively to reactivate the textarea
+        setTimeout(() => {
+          textareaRef.current?.blur()
+          setTimeout(() => {
+            textareaRef.current?.focus({ preventScroll: true })
+          }, 0)
+        }, 0)
+      }
     })
+
+    // Set initial text padding (includes gutter if enabled)
+    if (canvasEditorRef.current) {
+      mouseHandlerRef.current.setTextPadding(canvasEditorRef.current.getTextPaddingValue())
+    }
   }, []) // Remove setInputState dependency since it's stable
 
   // Store callbacks in refs to avoid recreating CanvasEditor
@@ -649,6 +817,10 @@ export const CodeEditor = ({
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
+        // Update text padding when it might change (e.g., when gutter width changes)
+        if (canvasEditorRef.current) {
+          mouseHandlerRef.current?.setTextPadding(canvasEditorRef.current.getTextPaddingValue())
+        }
         // Update CodeFile scroll position and track it
         lastScrollRef.current = { x: sx, y: sy }
         codeFileRef.current.scrollX = sx
@@ -695,8 +867,13 @@ export const CodeEditor = ({
         theme,
         tokenizer,
         widgets,
+        isAnimating,
+        onBeforeDraw,
       },
     )
+
+    // Set codefile reference for widget update debouncing
+    canvasEditorRef.current.setCodeFileRef(codeFile)
 
     // Set function definitions for autocomplete
     canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
@@ -708,7 +885,7 @@ export const CodeEditor = ({
     const currentActive = getActiveEditor() === editorIdRef.current
     canvasEditorRef.current.setActive(currentActive)
 
-    // Restore scroll position from CodeFile
+    // Restore scroll position from CodeFile (synchronously, no delay)
     canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
 
     // Wire up word-wrap-aware movement to the input handler
@@ -728,6 +905,16 @@ export const CodeEditor = ({
     }
   }, [wordWrap, gutter])
 
+  // Handle isAnimating prop
+  useEffect(() => {
+    canvasEditorRef.current?.setAnimating(isAnimating)
+  }, [isAnimating])
+
+  // Handle onBeforeDraw prop
+  useEffect(() => {
+    canvasEditorRef.current?.setOnBeforeDraw(onBeforeDraw)
+  }, [onBeforeDraw])
+
   // Update canvas editor state when inputState changes
   const prevInputStateRef = useRef(inputState)
   const prevWidgetsRef = useRef(widgets)
@@ -743,7 +930,7 @@ export const CodeEditor = ({
       prevInputStateRef.current = inputState
       prevWidgetsRef.current = widgets
       if (widgetsChanged) {
-        canvasEditorRef.current?.setWidgets(widgets)
+        canvasEditorRef.current?.updateWidgets(widgets)
       }
       return
     }
@@ -753,22 +940,38 @@ export const CodeEditor = ({
 
     if (inputStateChanged && widgetsChanged) {
       // Both changed: update widgets without drawing, then updateState will draw once
-      canvasEditorRef.current?.updateWidgets(widgets)
+      const widgetData = pendingWidgetData || pendingWidgetPositionsRef.current
+      pendingWidgetPositionsRef.current = null
+      setPendingWidgetData(null)
+
+      // Set widgets without drawing if we have widget data (will restore positions in updateState)
+      // Otherwise use updateWidgets which updates immediately
+      if (widgetData) {
+        // For undo/redo: set widgets directly without drawing, restore will happen in updateState
+        canvasEditorRef.current?.setWidgetsWithoutDraw(widgets)
+      }
+      else {
+        canvasEditorRef.current?.updateWidgets(widgets)
+      }
+
       const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
       isUserInputRef.current = false
       skipEnsureCaretVisibleRef.current = false
-      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
+      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible, widgetData || undefined)
     }
     else if (inputStateChanged) {
       // Only inputState changed
       const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
       isUserInputRef.current = false
       skipEnsureCaretVisibleRef.current = false
-      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
+      const widgetPositions = pendingWidgetData || pendingWidgetPositionsRef.current
+      pendingWidgetPositionsRef.current = null
+      setPendingWidgetData(null)
+      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible, widgetPositions || undefined)
     }
     else if (widgetsChanged) {
-      // Only widgets changed
-      canvasEditorRef.current?.setWidgets(widgets)
+      // Only widgets changed - update immediately
+      canvasEditorRef.current?.updateWidgets(widgets)
     }
   }, [inputState, widgets])
 
@@ -788,6 +991,14 @@ export const CodeEditor = ({
 
     const handlePointerDown = (event: PointerEvent) => {
       onPointerDown?.(event)
+
+      // For touch events, don't proceed if touch scrolling is already active
+      // But allow it to proceed if touch gesture just started (so mouse handler can store position)
+      // We'll prevent focus/activation until we know if it's a scroll
+      if (event.pointerType === 'touch' && canvasEditorRef.current?.isTouchScrollingActive()) {
+        return
+      }
+
       event.preventDefault()
       isHandlingPointerRef.current = true
       canvasEditorRef.current?.setAutocompleteInputSource('mouse')
@@ -796,11 +1007,16 @@ export const CodeEditor = ({
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
 
-      // Check if clicking on a widget
+      // Check if clicking on a widget - this must be checked first
       const widgetHandled = canvasEditorRef.current?.handleWidgetPointerDown(x, y)
       if (widgetHandled) {
         setActiveEditor(editorIdRef.current)
         isHandlingPointerRef.current = false
+        return
+      }
+
+      // Don't proceed with caret/selection if a widget is being handled
+      if (canvasEditorRef.current?.isWidgetPointerActive()) {
         return
       }
 
@@ -817,13 +1033,23 @@ export const CodeEditor = ({
         return
       }
 
-      if (wordWrap && canvasEditorRef.current) {
-        // Set up word wrap coordinate converter for MouseHandler
-        const wordWrapConverter = (x: number, y: number) => {
-          // CanvasEditor expects raw coordinates and will add scroll offset internally
-          return canvasEditorRef.current!.getCaretPositionFromCoordinates(x, y)
+      if (canvasEditorRef.current) {
+        if (wordWrap) {
+          // Set up word wrap coordinate converter for MouseHandler
+          const wordWrapConverter = (x: number, y: number) => {
+            // CanvasEditor expects raw coordinates and will add scroll offset internally
+            return canvasEditorRef.current!.getCaretPositionFromCoordinates(x, y)
+          }
+          mouseHandlerRef.current?.setWordWrapCoordinateConverter(wordWrapConverter)
         }
-        mouseHandlerRef.current?.setWordWrapCoordinateConverter(wordWrapConverter)
+        else {
+          // Set up normal mode coordinate converter for MouseHandler
+          const normalModeConverter = (x: number, y: number) => {
+            // CanvasEditor expects raw coordinates and will add scroll offset internally
+            return canvasEditorRef.current!.getCaretPositionFromCoordinates(x, y)
+          }
+          mouseHandlerRef.current?.setNormalModeCoordinateConverter(normalModeConverter)
+        }
 
         // Let MouseHandler handle everything (including double/triple clicks)
         // This will call the callback which updates inputStateRef.current synchronously
@@ -833,13 +1059,19 @@ export const CodeEditor = ({
         mouseHandlerRef.current?.handlePointerDown(event, inputStateRef.current)
       }
 
-      // Update canvas editor state synchronously with the updated ref from mouse handler callback
-      // The callback already updated inputStateRef.current, so this will have the latest state
-      canvasEditorRef.current?.updateState(inputStateRef.current, true)
-
-      // Activate and focus after updating state so ensureCaretVisible sees the correct position
-      setActiveEditor(editorIdRef.current)
-      textareaRef.current?.focus({ preventScroll: true })
+      // For touch events, MouseHandler may defer caret update until pointerup
+      // Only update state if it's not a touch event (focus is handled by mouse handler callback)
+      if (event.pointerType !== 'touch') {
+        // Update canvas editor state synchronously with the updated ref from mouse handler callback
+        // The callback already updated inputStateRef.current, so this will have the latest state
+        canvasEditorRef.current?.updateState(inputStateRef.current, true)
+        // Reactivate textarea by blurring and focusing consecutively
+        setActiveEditor(editorIdRef.current)
+        textareaRef.current?.blur()
+        setTimeout(() => {
+          textareaRef.current?.focus({ preventScroll: true })
+        }, 0)
+      }
 
       // Clear the flag after a small delay to ensure focus event has been processed
       setTimeout(() => {
@@ -848,11 +1080,28 @@ export const CodeEditor = ({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
-      event.preventDefault()
-
       const rect = canvas.getBoundingClientRect()
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
+
+      // Handle widget pointer move first (before any other checks)
+      canvasEditorRef.current?.handleWidgetPointerMove(x, y)
+
+      // If a widget is being handled, don't proceed with scrolling/selection
+      if (canvasEditorRef.current?.isWidgetPointerActive()) {
+        // Still prevent default for touch events to prevent scrolling
+        if (event.pointerType === 'touch') {
+          event.preventDefault()
+        }
+        return
+      }
+
+      // Don't handle touch scrolling if touch scrolling is already active
+      if (event.pointerType === 'touch' && canvasEditorRef.current?.isTouchScrollingActive()) {
+        return
+      }
+
+      event.preventDefault()
 
       // Handle scrollbar dragging
       if (isDraggingScrollbarRef.current && dragStartRef.current) {
@@ -883,19 +1132,34 @@ export const CodeEditor = ({
     }
 
     const handleWindowPointerMove = (event: PointerEvent) => {
-      // Only handle if we're dragging a selection
-      if (!mouseHandlerRef.current?.isDraggingSelection()) {
-        return
-      }
-
       const canvas = canvasRef.current
       if (!canvas) return
 
       const rect = canvas.getBoundingClientRect()
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+
+      // Handle widget pointer move if widget is active (before any other checks)
+      if (canvasEditorRef.current?.isWidgetPointerActive()) {
+        canvasEditorRef.current.handleWidgetPointerMove(x, y)
+        // Prevent default for touch events to prevent scrolling
+        if (event.pointerType === 'touch') {
+          event.preventDefault()
+        }
+        return
+      }
+
+      if (event.pointerType === 'touch' && canvasEditorRef.current?.isTouchScrollingActive()) {
+        return
+      }
+
+      // Only handle selection dragging if we're dragging a selection
+      if (!mouseHandlerRef.current?.isDraggingSelection()) {
+        return
+      }
+
       const dpr = window.devicePixelRatio || 1
       const viewportHeight = canvas.height / dpr
-      let x = event.clientX - rect.left
-      let y = event.clientY - rect.top
 
       const boundaryZone = 20
       // Check if mouse is in top boundary zone (above or within 20px of top)
@@ -948,16 +1212,85 @@ export const CodeEditor = ({
     }
 
     const handlePointerUp = (event: PointerEvent) => {
+      // For window events, only handle if it's for this editor's canvas
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      // If we're dragging a scrollbar, clear the state even if pointer is released outside canvas
+      if (isDraggingScrollbarRef.current) {
+        isDraggingScrollbarRef.current = null
+        dragStartRef.current = null
+        canvasEditorRef.current?.stopAutoScroll()
+        canvasEditorRef.current?.setScrollbarHover(null)
+        lastMousePositionRef.current = { x: 0, y: 0, event: null }
+        return
+      }
+
+      // Check if event target is this editor's canvas or a child of it
+      const target = event.target as Node | null
+      if (target && !canvas.contains(target) && target !== canvas) {
+        return
+      }
+
       event.preventDefault()
 
-      // Handle widget pointer up
+      // Handle widget pointer up first
+      const wasWidgetActive = canvasEditorRef.current?.isWidgetPointerActive()
       canvasEditorRef.current?.handleWidgetPointerUp()
 
+      // If a widget was active, don't proceed with caret/selection/focus
+      if (wasWidgetActive) {
+        // Clear scrollbar dragging state
+        isDraggingScrollbarRef.current = null
+        dragStartRef.current = null
+        lastMousePositionRef.current = { x: 0, y: 0, event: null }
+        return
+      }
+
       // Clear scrollbar dragging state
+      if (isDraggingScrollbarRef.current) {
+        canvasEditorRef.current?.setScrollbarHover(null)
+      }
       isDraggingScrollbarRef.current = null
       dragStartRef.current = null
 
-      mouseHandlerRef.current?.handlePointerUp(event, inputStateRef.current)
+      // For touch events, check if scrolling occurred BEFORE calling handlePointerUp
+      // This prevents the mouse handler from setting the caret and focus if scrolling occurred
+      if (event.pointerType === 'touch') {
+        const didScroll = canvasEditorRef.current?.didTouchScroll()
+
+        if (didScroll) {
+          // Clear pending touch position in mouse handler to prevent caret from being set
+          mouseHandlerRef.current?.clearPendingTouchPosition()
+          // Don't set focus if scrolling occurred
+          canvasEditorRef.current?.clearTouchScrollFlag()
+          // Stop auto-scroll and return early - don't do anything else
+          canvasEditorRef.current?.stopAutoScroll()
+          lastMousePositionRef.current = { x: 0, y: 0, event: null }
+          return
+        }
+
+        // Only call handlePointerUp if no scrolling occurred (simple tap)
+        // This will update the state via the mouse handler's callback
+        // Store the old state to check if it changed
+        const oldCaret = inputStateRef.current.caret
+        const oldSelection = inputStateRef.current.selection
+        mouseHandlerRef.current?.handlePointerUp(event, inputStateRef.current)
+        // Update canvas editor state and ensure caret is visible for taps
+        // Only update if state actually changed (caret was set)
+        // Focus is handled by the mouse handler callback when caret is set
+        const stateChanged = inputStateRef.current.caret !== oldCaret
+          || inputStateRef.current.selection !== oldSelection
+        if (stateChanged) {
+          // For taps, ensure caret is visible
+          canvasEditorRef.current?.updateState(inputStateRef.current, true)
+        }
+        canvasEditorRef.current?.clearTouchScrollFlag()
+      }
+      else {
+        // For non-touch events, always call handlePointerUp
+        mouseHandlerRef.current?.handlePointerUp(event, inputStateRef.current)
+      }
 
       // Stop auto-scroll when pointer is released
       canvasEditorRef.current?.stopAutoScroll()
@@ -988,7 +1321,7 @@ export const CodeEditor = ({
       ref={containerRef}
       className={autoHeight
         ? 'text-white relative min-w-0'
-        : 'text-white relative flex-1 min-w-0 min-h-0 h-full'}
+        : 'text-white relative flex-1 min-w-0 min-h-0 h-full touch-none'}
       style={autoHeight ? { height: `${Math.max(0, scrollMetrics.contentHeight)}px` } : undefined}
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
     >
@@ -1022,8 +1355,17 @@ export const CodeEditor = ({
         onFocus={() => {
           // Don't activate if we're in the middle of a pointer down handler
           // as it will already handle activation with the correct state
+          // Also don't activate if touch scrolling occurred or touch gesture is active
           if (!isHandlingPointerRef.current) {
-            setActiveEditor(editorIdRef.current)
+            const didScroll = canvasEditorRef.current?.didTouchScroll()
+            const isTouchGesture = canvasEditorRef.current?.isTouchGestureActive()
+            if (!didScroll && !isTouchGesture) {
+              setActiveEditor(editorIdRef.current)
+            }
+            else if (didScroll || isTouchGesture) {
+              // Blur the textarea if it got focused during a scroll gesture
+              textareaRef.current?.blur()
+            }
           }
         }}
       />
@@ -1097,7 +1439,8 @@ export const CodeEditor = ({
       {!hideFunctionSignatures
         && isActive
         && functionCallInfo
-        && functionDefinitions[functionCallInfo.functionName] && (
+        && functionDefinitions[functionCallInfo.functionName]
+        && window.innerWidth >= 600 && (
         <FunctionSignaturePopup
           signature={functionDefinitions[functionCallInfo.functionName]}
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}

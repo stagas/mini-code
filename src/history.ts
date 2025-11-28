@@ -1,3 +1,11 @@
+export interface WidgetData {
+  line: number
+  column: number
+  type: 'above' | 'overlay' | 'inline' | 'below'
+  length: number
+  height?: number
+}
+
 export interface HistoryState {
   lines: string[]
   caret: { line: number; column: number; columnIntent: number } | null
@@ -5,6 +13,7 @@ export interface HistoryState {
     start: { line: number; column: number }
     end: { line: number; column: number }
   } | null
+  widgets?: WidgetData[]
 }
 
 export interface HistoryEntry {
@@ -36,6 +45,13 @@ export class History {
               end: { ...state.selection.end },
             }
           : null,
+        widgets: state.widgets ? state.widgets.map(w => ({
+          line: w.line,
+          column: w.column,
+          type: w.type,
+          length: w.length,
+          height: w.height
+        })) : undefined,
       }
     }
 
@@ -49,6 +65,13 @@ export class History {
             end: { ...state.selection.end },
           }
         : null,
+      widgets: state.widgets ? state.widgets.map(w => ({
+        line: w.line,
+        column: w.column,
+        type: w.type,
+        length: w.length,
+        height: w.height
+      })) : undefined,
     }
   }
 
@@ -74,6 +97,13 @@ export class History {
                 end: { ...state.selection.end },
               }
             : null,
+          widgets: state.widgets ? state.widgets.map(w => ({
+          line: w.line,
+          column: w.column,
+          type: w.type,
+          length: w.length,
+          height: w.height
+        })) : undefined,
         },
       }
 
@@ -103,6 +133,13 @@ export class History {
               end: { ...state.selection.end },
             }
           : null,
+        widgets: state.widgets ? state.widgets.map(w => ({
+          line: w.line,
+          column: w.column,
+          type: w.type,
+          length: w.length,
+          height: w.height
+        })) : undefined,
       }
     }
 
@@ -117,6 +154,13 @@ export class History {
               end: { ...state.selection.end },
             }
           : null,
+        widgets: state.widgets ? state.widgets.map(w => ({
+          line: w.line,
+          column: w.column,
+          type: w.type,
+          length: w.length,
+          height: w.height
+        })) : undefined,
       }
     }
   }
@@ -137,6 +181,13 @@ export class History {
             end: { ...state.selection.end },
           }
         : null,
+      widgets: state.widgets ? state.widgets.map(w => ({
+        line: w.line,
+        column: w.column,
+        type: w.type,
+        length: w.length,
+        height: w.height
+      })) : undefined,
     }
 
     // Set new timeout to save after delay
@@ -149,11 +200,14 @@ export class History {
           // Clear redo stack when a new action is performed
           this.redoStack = []
 
-          // Create history entry with before and after states
-          const entry: HistoryEntry = {
-            before: this.debouncedBeforeState,
-            after: currentAfterState,
-          }
+        // Create history entry with before and after states
+        const entry: HistoryEntry = {
+          before: this.debouncedBeforeState,
+          after: {
+            ...currentAfterState,
+            widgetPositions: currentAfterState.widgetPositions ? [...currentAfterState.widgetPositions] : undefined,
+          },
+        }
 
           // Add to undo stack
           this.undoStack.push(entry)
@@ -198,6 +252,7 @@ export class History {
                   end: { ...currentState.selection.end },
                 }
               : null,
+            widgetPositions: currentState.widgetPositions ? [...currentState.widgetPositions] : undefined,
           },
         }
 

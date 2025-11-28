@@ -13,7 +13,10 @@ export class MouseHandler {
   private isLineSelection = false
   private scrollX = 0
   private scrollY = 0
+  private textPadding = 16
   private wordWrapCoordinateConverter: ((x: number, y: number) => CaretPosition) | null = null
+  private pendingTouchPosition: { x: number; y: number } | null = null
+  private shouldClearPendingTouch: boolean = false
 
   constructor(canvas: HTMLCanvasElement, onStateChange: (state: InputState) => void) {
     this.canvas = canvas
@@ -26,35 +29,46 @@ export class MouseHandler {
     this.scrollY = y
   }
 
+  setTextPadding(padding: number) {
+    this.textPadding = padding
+  }
+
   setWordWrapCoordinateConverter(converter: ((x: number, y: number) => CaretPosition) | null) {
     this.wordWrapCoordinateConverter = converter
+  }
+
+  setNormalModeCoordinateConverter(converter: ((x: number, y: number) => CaretPosition) | null) {
+    this.normalModeCoordinateConverter = converter
   }
 
   isDraggingSelection(): boolean {
     return this.isDragging
   }
 
+  clearPendingTouchPosition(): void {
+    this.pendingTouchPosition = null
+    this.shouldClearPendingTouch = false
+  }
+
   handlePointerDown(event: PointerEvent, currentState: InputState) {
     const rect = this.canvas.getBoundingClientRect()
-    let x: number, y: number
-
-    if (this.wordWrapCoordinateConverter) {
-      // For word wrap mode, don't add scroll offset since CanvasEditor handles it
-      x = event.clientX - rect.left
-      y = event.clientY - rect.top
-    } else {
-      // For normal mode, add scroll offset
-      x = event.clientX - rect.left + this.scrollX
-      y = event.clientY - rect.top + this.scrollY
-    }
+    // Always use canvas-relative coordinates (no scroll offset)
+    // getCaretPositionFromCoordinates will add scroll offset internally
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
 
     let caretPosition: CaretPosition
     if (this.wordWrapCoordinateConverter) {
-      // Use word wrap coordinate conversion
+      // For word wrap mode, CanvasEditor handles scroll offset internally
       caretPosition = this.wordWrapCoordinateConverter(x, y)
     } else {
-      // Use normal coordinate conversion
-      caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+      // For normal mode, use the coordinate converter if available, otherwise use fallback
+      if (this.normalModeCoordinateConverter) {
+        caretPosition = this.normalModeCoordinateConverter(x, y)
+      } else {
+        // Fallback to internal method (may not be accurate due to font/DPR issues)
+        caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+      }
     }
 
     // Handle click counting for double/triple click
@@ -78,18 +92,31 @@ export class MouseHandler {
     this.lastClickPosition = { ...caretPosition }
 
     const newState = { ...currentState }
-    newState.caret = caretPosition
 
     // Handle different click types
     if (this.clickCount === 1) {
       // Single click - start drag selection
-      this.isDragging = true
-      this.isWordSelection = false
-      this.isLineSelection = false
-      this.dragStartPosition = { ...caretPosition }
-      newState.selection = {
-        start: { line: caretPosition.line, column: caretPosition.column },
-        end: { line: caretPosition.line, column: caretPosition.column },
+      // On touch devices, defer caret positioning until pointerup (tap and release only)
+      if (event.pointerType === 'touch') {
+        // Store position for later, don't update caret yet
+        this.pendingTouchPosition = { x, y }
+        this.isDragging = false
+        this.isWordSelection = false
+        this.isLineSelection = false
+        this.dragStartPosition = null
+        newState.selection = null
+        // Don't update state yet - wait for pointerup
+        return
+      } else {
+        newState.caret = caretPosition
+        this.isDragging = true
+        this.isWordSelection = false
+        this.isLineSelection = false
+        this.dragStartPosition = { ...caretPosition }
+        newState.selection = {
+          start: { line: caretPosition.line, column: caretPosition.column },
+          end: { line: caretPosition.line, column: caretPosition.column },
+        }
       }
     } else if (this.clickCount === 2) {
       // Double click - select word and start word selection drag
@@ -125,28 +152,48 @@ export class MouseHandler {
   }
 
   handlePointerMove(event: PointerEvent, currentState: InputState) {
+    // Clear pending touch position only if significant movement occurs (it's a scroll, not a tap)
+    if (event.pointerType === 'touch' && this.pendingTouchPosition) {
+      const rect = this.canvas.getBoundingClientRect()
+      const currentX = event.clientX - rect.left
+      const currentY = event.clientY - rect.top
+      const moveDistance = Math.sqrt(
+        Math.pow(currentX - this.pendingTouchPosition.x, 2) +
+        Math.pow(currentY - this.pendingTouchPosition.y, 2)
+      )
+      // Only clear if movement exceeds threshold (10px)
+      if (moveDistance > 10) {
+        this.shouldClearPendingTouch = true
+        this.pendingTouchPosition = null
+        return
+      }
+    }
+
     if (!this.isDragging || !this.dragStartPosition) return
 
-    const rect = this.canvas.getBoundingClientRect()
-    let x: number, y: number
-
-    if (this.wordWrapCoordinateConverter) {
-      // For word wrap mode, don't add scroll offset since CanvasEditor handles it
-      x = event.clientX - rect.left
-      y = event.clientY - rect.top
-    } else {
-      // For normal mode, add scroll offset
-      x = event.clientX - rect.left + this.scrollX
-      y = event.clientY - rect.top + this.scrollY
+    // Prevent selection updates during touch scrolling
+    if (event.pointerType === 'touch') {
+      return
     }
+
+    const rect = this.canvas.getBoundingClientRect()
+    // Always use canvas-relative coordinates (no scroll offset)
+    // getCaretPositionFromCoordinates will add scroll offset internally
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
 
     let caretPosition: CaretPosition
     if (this.wordWrapCoordinateConverter) {
-      // Use word wrap coordinate conversion
+      // For word wrap mode, CanvasEditor handles scroll offset internally
       caretPosition = this.wordWrapCoordinateConverter(x, y)
     } else {
-      // Use normal coordinate conversion
-      caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+      // For normal mode, use the coordinate converter if available, otherwise use fallback
+      if (this.normalModeCoordinateConverter) {
+        caretPosition = this.normalModeCoordinateConverter(x, y)
+      } else {
+        // Fallback to internal method (may not be accurate due to font/DPR issues)
+        caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+      }
     }
 
     const newState = { ...currentState }
@@ -220,6 +267,56 @@ export class MouseHandler {
   }
 
   handlePointerUp(event: PointerEvent, currentState: InputState) {
+    // Handle pending touch position (tap and release)
+    if (event.pointerType === 'touch' && this.pendingTouchPosition) {
+      this.pendingTouchPosition = null
+
+      // Don't set caret if scrolling occurred
+      if (this.shouldClearPendingTouch) {
+        this.shouldClearPendingTouch = false
+        this.isDragging = false
+        this.dragStartPosition = null
+        this.isWordSelection = false
+        this.isLineSelection = false
+        return
+      }
+
+      // Use current pointer position instead of stored position for accuracy
+      const rect = this.canvas.getBoundingClientRect()
+      // Always use canvas-relative coordinates (no scroll offset)
+      // getCaretPositionFromCoordinates will add scroll offset internally
+      const x = event.clientX - rect.left
+      const y = event.clientY - rect.top
+
+      let caretPosition: CaretPosition
+      if (this.wordWrapCoordinateConverter) {
+        // For word wrap mode, CanvasEditor handles scroll offset internally
+        caretPosition = this.wordWrapCoordinateConverter(x, y)
+      } else {
+        // For normal mode, use the coordinate converter if available, otherwise use fallback
+        if (this.normalModeCoordinateConverter) {
+          caretPosition = this.normalModeCoordinateConverter(x, y)
+        } else {
+          // Fallback to internal method (may not be accurate due to font/DPR issues)
+          caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
+        }
+      }
+
+      const newState = { ...currentState }
+      newState.caret = caretPosition
+      newState.selection = null
+      this.onStateChange(newState)
+
+      this.isDragging = false
+      this.dragStartPosition = null
+      this.isWordSelection = false
+      this.isLineSelection = false
+      this.shouldClearPendingTouch = false
+      return
+    }
+
+    this.shouldClearPendingTouch = false
+
     // If we have a zero-length selection (no actual dragging occurred), clear it
     if (
       currentState.selection &&
@@ -246,19 +343,22 @@ export class MouseHandler {
   }
 
   private getCaretPositionFromCoordinates(x: number, y: number, lines: string[]): CaretPosition {
-    const padding = 16
     const lineHeight = 20
 
-    // Calculate line number
-    const lineIndex = Math.max(0, Math.floor((y - padding) / lineHeight))
+    // Add scroll offset to get content coordinates
+    const adjustedY = y + this.scrollY
+    const adjustedX = x + this.scrollX
+
+    // Calculate line number (accounting for scroll)
+    const lineIndex = Math.max(0, Math.floor((adjustedY - this.textPadding) / lineHeight))
     const clampedLineIndex = Math.min(lineIndex, lines.length - 1)
 
     // Get the line text
     const line = lines[clampedLineIndex] || ''
 
-    // Calculate column position
-    const adjustedX = x - padding
-    const column = this.getColumnFromX(adjustedX, line)
+    // Calculate column position (accounting for text padding which includes gutter)
+    const xAdjusted = adjustedX - this.textPadding
+    const column = this.getColumnFromX(xAdjusted, line)
 
     return {
       line: clampedLineIndex,

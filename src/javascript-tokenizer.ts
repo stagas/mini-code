@@ -1,7 +1,7 @@
 import { type Tokenizer, type Token } from './syntax.ts'
 
 // Simple JavaScript tokenizer
-export const javascriptTokenizer: Tokenizer = (line: string): Token[] => {
+export const javascriptTokenizer: Tokenizer = (line: string, isBeginOfCode: boolean): Token[] => {
   const tokens: Token[] = []
   let i = 0
 
