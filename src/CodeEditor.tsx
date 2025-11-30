@@ -1131,6 +1131,13 @@ export const CodeEditor = ({
       }
     }
 
+    const handlePointerLeave = (event: PointerEvent) => {
+      // Clear scrollbar hover when pointer leaves the canvas, but only if not holding a button
+      if (event.buttons === 0) {
+        canvasEditorRef.current?.setScrollbarHover(null)
+      }
+    }
+
     const handleWindowPointerMove = (event: PointerEvent) => {
       const canvas = canvasRef.current
       if (!canvas) return
@@ -1138,6 +1145,11 @@ export const CodeEditor = ({
       const rect = canvas.getBoundingClientRect()
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
+
+      // Clear scrollbar hover if pointer is outside canvas bounds, but only if not holding a button
+      if (event.buttons === 0 && (x < 0 || x > rect.width || y < 0 || y > rect.height)) {
+        canvasEditorRef.current?.setScrollbarHover(null)
+      }
 
       // Handle widget pointer move if widget is active (before any other checks)
       if (canvasEditorRef.current?.isWidgetPointerActive()) {
@@ -1150,6 +1162,15 @@ export const CodeEditor = ({
       }
 
       if (event.pointerType === 'touch' && canvasEditorRef.current?.isTouchScrollingActive()) {
+        return
+      }
+
+      // Handle scrollbar dragging (allows dragging outside canvas)
+      if (isDraggingScrollbarRef.current && dragStartRef.current) {
+        const dx = event.clientX - dragStartRef.current.x
+        const dy = event.clientY - dragStartRef.current.y
+        canvasEditorRef.current?.handleScrollbarDrag(dx, dy, isDraggingScrollbarRef.current)
+        dragStartRef.current = { x: event.clientX, y: event.clientY }
         return
       }
 
@@ -1299,6 +1320,7 @@ export const CodeEditor = ({
 
     canvas.addEventListener('pointerdown', handlePointerDown)
     canvas.addEventListener('pointermove', handlePointerMove)
+    canvas.addEventListener('pointerleave', handlePointerLeave)
     canvas.addEventListener('pointerup', handlePointerUp)
     window.addEventListener('pointermove', handleWindowPointerMove)
     window.addEventListener('pointerup', handlePointerUp)
@@ -1306,6 +1328,7 @@ export const CodeEditor = ({
     return () => {
       canvas.removeEventListener('pointerdown', handlePointerDown)
       canvas.removeEventListener('pointermove', handlePointerMove)
+      canvas.removeEventListener('pointerleave', handlePointerLeave)
       canvas.removeEventListener('pointerup', handlePointerUp)
       window.removeEventListener('pointermove', handleWindowPointerMove)
       window.removeEventListener('pointerup', handlePointerUp)

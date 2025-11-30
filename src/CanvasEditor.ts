@@ -351,6 +351,7 @@ export class CanvasEditor {
   private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
   private activeWidgetPosition: { x: number; y: number; width: number; height: number } | null = null
   private widgetUpdateTimeout: number | null = null
+  private widgetAdjustments: Map<EditorWidget, { firstEmptyLineAbove: number; adjustedHeight: number }> = new Map()
   private pendingWidgets: EditorWidget[] | null = null
   private currentCodeFileRef: unknown = null
   private justRestoredFromHistory: boolean = false
@@ -376,6 +377,7 @@ export class CanvasEditor {
     this.textPaddingCache = null
     this.lineWidthCache.clear()
     this.widgetPositions.clear()
+    this.widgetAdjustments.clear()
   }
 
   // Draw a custom right arrow for the ligature sequence "|>" with given color and width reservation
@@ -3157,6 +3159,39 @@ export class CanvasEditor {
       }
     }
 
+    // Process 'above' widgets to expand upward to fill empty lines
+    const widgetAdjustments = new Map<EditorWidget, { firstEmptyLineAbove: number; adjustedHeight: number }>()
+    for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+      const widgets = widgetsByVisualLine.get(visualIndex)
+      if (!widgets?.above || widgets.above.length === 0) continue
+
+      for (const widget of widgets.above) {
+        // Find how many consecutive empty lines are above this widget
+        // Empty lines are those where the original line text (after trim) has length 0
+        let emptyLinesAbove = 0
+        let firstEmptyLineAbove = visualIndex
+        for (let i = visualIndex - 1; i >= 0; i--) {
+          const wrappedLine = wrappedLines[i]
+          const originalLine = this.inputState.lines[wrappedLine.logicalLine] || ''
+          if (originalLine.trim().length === 0) {
+            emptyLinesAbove++
+            firstEmptyLineAbove = i
+          }
+          else {
+            break
+          }
+        }
+
+        // Calculate adjusted height to fill empty lines above
+        const baseHeight = this.getWidgetHeight(widget)
+        const additionalHeight = emptyLinesAbove * this.lineHeight
+        const adjustedHeight = baseHeight + additionalHeight
+
+        // Store adjustment (widget stays on original line, but expands upward)
+        widgetAdjustments.set(widget, { firstEmptyLineAbove, adjustedHeight })
+      }
+    }
+
     // Calculate cumulative y offsets for each visual line
     // yOffset[N] represents the cumulative vertical space added by all widgets before line N
     let cumulativeOffset = 0
@@ -3167,6 +3202,7 @@ export class CanvasEditor {
       const widgets = widgetsByVisualLine.get(visualIndex)
       if (widgets) {
         // Add max height of 'above' widgets for this line (they are in the same row)
+        // Use base height (not adjusted) so line spacing isn't affected by upward expansion
         if (widgets.above.length > 0) {
           const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           cumulativeOffset += maxAboveHeight
@@ -3187,6 +3223,9 @@ export class CanvasEditor {
         }
       }
     }
+
+    // Store widget adjustments for use in drawing
+    this.widgetAdjustments = widgetAdjustments
 
     return { widgetsByVisualLine, inlineWidgets, overlayWidgets, yOffsets }
   }
@@ -3345,18 +3384,25 @@ export class CanvasEditor {
       // Draw 'above' widgets before the line
       const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
       if (widgets?.above && widgets.above.length > 0) {
-        // All 'above' widgets on the same line share the same Y position (horizontal row)
-        const widgetY = y
+        // Use base height for line spacing (not adjusted height)
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         for (const widget of widgets.above) {
           // Calculate position based on widget's column (convert from 1-based to 0-based)
           const widgetColumn = widget.column - 1
+          const adjustment = this.widgetAdjustments.get(widget)
+          // Widget stays on its original line for horizontal positioning
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           // Calculate width based on widget's length
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
-          const widgetHeight = this.getWidgetHeight(widget)
+          const baseHeight = this.getWidgetHeight(widget)
+          const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
+          // Widget starts from first empty line above and extends down to the defining line
+          const widgetY = adjustment
+            ? this.padding + adjustment.firstEmptyLineAbove * this.lineHeight
+              + (widgetLayout.yOffsets.get(adjustment.firstEmptyLineAbove) || 0) - 1.5
+            : y
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
@@ -3367,7 +3413,7 @@ export class CanvasEditor {
             widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
           }
         }
-        // Advance y by the maximum height among all above widgets
+        // Advance y by the base height (not adjusted) so line spacing isn't affected
         y += maxAboveHeight
       }
 
@@ -4739,14 +4785,21 @@ export class CanvasEditor {
 
       const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
       if (widgets?.above && widgets.above.length > 0) {
-        const widgetY = y
         for (const widget of widgets.above) {
           const widgetColumn = widget.column - 1
+          const adjustment = this.widgetAdjustments.get(widget)
+          // Widget stays on its original line for horizontal positioning
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
-          const widgetHeight = this.getWidgetHeight(widget)
+          const baseHeight = this.getWidgetHeight(widget)
+          const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
+          // Widget starts from first empty line above and extends down to the defining line
+          const widgetY = adjustment
+            ? this.padding + adjustment.firstEmptyLineAbove * this.lineHeight
+              + (widgetLayout.yOffsets.get(adjustment.firstEmptyLineAbove) || 0) - 1.5
+            : y
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
@@ -4754,6 +4807,7 @@ export class CanvasEditor {
             height: widgetHeight,
           })
         }
+        // Use base height for line spacing (not adjusted height)
         y += Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
 
