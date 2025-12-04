@@ -299,7 +299,7 @@ const FunctionSignaturePopup = ({
     >
       <div className="p-3">
         <div className="text-sm">
-          <div className="break-words overflow-hidden"
+          <div className="break-words"
             style={{ color: theme.functionSignaturePopup.text, font: theme.font }}
           >
             <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">

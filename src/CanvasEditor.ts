@@ -3823,67 +3823,66 @@ export class CanvasEditor {
         const rect = this.container.getBoundingClientRect()
         const textPadding = this.getTextPadding()
 
-        // For word wrap mode, calculate visual line positions
+        // Calculate visual line positions (works for both wordwrap and non-wordwrap modes)
         let preCalculatedContentY: number | undefined
         let preCalculatedCaretContentY: number | undefined
         let preCalculatedContentX: number | undefined
         let preCalculatedCaretContentX: number | undefined
-        if (this.options.wordWrap) {
-          const wrappedLines = this.getWrappedLines(ctx)
-          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
 
-          const visualPos = this.logicalToVisualPosition(
-            callInfo.openParenPosition.line,
-            callInfo.openParenPosition.column,
-            wrappedLines,
+        const wrappedLines = this.getWrappedLines(ctx)
+        const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
+        const visualPos = this.logicalToVisualPosition(
+          callInfo.openParenPosition.line,
+          callInfo.openParenPosition.column,
+          wrappedLines,
+        )
+        const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
+        let aboveHeight = 0
+        const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
+        if (widgets?.above && widgets.above.length > 0) {
+          aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+        }
+        preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
+
+        // Calculate X position based on wrapped line segment
+        const wrappedLine = wrappedLines[visualPos.visualLine]
+        if (wrappedLine) {
+          const textBeforeParenInSegment = wrappedLine.text.substring(0, visualPos.visualColumn)
+          preCalculatedContentX = textPadding + ctx.measureText(textBeforeParenInSegment).width
+        }
+
+        const caretVisualPos = this.logicalToVisualPosition(
+          this.inputState.caret.line,
+          this.inputState.caret.column,
+          wrappedLines,
+        )
+        const caretYOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
+        let caretAboveHeight = 0
+        const caretWidgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
+        if (caretWidgets?.above) {
+          for (const widget of caretWidgets.above) {
+            caretAboveHeight += this.getWidgetHeight(widget)
+          }
+        }
+        preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + caretYOffset
+          + caretAboveHeight
+
+        // Calculate caret X position based on wrapped line segment
+        const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
+        if (caretWrappedLine) {
+          const textBeforeCaretInSegment = caretWrappedLine.text.substring(
+            0,
+            caretVisualPos.visualColumn,
           )
-          const yOffset = widgetLayout.yOffsets.get(visualPos.visualLine) || 0
-          let aboveHeight = 0
-          const widgets = widgetLayout.widgetsByVisualLine.get(visualPos.visualLine)
-          if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
-          }
-          preCalculatedContentY = this.padding + visualPos.visualLine * this.lineHeight + yOffset + aboveHeight
+          preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
 
-          // Calculate X position based on wrapped line segment
-          const wrappedLine = wrappedLines[visualPos.visualLine]
-          if (wrappedLine) {
-            const textBeforeParenInSegment = wrappedLine.text.substring(0, visualPos.visualColumn)
-            preCalculatedContentX = textPadding + ctx.measureText(textBeforeParenInSegment).width
-          }
-
-          const caretVisualPos = this.logicalToVisualPosition(
-            this.inputState.caret.line,
-            this.inputState.caret.column,
-            wrappedLines,
-          )
-          const caretYOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
-          let caretAboveHeight = 0
-          const caretWidgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
-          if (caretWidgets?.above) {
-            for (const widget of caretWidgets.above) {
-              caretAboveHeight += this.getWidgetHeight(widget)
-            }
-          }
-          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + caretYOffset
-            + caretAboveHeight
-
-          // Calculate caret X position based on wrapped line segment
-          const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
-          if (caretWrappedLine) {
-            const textBeforeCaretInSegment = caretWrappedLine.text.substring(
-              0,
-              caretVisualPos.visualColumn,
-            )
-            preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
-
-            // Account for inline widgets before the caret
-            const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
-            for (const { widget, column } of inlineWidgetsForLine) {
-              const columnInWrappedLine = column - caretWrappedLine.startColumn
-              if (columnInWrappedLine <= caretVisualPos.visualColumn) {
-                preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
-              }
+          // Account for inline widgets before the caret
+          const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - caretWrappedLine.startColumn
+            if (columnInWrappedLine <= caretVisualPos.visualColumn) {
+              preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
             }
           }
         }
