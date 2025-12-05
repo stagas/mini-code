@@ -299,9 +299,7 @@ const FunctionSignaturePopup = ({
     >
       <div className="p-3">
         <div className="text-sm">
-          <div className="break-words"
-            style={{ color: theme.functionSignaturePopup.text, font: theme.font }}
-          >
+          <div className="break-words" style={{ color: theme.functionSignaturePopup.text, font: theme.font }}>
             <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">
               {signature.name}
             </span>
@@ -358,6 +356,39 @@ const FunctionSignaturePopup = ({
                   {signature.parameters[effectiveParameterIndex].description}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Examples */}
+          {signature.examples && signature.examples.length > 0 && (
+            <div className="mt-3 pt-3"
+              style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
+                borderTopStyle: 'solid' }}
+            >
+              <div className="text-xs font-semibold mb-2 uppercase tracking-wide"
+                style={{ color: theme.functionSignaturePopup.separator }}
+              >
+                Examples
+              </div>
+              <div className="space-y-2">
+                {signature.examples.map((example, index) => (
+                  <div
+                    key={index}
+                    className="rounded px-2 py-1.5 break-words font-mono"
+                    style={{
+                      backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                      borderColor: theme.functionSignaturePopup.border,
+                      borderWidth: '1px',
+                      borderStyle: 'solid',
+                      color: theme.functionSignaturePopup.text,
+                      font: theme.font,
+                      fontSize: '0.85rem',
+                    }}
+                  >
+                    {example}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

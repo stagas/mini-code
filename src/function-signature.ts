@@ -12,6 +12,7 @@ export interface FunctionSignature {
   returnType?: string
   description?: string
   deprecated?: boolean
+  examples?: string[]
 }
 
 export interface FunctionCallInfo {
