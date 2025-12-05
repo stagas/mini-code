@@ -1869,7 +1869,7 @@ export class CanvasEditor {
       this.lastCaretActivityTime = performance.now()
       this.caretOpacity = 1
     }
-    if (this.isActive && ensureCaretVisible) this.ensureCaretVisible(wasAtBottom)
+    if (this.isActive && (ensureCaretVisible || linesChanged)) this.ensureCaretVisible(wasAtBottom)
     this.maybeDraw()
     // Only update autocomplete when text changes (typing), not on navigation
     if (linesChanged) {
