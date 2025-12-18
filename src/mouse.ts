@@ -61,11 +61,13 @@ export class MouseHandler {
     if (this.wordWrapCoordinateConverter) {
       // For word wrap mode, CanvasEditor handles scroll offset internally
       caretPosition = this.wordWrapCoordinateConverter(x, y)
-    } else {
+    }
+    else {
       // For normal mode, use the coordinate converter if available, otherwise use fallback
       if (this.normalModeCoordinateConverter) {
         caretPosition = this.normalModeCoordinateConverter(x, y)
-      } else {
+      }
+      else {
         // Fallback to internal method (may not be accurate due to font/DPR issues)
         caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
       }
@@ -73,10 +75,9 @@ export class MouseHandler {
 
     // Handle click counting for double/triple click
     const now = Date.now()
-    const isSamePosition =
-      this.lastClickPosition &&
-      this.lastClickPosition.line === caretPosition.line &&
-      this.lastClickPosition.column === caretPosition.column
+    const isSamePosition = this.lastClickPosition
+      && this.lastClickPosition.line === caretPosition.line
+      && this.lastClickPosition.column === caretPosition.column
 
     if (now - this.lastClickTime < 500 && isSamePosition) {
       this.clickCount++
@@ -84,7 +85,8 @@ export class MouseHandler {
       if (this.clickCount > 3) {
         this.clickCount = 1
       }
-    } else {
+    }
+    else {
       this.clickCount = 1
     }
 
@@ -107,7 +109,8 @@ export class MouseHandler {
         newState.selection = null
         // Don't update state yet - wait for pointerup
         return
-      } else {
+      }
+      else {
         newState.caret = caretPosition
         this.isDragging = true
         this.isWordSelection = false
@@ -118,7 +121,8 @@ export class MouseHandler {
           end: { line: caretPosition.line, column: caretPosition.column },
         }
       }
-    } else if (this.clickCount === 2) {
+    }
+    else if (this.clickCount === 2) {
       // Double click - select word and start word selection drag
       this.isDragging = true
       this.isWordSelection = true
@@ -132,7 +136,8 @@ export class MouseHandler {
         column: wordSelection.end.column,
         columnIntent: wordSelection.end.column,
       }
-    } else if (this.clickCount === 3) {
+    }
+    else if (this.clickCount === 3) {
       // Triple click - select line and start line selection drag
       this.isDragging = true
       this.isWordSelection = false
@@ -158,8 +163,8 @@ export class MouseHandler {
       const currentX = event.clientX - rect.left
       const currentY = event.clientY - rect.top
       const moveDistance = Math.sqrt(
-        Math.pow(currentX - this.pendingTouchPosition.x, 2) +
-        Math.pow(currentY - this.pendingTouchPosition.y, 2)
+        Math.pow(currentX - this.pendingTouchPosition.x, 2)
+          + Math.pow(currentY - this.pendingTouchPosition.y, 2),
       )
       // Only clear if movement exceeds threshold (10px)
       if (moveDistance > 10) {
@@ -186,11 +191,13 @@ export class MouseHandler {
     if (this.wordWrapCoordinateConverter) {
       // For word wrap mode, CanvasEditor handles scroll offset internally
       caretPosition = this.wordWrapCoordinateConverter(x, y)
-    } else {
+    }
+    else {
       // For normal mode, use the coordinate converter if available, otherwise use fallback
       if (this.normalModeCoordinateConverter) {
         caretPosition = this.normalModeCoordinateConverter(x, y)
-      } else {
+      }
+      else {
         // Fallback to internal method (may not be accurate due to font/DPR issues)
         caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
       }
@@ -208,10 +215,9 @@ export class MouseHandler {
       newState.selection = selection
 
       // Position caret at the end of selection (opposite of drag start)
-      const isDraggingForward =
-        this.dragStartPosition.line < caretPosition.line ||
-        (this.dragStartPosition.line === caretPosition.line &&
-          this.dragStartPosition.column <= caretPosition.column)
+      const isDraggingForward = this.dragStartPosition.line < caretPosition.line
+        || (this.dragStartPosition.line === caretPosition.line
+          && this.dragStartPosition.column <= caretPosition.column)
 
       if (isDraggingForward) {
         newState.caret = {
@@ -219,14 +225,16 @@ export class MouseHandler {
           column: selection.end.column,
           columnIntent: selection.end.column,
         }
-      } else {
+      }
+      else {
         newState.caret = {
           line: selection.start.line,
           column: selection.start.column,
           columnIntent: selection.start.column,
         }
       }
-    } else if (this.isLineSelection) {
+    }
+    else if (this.isLineSelection) {
       // Line selection - expand selection line by line
       const selection = this.expandLineSelection(
         this.dragStartPosition,
@@ -236,10 +244,9 @@ export class MouseHandler {
       newState.selection = selection
 
       // Position caret at the end of selection (opposite of drag start)
-      const isDraggingForward =
-        this.dragStartPosition.line < caretPosition.line ||
-        (this.dragStartPosition.line === caretPosition.line &&
-          this.dragStartPosition.column <= caretPosition.column)
+      const isDraggingForward = this.dragStartPosition.line < caretPosition.line
+        || (this.dragStartPosition.line === caretPosition.line
+          && this.dragStartPosition.column <= caretPosition.column)
 
       if (isDraggingForward) {
         newState.caret = {
@@ -247,14 +254,16 @@ export class MouseHandler {
           column: selection.end.column,
           columnIntent: selection.end.column,
         }
-      } else {
+      }
+      else {
         newState.caret = {
           line: selection.start.line,
           column: selection.start.column,
           columnIntent: selection.start.column,
         }
       }
-    } else {
+    }
+    else {
       // Normal character selection
       newState.selection = {
         start: { line: this.dragStartPosition.line, column: this.dragStartPosition.column },
@@ -292,11 +301,13 @@ export class MouseHandler {
       if (this.wordWrapCoordinateConverter) {
         // For word wrap mode, CanvasEditor handles scroll offset internally
         caretPosition = this.wordWrapCoordinateConverter(x, y)
-      } else {
+      }
+      else {
         // For normal mode, use the coordinate converter if available, otherwise use fallback
         if (this.normalModeCoordinateConverter) {
           caretPosition = this.normalModeCoordinateConverter(x, y)
-        } else {
+        }
+        else {
           // Fallback to internal method (may not be accurate due to font/DPR issues)
           caretPosition = this.getCaretPositionFromCoordinates(x, y, currentState.lines)
         }
@@ -319,9 +330,9 @@ export class MouseHandler {
 
     // If we have a zero-length selection (no actual dragging occurred), clear it
     if (
-      currentState.selection &&
-      this.isSelectionEmpty(currentState.selection) &&
-      this.clickCount === 1
+      currentState.selection
+      && this.isSelectionEmpty(currentState.selection)
+      && this.clickCount === 1
     ) {
       const newState = { ...currentState }
       newState.selection = null
@@ -439,9 +450,8 @@ export class MouseHandler {
     const startWord = this.selectWordAtPosition(startPos, lines)
 
     // Determine which position comes first (start of drag vs current position)
-    const isStartBeforeEnd =
-      startPos.line < endPos.line ||
-      (startPos.line === endPos.line && startPos.column <= endPos.column)
+    const isStartBeforeEnd = startPos.line < endPos.line
+      || (startPos.line === endPos.line && startPos.column <= endPos.column)
 
     const firstPos = isStartBeforeEnd ? startPos : endPos
     const lastPos = isStartBeforeEnd ? endPos : startPos
@@ -452,9 +462,9 @@ export class MouseHandler {
 
     // If both positions are in the same word, just return that word
     if (
-      firstWord.start.line === lastWord.start.line &&
-      firstWord.start.column === lastWord.start.column &&
-      firstWord.end.column === lastWord.end.column
+      firstWord.start.line === lastWord.start.line
+      && firstWord.start.column === lastWord.start.column
+      && firstWord.end.column === lastWord.end.column
     ) {
       return firstWord
     }
@@ -472,9 +482,8 @@ export class MouseHandler {
     lines: string[],
   ): { start: { line: number; column: number }; end: { line: number; column: number } } {
     // Determine which position comes first (start of drag vs current position)
-    const isStartBeforeEnd =
-      startPos.line < endPos.line ||
-      (startPos.line === endPos.line && startPos.column <= endPos.column)
+    const isStartBeforeEnd = startPos.line < endPos.line
+      || (startPos.line === endPos.line && startPos.column <= endPos.column)
 
     const firstLine = isStartBeforeEnd ? startPos.line : endPos.line
     const lastLine = isStartBeforeEnd ? endPos.line : startPos.line

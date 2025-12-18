@@ -242,8 +242,21 @@ export interface EditorHeader {
   /** Height in pixels */
   height: number
   /** Called to render the header */
-  render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, viewX: number,
-    viewWidth: number): void
+  render(
+    canvasCtx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    viewX: number,
+    viewWidth: number,
+  ): void
+  /** Called when header is clicked */
+  pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
+  /** Called when pointer moves while header is active */
+  pointerMove?(x: number, y: number, offsetX: number, offsetY: number): void
+  /** Called when pointer is released */
+  pointerUp?(): void
 }
 
 export interface CanvasEditorCallbacks {
@@ -361,6 +374,7 @@ export class CanvasEditor {
   private drawRaf: number | null = null
   private activeWidget: EditorWidget | null = null
   private isWidgetPointerDown = false
+  private isHeaderPointerDown = false
   private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
   private activeWidgetPosition: { x: number; y: number; width: number; height: number } | null = null
   private widgetUpdateTimeout: number | null = null
@@ -951,8 +965,8 @@ export class CanvasEditor {
 
     // Add extra height for widgets
     const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
-    const lastOffset = widgetLayout.yOffsets.get(wrappedLines.length - 1) || 0
-    height += lastOffset
+    const totalOffset = widgetLayout.yOffsets.get(wrappedLines.length) || 0
+    height += totalOffset
 
     return { width, height }
   }
@@ -1891,7 +1905,11 @@ export class CanvasEditor {
       this.lastCaretActivityTime = performance.now()
       this.caretOpacity = 1
     }
-    if (this.isActive && (ensureCaretVisible || linesChanged)) this.ensureCaretVisible(wasAtBottom)
+    if (this.isActive && (ensureCaretVisible || linesChanged)) {
+      queueMicrotask(() => {
+        this.ensureCaretVisible(wasAtBottom)
+      })
+    }
     this.maybeDraw()
     // Only update autocomplete when text changes (typing), not on navigation
     if (linesChanged) {
@@ -2526,8 +2544,8 @@ export class CanvasEditor {
     // Add extra height for widgets
     const wrappedLines = this.getWrappedLines(ctx)
     const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
-    const lastOffset = widgetLayout.yOffsets.get(wrappedLines.length - 1) || 0
-    height += lastOffset
+    const totalOffset = widgetLayout.yOffsets.get(wrappedLines.length) || 0
+    height += totalOffset
 
     return { width, height }
   }
@@ -3264,6 +3282,10 @@ export class CanvasEditor {
       }
     }
 
+    // Also store the total extra offset after the final line so content height can include
+    // widgets on the last line (yOffsets[N] is "offset before line N").
+    yOffsets.set(wrappedLines.length, cumulativeOffset)
+
     // Store widget adjustments for use in drawing
     this.widgetAdjustments = widgetAdjustments
 
@@ -3324,9 +3346,9 @@ export class CanvasEditor {
     const clampedScrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
 
     if (clampedScrollX !== this.scrollX || clampedScrollY !== this.scrollY) {
-      this.scrollX = clampedScrollX
-      this.scrollY = clampedScrollY
-      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      // this.scrollX = clampedScrollX
+      // this.scrollY = clampedScrollY
+      // this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
     }
 
     // Calculate widget layout once for all drawing operations
@@ -4956,6 +4978,43 @@ export class CanvasEditor {
         }
       }
     })
+  }
+
+  public isHeaderPointerActive(): boolean {
+    return this.isHeaderPointerDown && !!this.options.header
+  }
+
+  public handleHeaderPointerDown(x: number, y: number): boolean {
+    const header = this.options.header
+    if (!header) return false
+    const headerHeight = this.getHeaderHeight()
+    if (headerHeight <= 0 || y < 0 || y > headerHeight) {
+      return false
+    }
+
+    this.isHeaderPointerDown = true
+    const offsetX = x
+    const offsetY = y
+    header.pointerDown?.(x, y, offsetX, offsetY)
+    header.pointerMove?.(x, y, offsetX, offsetY)
+    return true
+  }
+
+  public handleHeaderPointerMove(x: number, y: number): boolean {
+    if (!this.isHeaderPointerDown) return false
+    const header = this.options.header
+    if (!header) return false
+
+    const offsetX = x
+    const offsetY = y
+    header.pointerMove?.(x, y, offsetX, offsetY)
+    return true
+  }
+
+  public handleHeaderPointerUp(): void {
+    if (!this.isHeaderPointerDown) return
+    this.isHeaderPointerDown = false
+    this.options.header?.pointerUp?.()
   }
 
   public handleWidgetPointerDown(x: number, y: number): boolean {

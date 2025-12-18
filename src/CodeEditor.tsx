@@ -1015,6 +1015,14 @@ export const CodeEditor = ({
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
 
+      // Check if clicking on the header before widgets
+      const headerHandled = canvasEditorRef.current?.handleHeaderPointerDown(x, y)
+      if (headerHandled) {
+        setActiveEditor(editorIdRef.current)
+        isHandlingPointerRef.current = false
+        return
+      }
+
       // Check if clicking on a widget - this must be checked first
       const widgetHandled = canvasEditorRef.current?.handleWidgetPointerDown(x, y)
       if (widgetHandled) {
@@ -1092,6 +1100,13 @@ export const CodeEditor = ({
       const x = event.clientX - rect.left
       const y = event.clientY - rect.top
 
+      if (canvasEditorRef.current?.handleHeaderPointerMove(x, y)) {
+        if (event.pointerType === 'touch') {
+          event.preventDefault()
+        }
+        return
+      }
+
       // Handle widget pointer move first (before any other checks)
       canvasEditorRef.current?.handleWidgetPointerMove(x, y)
 
@@ -1157,6 +1172,13 @@ export const CodeEditor = ({
       // Clear scrollbar hover if pointer is outside canvas bounds, but only if not holding a button
       if (event.buttons === 0 && (x < 0 || x > rect.width || y < 0 || y > rect.height)) {
         canvasEditorRef.current?.setScrollbarHover(null)
+      }
+
+      if (canvasEditorRef.current?.handleHeaderPointerMove(x, y)) {
+        if (event.pointerType === 'touch') {
+          event.preventDefault()
+        }
+        return
       }
 
       // Handle widget pointer move if widget is active (before any other checks)
@@ -1244,6 +1266,14 @@ export const CodeEditor = ({
       // For window events, only handle if it's for this editor's canvas
       const canvas = canvasRef.current
       if (!canvas) return
+
+      const wasHeaderActive = canvasEditorRef.current?.isHeaderPointerActive()
+      if (wasHeaderActive) {
+        canvasEditorRef.current?.handleHeaderPointerUp()
+        event.preventDefault()
+        lastMousePositionRef.current = { x: 0, y: 0, event: null }
+        return
+      }
 
       // If we're dragging a scrollbar, clear the state even if pointer is released outside canvas
       if (isDraggingScrollbarRef.current) {
