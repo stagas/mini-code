@@ -4014,9 +4014,10 @@ export class CanvasEditor {
           preCalculatedCaretContentX,
         )
 
+        const headerHeight = this.getHeaderHeight()
         const newPopupPosition = {
           x: position.x,
-          y: position.y,
+          y: position.y + headerHeight,
         }
 
         // Only update if position actually changed
@@ -4371,8 +4372,12 @@ export class CanvasEditor {
             contentY,
             contentX,
           )
+          const headerHeight = this.getHeaderHeight()
 
-          const newPosition = { x: Math.round(position.x), y: Math.round(position.y) }
+          const newPosition = {
+            x: Math.round(position.x),
+            y: Math.round(position.y + headerHeight),
+          }
 
           // Only update if position actually changed
           const positionChanged = !this.lastAutocompletePosition
