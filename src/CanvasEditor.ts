@@ -2537,7 +2537,7 @@ export class CanvasEditor {
 
   private ensureCaretVisible(wasAtBottom = false) {
     if (this.isWidgetPointerDown) return
-    // return
+
     const ctx = this.canvas.getContext('2d')
     if (!ctx) return
 
@@ -2680,8 +2680,11 @@ export class CanvasEditor {
     nextScrollY = Math.min(Math.max(nextScrollY, 0), maxScrollY)
 
     if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-      // this.scrollX = nextScrollX
-      // this.scrollY = nextScrollY
+      this.scrollX = nextScrollX
+      this.scrollY = nextScrollY
+      queueMicrotask(() => {
+        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      })
       // This eliminates a weird flicker probably caused by some other reactive change
       requestAnimationFrame(() => {
         this.scrollX = nextScrollX
@@ -4462,24 +4465,24 @@ export class CanvasEditor {
       this.updateAutocomplete(true)
 
       // Preserve bottom scroll position after draw if we were at the bottom
-      if (wasAtBottom && drawCtx && this.isActive) {
-        this.setFont(drawCtx)
-        const wrappedLines = this.getWrappedLines(drawCtx)
-        const newContentSize = this.options.wordWrap
-          ? this.getContentSizeWithWrapping(drawCtx, wrappedLines)
-          : this.getContentSize(drawCtx)
-        const dpr = window.devicePixelRatio || 1
-        const viewportHeight = this.canvas.height / dpr
-        const maxScrollY = Math.max(0, newContentSize.height - viewportHeight)
-        if (this.scrollY < maxScrollY) {
-          this.scrollY = maxScrollY
-          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
-          // Redraw to reflect the corrected scroll position
-          this.maybeDraw()
-          this.updateFunctionSignature()
-          this.updateAutocomplete(true)
-        }
-      }
+      // if (wasAtBottom && drawCtx && this.isActive) {
+      //   this.setFont(drawCtx)
+      //   const wrappedLines = this.getWrappedLines(drawCtx)
+      //   const newContentSize = this.options.wordWrap
+      //     ? this.getContentSizeWithWrapping(drawCtx, wrappedLines)
+      //     : this.getContentSize(drawCtx)
+      //   const dpr = window.devicePixelRatio || 1
+      //   const viewportHeight = this.canvas.height / dpr
+      //   const maxScrollY = Math.max(0, newContentSize.height - viewportHeight)
+      //   if (this.scrollY < maxScrollY) {
+      //     // this.scrollY = maxScrollY
+      //     this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      //     // Redraw to reflect the corrected scroll position
+      //     this.maybeDraw()
+      //     this.updateFunctionSignature()
+      //     this.updateAutocomplete(true)
+      //   }
+      // }
     })
   }
 

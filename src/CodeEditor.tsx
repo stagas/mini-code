@@ -283,9 +283,9 @@ export const CodeEditor = ({
       // Update scroll position if it changed from what we last set
       if (state.scrollX !== lastScrollRef.current.x || state.scrollY !== lastScrollRef.current.y) {
         lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
-        requestAnimationFrame(() => {
-          canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
-        })
+        // requestAnimationFrame(() => {
+        //   canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
+        // })
       }
     })
 
@@ -787,8 +787,8 @@ export const CodeEditor = ({
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
       // Update CodeFile scroll position and track it
       lastScrollRef.current = { x: sx, y: sy }
-      codeFileRef.current.scrollX = sx
-      codeFileRef.current.scrollY = sy
+      // codeFileRef.current.scrollX = sx
+      // codeFileRef.current.scrollY = sy
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
@@ -823,8 +823,8 @@ export const CodeEditor = ({
         }
         // Update CodeFile scroll position and track it
         lastScrollRef.current = { x: sx, y: sy }
-        codeFileRef.current.scrollX = sx
-        codeFileRef.current.scrollY = sy
+        // codeFileRef.current.scrollX = sx
+        // codeFileRef.current.scrollY = sy
 
         // Update selection during auto-scroll when dragging
         if (mouseHandlerRef.current?.isDraggingSelection() && lastMousePositionRef.current.event) {
@@ -886,7 +886,7 @@ export const CodeEditor = ({
     canvasEditorRef.current.setActive(currentActive)
 
     // Restore scroll position from CodeFile (synchronously, no delay)
-    canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
+    // canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
 
     // Wire up word-wrap-aware movement to the input handler
     if (inputHandlerRef.current) {
@@ -970,8 +970,13 @@ export const CodeEditor = ({
       canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible, widgetPositions || undefined)
     }
     else if (widgetsChanged) {
-      // Only widgets changed - update immediately
+      // Only widgets changed - update immediately and ensure caret visibility if this was user input
+      const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
+      isUserInputRef.current = false
+      skipEnsureCaretVisibleRef.current = false
       canvasEditorRef.current?.updateWidgets(widgets)
+      // Call updateState with current inputState to trigger ensureCaretVisible when appropriate
+      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
     }
   }, [inputState, widgets])
 
