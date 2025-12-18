@@ -3481,7 +3481,7 @@ export class CanvasEditor {
             const showVBar = content.height > height + 1
             const viewX = this.scrollX + textPadding
             const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
+            widget.render(ctx, widgetX, widgetY - 2.5, widgetWidth, widgetHeight, viewX, viewWidth)
           }
         }
         // Advance y by the base height (not adjusted) so line spacing isn't affected
