@@ -3741,8 +3741,10 @@ export class CanvasEditor {
     if (this.options.gutter) {
       const gutterWidth = this.getGutterWidth()
       const errorLineSet = new Set(this.errors.map(e => e.line))
+      const headerHeight = this.getHeaderHeight()
+      const contentHeight = height - headerHeight
 
-      // Draw gutter background
+      // Draw gutter background (covers header and content area)
       ctx.fillStyle = theme.gutterBackground
       ctx.fillRect(0, 0, this.padding + gutterWidth, height)
 
@@ -3755,13 +3757,11 @@ export class CanvasEditor {
       ctx.stroke()
 
       // Draw line numbers (convert from content space to screen space)
-      const visibleStartY = this.scrollY
-      const visibleEndY = this.scrollY + height
-
       wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
         const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
         const yContent = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
-        let yScreen = yContent - this.scrollY
+        // Account for header: content is rendered starting at headerHeight on screen
+        let yScreen = yContent - this.scrollY + headerHeight
 
         // Check if this line has 'above' widgets - if so, position line number at bottom (next to code)
         const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
@@ -3772,8 +3772,8 @@ export class CanvasEditor {
           yScreen += aboveHeight
         }
 
-        // Skip lines outside the visible viewport
-        if (yScreen + this.lineHeight < 0 || yScreen > height) {
+        // Skip lines outside the visible content viewport (accounting for header)
+        if (yScreen + this.lineHeight < headerHeight || yScreen > headerHeight + contentHeight) {
           return
         }
 
