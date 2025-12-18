@@ -147,7 +147,7 @@ const FunctionSignaturePopup = ({
 
   let finalX = adjustedX
   let finalY = adjustedY
-  let maxWidth: number | undefined = undefined
+  let maxWidthStyle: number | undefined = undefined
 
   if (!measuredSize) {
     // First render: position off-screen to allow measurement without constraint
@@ -163,6 +163,8 @@ const FunctionSignaturePopup = ({
     const effectiveViewportWidth = containerRect ? containerRect.width : viewportWidth
     const effectiveViewportHeight = containerRect ? containerRect.height : viewportHeight
     const effectiveMargin = margin
+    const availableWidth = Math.max(effectiveViewportWidth - 2 * effectiveMargin, 0)
+    maxWidthStyle = availableWidth > 0 ? availableWidth : undefined
 
     // HORIZONTAL: Try to fit at natural width, shift left if needed
     const rightEdge = adjustedX + popupWidth
@@ -170,7 +172,6 @@ const FunctionSignaturePopup = ({
     if (rightEdge <= effectiveViewportWidth - effectiveMargin) {
       // Fits at cursor position
       finalX = adjustedX
-      maxWidth = undefined
     }
     else {
       // Would overflow right edge - try shifting left
@@ -179,12 +180,10 @@ const FunctionSignaturePopup = ({
       if (shiftedX >= effectiveMargin) {
         // Can fit by shifting left
         finalX = shiftedX
-        maxWidth = undefined
       }
       else {
         // Too wide even when shifted - constrain width
         finalX = effectiveMargin
-        maxWidth = effectiveViewportWidth - 2 * effectiveMargin
       }
     }
 
@@ -294,7 +293,7 @@ const FunctionSignaturePopup = ({
         borderColor: theme.functionSignaturePopup.border,
         borderWidth: '1px',
         borderStyle: 'solid',
-        ...(maxWidth ? { maxWidth: `${maxWidth}px` } : {}),
+        ...(maxWidthStyle ? { maxWidth: `${maxWidthStyle}px` } : {}),
       }}
     >
       <div className="p-3">

@@ -228,7 +228,8 @@ export interface EditorWidget {
   /** Height in pixels (optional: defaults to 20 for above/below, lineHeight for overlay/inline) */
   height?: number
   /** Called to render the widget */
-  render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number): void
+  render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, viewX: number,
+    viewWidth: number): void
   /** Called when widget is clicked (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
   pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
   /** Called when pointer moves (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
@@ -299,6 +300,9 @@ export class CanvasEditor {
   private touchStartTime: number = 0
   private velocitySamples: Array<{ time: number; vx: number; vy: number }> = []
   private lastFunctionCallInfo: FunctionCallInfo | null = null
+  // When user explicitly hides the signature popup (e.g. pressing Escape),
+  // suppress reopening it until input/caret changes.
+  private suppressSignatureUntil: { line: number; column: number; text: string } | null = null
   private lastPopupPosition: {
     x: number
     y: number
@@ -2676,10 +2680,15 @@ export class CanvasEditor {
     nextScrollY = Math.min(Math.max(nextScrollY, 0), maxScrollY)
 
     if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-      this.scrollX = nextScrollX
-      this.scrollY = nextScrollY
-      queueMicrotask(() => {
-        this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      // this.scrollX = nextScrollX
+      // this.scrollY = nextScrollY
+      // This eliminates a weird flicker probably caused by some other reactive change
+      requestAnimationFrame(() => {
+        this.scrollX = nextScrollX
+        this.scrollY = nextScrollY
+        queueMicrotask(() => {
+          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+        })
       })
     }
   }
@@ -3364,7 +3373,11 @@ export class CanvasEditor {
 
         const widgetHeight = this.getWidgetHeight(widget)
         if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight)
+          // View area (content-space) excluding gutter/padding and scrollbar width
+          const showVBar = content.height > height + 1
+          const viewX = this.scrollX + textPadding
+          const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight, viewX, viewWidth)
         }
       }
     }
@@ -3410,7 +3423,10 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
+            const showVBar = content.height > height + 1
+            const viewX = this.scrollX + textPadding
+            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
           }
         }
         // Advance y by the base height (not adjusted) so line spacing isn't affected
@@ -3495,7 +3511,16 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
+            const showVBar = content.height > height + 1
+            const viewX = this.scrollX + textPadding
+            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
+          }
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            const showVBar = content.height > height + 1
+            const viewX = this.scrollX + textPadding
+            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
           }
           currentX += widgetWidth
         }
@@ -3561,7 +3586,10 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
+            const showVBar = content.height > height + 1
+            const viewX = this.scrollX + textPadding
+            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
           }
           currentX += widgetWidth
           lastColumn = columnInWrappedLine
@@ -3600,7 +3628,10 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight)
+            const showVBar = content.height > height + 1
+            const viewX = this.scrollX + textPadding
+            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
           }
         }
       }
@@ -3802,6 +3833,20 @@ export class CanvasEditor {
 
   private updateFunctionSignature() {
     if (!this.isActive || !this.signatureEnabled) return
+    // If the user recently hid the signature popup explicitly (e.g. pressed Escape),
+    // and the caret/text haven't changed since, keep it suppressed.
+    if (this.suppressSignatureUntil) {
+      const s = this.suppressSignatureUntil
+      const currentText = this.inputState.lines.join('\n')
+      const sameCaret = this.inputState.caret.line === s.line && this.inputState.caret.column === s.column
+      const sameText = currentText === s.text
+      if (sameCaret && sameText) {
+        // Still suppressed — don't compute or reopen the popup.
+        return
+      }
+      // Caret or text changed — clear suppression and continue.
+      this.suppressSignatureUntil = null
+    }
     const callInfo = findFunctionCallContext(
       this.inputState.lines,
       this.inputState.caret.line,
@@ -4063,6 +4108,19 @@ export class CanvasEditor {
     if (this.lastFunctionCallInfo !== null) {
       this.lastFunctionCallInfo = null
       this.callbacks.onFunctionCallChange?.(null)
+    }
+    // Suppress immediate reopening of the popup until the caret or text changes.
+    // Store current caret position and text snapshot.
+    try {
+      this.suppressSignatureUntil = {
+        line: this.inputState.caret.line,
+        column: this.inputState.caret.column,
+        text: this.inputState.lines.join('\n'),
+      }
+    }
+    catch {
+      // Defensive: if inputState not available for some reason, clear suppression.
+      this.suppressSignatureUntil = null
     }
   }
 
