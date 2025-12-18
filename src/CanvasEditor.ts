@@ -238,6 +238,14 @@ export interface EditorWidget {
   pointerUp?(): void
 }
 
+export interface EditorHeader {
+  /** Height in pixels */
+  height: number
+  /** Called to render the header */
+  render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, viewX: number,
+    viewWidth: number): void
+}
+
 export interface CanvasEditorCallbacks {
   onFunctionCallChange?: (callInfo: FunctionCallInfo | null) => void
   onPopupPositionChange?: (position: { x: number; y: number }) => void
@@ -262,6 +270,7 @@ export interface CanvasEditorOptions {
   theme?: Theme
   tokenizer?: Tokenizer
   widgets?: EditorWidget[]
+  header?: EditorHeader
   isAnimating?: boolean
   onBeforeDraw?: () => void
 }
@@ -630,6 +639,10 @@ export class CanvasEditor {
       return 20
     }
     return this.lineHeight
+  }
+
+  private getHeaderHeight(): number {
+    return this.options.header?.height ?? 0
   }
 
   private getWrappedLines(ctx: CanvasRenderingContext2D): WrappedLine[] {
@@ -1359,11 +1372,14 @@ export class CanvasEditor {
     }
 
     // Adjust vertical scroll to keep content visible
-    if (newHeight < oldHeight) {
+    const headerHeight = this.getHeaderHeight()
+    const oldContentHeight = oldHeight - headerHeight
+    const newContentHeight = newHeight - headerHeight
+    if (newContentHeight < oldContentHeight) {
       // Canvas got shorter - adjust scroll to keep bottom edge visible
-      const bottomEdge = this.scrollY + oldHeight
-      if (bottomEdge > newHeight) {
-        this.scrollY = Math.max(0, bottomEdge - newHeight)
+      const bottomEdge = this.scrollY + oldContentHeight
+      if (bottomEdge > newContentHeight) {
+        this.scrollY = Math.max(0, bottomEdge - newContentHeight)
       }
     }
 
@@ -1386,8 +1402,9 @@ export class CanvasEditor {
     const wrappedLines = this.getWrappedLines(ctx)
     const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
 
-    // Adjust for scroll offset
-    const adjustedY = y + this.scrollY
+    // Adjust for scroll offset and header offset
+    const headerHeight = this.getHeaderHeight()
+    const adjustedY = y - headerHeight + this.scrollY
     const adjustedX = x + this.scrollX
 
     // Calculate visual line number accounting for widget heights
@@ -1847,7 +1864,8 @@ export class CanvasEditor {
         ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
         : this.getContentSize(ctx)
       const dpr = window.devicePixelRatio || 1
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
       const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
       wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
     }
@@ -1963,7 +1981,8 @@ export class CanvasEditor {
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
-    const viewportHeight = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const viewportHeight = (this.canvas.height / dpr) - headerHeight
     const contentSize = this.options.wordWrap
       ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
       : this.getContentSize(ctx)
@@ -2005,7 +2024,8 @@ export class CanvasEditor {
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
-    const viewportHeight = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const viewportHeight = (this.canvas.height / dpr) - headerHeight
     const contentSize = this.options.wordWrap
       ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
       : this.getContentSize(ctx)
@@ -2055,7 +2075,8 @@ export class CanvasEditor {
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
-    const viewportHeight = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const viewportHeight = (this.canvas.height / dpr) - headerHeight
     const wrappedLines = this.getWrappedLines(ctx)
     const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
     return {
@@ -2142,7 +2163,8 @@ export class CanvasEditor {
     const handleWheel = (e: WheelEvent) => {
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) return
@@ -2285,7 +2307,8 @@ export class CanvasEditor {
 
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) return
@@ -2361,7 +2384,8 @@ export class CanvasEditor {
 
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) return
@@ -2545,7 +2569,8 @@ export class CanvasEditor {
 
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
-    const viewportHeight = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
     let caretX: number, caretTop: number, caretBottom: number
     let contentSize: { width: number; height: number }
@@ -2700,11 +2725,12 @@ export class CanvasEditor {
     const rect = this.canvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
     const viewportWidth = this.canvas.width / dpr
-    const viewportHeight = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
     // Convert window coordinates to canvas-relative coordinates
     const canvasX = windowX - rect.left
-    const canvasY = windowY - rect.top
+    const canvasY = windowY - rect.top - headerHeight
 
     const boundaryZone = 20
     let scrollX = 0
@@ -2794,7 +2820,8 @@ export class CanvasEditor {
 
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
@@ -2892,7 +2919,8 @@ export class CanvasEditor {
 
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
@@ -3251,6 +3279,8 @@ export class CanvasEditor {
     // Use canvas dimensions instead of getBoundingClientRect to avoid layout reflow
     const width = this.canvas.width / (window.devicePixelRatio || 1)
     const height = this.canvas.height / (window.devicePixelRatio || 1)
+    const headerHeight = this.getHeaderHeight()
+    const contentHeight = height - headerHeight
 
     // Configure text rendering
     this.setFont(ctx)
@@ -3283,13 +3313,13 @@ export class CanvasEditor {
       ctx.fillRect(0, 0, width, height)
     }
 
-    // Publish metrics for consumers
+    // Publish metrics for consumers (use content height for viewport)
     const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
-    this.publishScrollMetrics(ctx, width, height, content.width, content.height)
+    this.publishScrollMetrics(ctx, width, contentHeight, content.width, content.height)
 
-    // Clamp scroll position to content bounds before drawing
+    // Clamp scroll position to content bounds before drawing (use content height)
     const maxScrollX = Math.max(0, content.width - width)
-    const maxScrollY = Math.max(0, content.height - height)
+    const maxScrollY = Math.max(0, content.height - contentHeight)
     const clampedScrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
     const clampedScrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
 
@@ -3303,9 +3333,9 @@ export class CanvasEditor {
     const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
     this.widgetPositions.clear()
 
-    // Apply scroll offset for content rendering
+    // Apply scroll offset and header offset for content rendering
     ctx.save()
-    ctx.translate(-this.scrollX, -this.scrollY)
+    ctx.translate(-this.scrollX, headerHeight - this.scrollY)
 
     // Draw selection background if exists
     if (this.inputState.selection) {
@@ -3315,7 +3345,7 @@ export class CanvasEditor {
         this.inputState,
         wrappedLines,
         this.scrollY,
-        height,
+        contentHeight,
         widgetLayout.yOffsets,
         widgetLayout.widgetsByVisualLine,
         widgetLayout.inlineWidgets,
@@ -3327,7 +3357,7 @@ export class CanvasEditor {
 
     // Calculate visible line range for viewport culling
     const visibleStartY = this.scrollY
-    const visibleEndY = this.scrollY + height
+    const visibleEndY = this.scrollY + contentHeight
 
     // Draw overlay widgets behind text (no pointer events, truly behind)
     for (const widget of widgetLayout.overlayWidgets) {
@@ -3769,6 +3799,15 @@ export class CanvasEditor {
 
     // Draw scrollbars (after restore so they're not affected by scroll transform)
     this.drawScrollbars(ctx, width, height, theme)
+
+    // Draw header if present
+    if (this.options.header) {
+      const textPadding = this.getTextPadding()
+      const showVBar = content.height > contentHeight + 1
+      const viewX = textPadding
+      const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+      this.options.header.render(ctx, 0, 0, width, headerHeight, viewX, viewWidth)
+    }
   }
 
   private maybeDraw() {
@@ -3792,22 +3831,24 @@ export class CanvasEditor {
     height: number,
     theme: Theme,
   ) {
-    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+    const headerHeight = this.getHeaderHeight()
+    const contentHeight = height - headerHeight
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight: contentTotalHeight } = this.scrollMetrics
 
-    const showVBar = contentHeight > viewportHeight + 1
+    const showVBar = contentTotalHeight > viewportHeight + 1
     const showHBar = contentWidth > viewportWidth + 1
 
-    // Vertical scrollbar
+    // Vertical scrollbar (positioned below header)
     if (showVBar) {
-      const trackHeight = height
-      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const trackHeight = contentHeight
+      const thumbHeight = Math.max(20, (viewportHeight / contentTotalHeight) * trackHeight)
       const maxTravel = trackHeight - thumbHeight
-      const thumbTop = (this.scrollY / Math.max(1, contentHeight - viewportHeight)) * maxTravel
+      const thumbTop = headerHeight + (this.scrollY / Math.max(1, contentTotalHeight - viewportHeight)) * maxTravel
 
       // Draw track (optional, currently transparent)
       if (theme.scrollbarTrack !== 'transparent') {
         ctx.fillStyle = theme.scrollbarTrack
-        ctx.fillRect(width - this.scrollbarWidth, 0, this.scrollbarWidth, height)
+        ctx.fillRect(width - this.scrollbarWidth, headerHeight, this.scrollbarWidth, contentHeight)
       }
 
       // Draw thumb
@@ -4000,14 +4041,15 @@ export class CanvasEditor {
     const dpr = window.devicePixelRatio || 1
     const width = this.canvas.width / dpr
     const height = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
 
     const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
 
     const showVBar = contentHeight > viewportHeight + 1
     const showHBar = contentWidth > viewportWidth + 1
 
-    // Check vertical scrollbar
-    if (showVBar && x >= width - this.scrollbarWidth && x <= width) {
+    // Check vertical scrollbar (only in content area, below header)
+    if (showVBar && x >= width - this.scrollbarWidth && x <= width && y >= headerHeight) {
       return 'vertical'
     }
 
@@ -4030,14 +4072,17 @@ export class CanvasEditor {
     const dpr = window.devicePixelRatio || 1
     const width = this.canvas.width / dpr
     const height = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const contentHeight = height - headerHeight
 
-    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight: contentTotalHeight } = this.scrollMetrics
 
     if (scrollbar === 'vertical') {
-      const trackHeight = height
-      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const trackHeight = contentHeight
+      const thumbHeight = Math.max(20, (viewportHeight / contentTotalHeight) * trackHeight)
       const maxTravel = trackHeight - thumbHeight
-      const thumbTop = (this.scrollY / Math.max(1, contentHeight - viewportHeight)) * maxTravel
+      const thumbTop = headerHeight + (this.scrollY / Math.max(1, contentTotalHeight - viewportHeight)) * maxTravel
+      const yRelative = y - headerHeight
 
       // Check if clicking on thumb
       if (y >= thumbTop && y <= thumbTop + thumbHeight) {
@@ -4045,8 +4090,8 @@ export class CanvasEditor {
       }
 
       // Click on track - jump to position
-      const targetThumbTop = Math.max(0, Math.min(y - thumbHeight / 2, maxTravel))
-      const scrollY = (targetThumbTop / maxTravel) * Math.max(1, contentHeight - viewportHeight)
+      const targetThumbTop = Math.max(0, Math.min(yRelative - thumbHeight / 2, maxTravel))
+      const scrollY = (targetThumbTop / maxTravel) * Math.max(1, contentTotalHeight - viewportHeight)
       this.setScroll(null, Math.round(scrollY))
       return false
     }
@@ -4073,14 +4118,16 @@ export class CanvasEditor {
     const dpr = window.devicePixelRatio || 1
     const width = this.canvas.width / dpr
     const height = this.canvas.height / dpr
+    const headerHeight = this.getHeaderHeight()
+    const contentHeight = height - headerHeight
 
-    const { viewportWidth, viewportHeight, contentWidth, contentHeight } = this.scrollMetrics
+    const { viewportWidth, viewportHeight, contentWidth, contentHeight: contentTotalHeight } = this.scrollMetrics
 
     if (scrollbar === 'vertical') {
-      const trackHeight = height
-      const thumbHeight = Math.max(20, (viewportHeight / contentHeight) * trackHeight)
+      const trackHeight = contentHeight
+      const thumbHeight = Math.max(20, (viewportHeight / contentTotalHeight) * trackHeight)
       const maxTravel = Math.max(1, trackHeight - thumbHeight)
-      const contentScrollable = Math.max(1, contentHeight - viewportHeight)
+      const contentScrollable = Math.max(1, contentTotalHeight - viewportHeight)
       const scrollDelta = (dy / maxTravel) * contentScrollable
       this.setScroll(null, Math.max(0, Math.min(this.scrollY + scrollDelta, contentScrollable)))
     }
@@ -4445,7 +4492,8 @@ export class CanvasEditor {
         ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
         : this.getContentSize(ctx)
       const dpr = window.devicePixelRatio || 1
-      const viewportHeight = this.canvas.height / dpr
+      const headerHeight = this.getHeaderHeight()
+      const viewportHeight = (this.canvas.height / dpr) - headerHeight
       const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
       wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
     }

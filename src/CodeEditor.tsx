@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import AutocompletePopup from './AutocompletePopup.tsx'
-import { CanvasEditor, type CanvasEditorCallbacks, type EditorWidget } from './CanvasEditor.ts'
+import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile } from './CodeFile.ts'
 import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
 import {
@@ -33,6 +33,7 @@ interface CodeEditorProps {
   functionDefinitions?: Record<string, FunctionSignature>
   errors?: EditorError[]
   widgets?: EditorWidget[]
+  header?: EditorHeader
   canvasRef?: React.RefObject<HTMLCanvasElement>
   autoHeight?: boolean
   keyOverride?: KeyOverrideFunction
@@ -53,6 +54,7 @@ export const CodeEditor = ({
   functionDefinitions = defaultFunctionDefinitions,
   errors = [],
   widgets = [],
+  header,
   canvasRef: extCanvasRef,
   autoHeight = false,
   keyOverride,
@@ -867,6 +869,7 @@ export const CodeEditor = ({
         theme,
         tokenizer,
         widgets,
+        header,
         isAnimating,
         onBeforeDraw,
       },
