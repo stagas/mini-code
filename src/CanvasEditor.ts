@@ -2755,6 +2755,19 @@ export class CanvasEditor {
     let scrollX = 0
     let scrollY = 0
 
+    // Get content size to check scroll boundaries
+    const ctx = this.canvas.getContext('2d')
+    let maxScrollX = 0
+    let maxScrollY = 0
+    if (ctx) {
+      this.setFont(ctx)
+      const contentSize = this.options.wordWrap
+        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+        : this.getContentSize(ctx)
+      maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+      maxScrollY = Math.max(0, contentSize.height - viewportHeight)
+    }
+
     // Check if mouse is outside canvas bounds
     const isOutsideX = canvasX < 0 || canvasX > viewportWidth
     const isOutsideY = canvasY < 0 || canvasY > viewportHeight
@@ -2792,6 +2805,12 @@ export class CanvasEditor {
         scrollY = 1
       }
     }
+
+    // Don't scroll if already at boundary
+    if (scrollX < 0 && this.scrollX <= 0) scrollX = 0
+    if (scrollX > 0 && this.scrollX >= maxScrollX) scrollX = 0
+    if (scrollY < 0 && this.scrollY <= 0) scrollY = 0
+    if (scrollY > 0 && this.scrollY >= maxScrollY) scrollY = 0
 
     if (scrollX === 0 && scrollY === 0) {
       this.stopAutoScroll()
