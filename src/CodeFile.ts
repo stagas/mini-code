@@ -159,16 +159,60 @@ export class CodeFile {
     this.notifyListeners()
   }
 
+  edit(line: number, column: number, length: number, text: string): void {
+    const beforeState = this.inputStateToHistoryState(this._inputState)
+    this._history.saveDebouncedBeforeState(beforeState)
+
+    const startIndex = this.getIndexFromPosition(line, column)
+    const clampedLength = Math.max(0, Math.min(length, this._value.length - startIndex))
+    const newValue = this._value.slice(0, startIndex) + text + this._value.slice(startIndex + clampedLength)
+    const newLines = newValue.split('\n')
+
+    this._value = newValue
+    this._inputState = {
+      ...this._inputState,
+      lines: newLines,
+    }
+
+    const afterState = this.inputStateToHistoryState(this._inputState)
+    this._history.saveDebouncedAfterState(afterState)
+
+    this.notifyListeners()
+  }
+
   private inputStateToHistoryState(inputState: InputState) {
     return {
       lines: [...inputState.lines],
       caret: { ...inputState.caret },
       selection: inputState.selection
         ? {
-            start: { ...inputState.selection.start },
-            end: { ...inputState.selection.end },
-          }
+          start: { ...inputState.selection.start },
+          end: { ...inputState.selection.end },
+        }
         : null,
     }
+  }
+
+  private getIndexFromPosition(line: number, column: number) {
+    const lines = this._inputState.lines
+    const normalizedLine = Math.max(0, line)
+    const normalizedColumn = Math.max(0, column)
+    const totalLines = lines.length
+    const lineLimit = Math.min(normalizedLine, totalLines)
+    let prefixLength = 0
+
+    for (let i = 0; i < lineLimit; i++) {
+      prefixLength += lines[i].length
+    }
+
+    const newlineCount = totalLines > 0
+      ? Math.max(0, Math.min(normalizedLine, totalLines - 1))
+      : 0
+    const lineExists = normalizedLine < totalLines
+    const safeColumn = lineExists
+      ? Math.min(normalizedColumn, lines[normalizedLine].length)
+      : 0
+
+    return prefixLength + newlineCount + safeColumn
   }
 }

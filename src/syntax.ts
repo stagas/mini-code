@@ -121,6 +121,7 @@ export const defaultTheme: Theme = {
 export interface Token {
   type: string
   content: string
+  color?: string
   length: number
 }
 
@@ -165,7 +166,8 @@ export const highlightCode = (
       for (const token of tokensWithBraces) {
         if (token.type.startsWith('brace-open-')) {
           globalBraceDepth++
-        } else if (token.type.startsWith('brace-close-')) {
+        }
+        else if (token.type.startsWith('brace-close-')) {
           globalBraceDepth = Math.max(0, globalBraceDepth - 1)
         }
       }
@@ -177,7 +179,8 @@ export const highlightCode = (
     }
 
     return highlightedLines
-  } catch (error) {
+  }
+  catch (error) {
     // Fallback to plain text if highlighting fails
     return code.split('\n').map(line => ({
       tokens: [{ type: 'default', content: line, length: line.length }],
@@ -215,7 +218,8 @@ const addRainbowBraces = (
         length: char.length,
       })
       currentDepth++
-    } else if (closingBraces.has(char)) {
+    }
+    else if (closingBraces.has(char)) {
       const expectedOpening = matchingBrace[char]
       const lastBrace = braceStack[braceStack.length - 1]
 
@@ -228,14 +232,16 @@ const addRainbowBraces = (
           content: char,
           length: char.length,
         })
-      } else {
+      }
+      else {
         result.push({
           type: 'brace-unmatched',
           content: char,
           length: char.length,
         })
       }
-    } else {
+    }
+    else {
       result.push(token)
     }
   }
@@ -246,7 +252,12 @@ const addRainbowBraces = (
   return result
 }
 
-export const getTokenColor = (type: string, theme: Theme = defaultTheme): string => {
+export const getTokenColor = (type: string, theme: Theme = defaultTheme, token?: Token): string => {
+  // Use token color if provided
+  if (token?.color) {
+    return token.color
+  }
+
   // Handle unmatched braces
   if (type === 'brace-unmatched') {
     return theme.errorColor

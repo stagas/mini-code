@@ -908,6 +908,10 @@ export const CodeEditor = ({
     }
   }, [wordWrap, gutter])
 
+  useEffect(() => {
+    canvasEditorRef.current?.updateHeader(header!)
+  }, [header])
+
   // Handle isAnimating prop
   useEffect(() => {
     canvasEditorRef.current?.setAnimating(isAnimating)
@@ -1016,7 +1020,7 @@ export const CodeEditor = ({
       const y = event.clientY - rect.top
 
       // Check if clicking on the header before widgets
-      const headerHandled = canvasEditorRef.current?.handleHeaderPointerDown(x, y)
+      const headerHandled = canvasEditorRef.current?.handleHeaderPointerDown(event, x, y)
       if (headerHandled) {
         setActiveEditor(editorIdRef.current)
         isHandlingPointerRef.current = false
@@ -1286,8 +1290,10 @@ export const CodeEditor = ({
       }
 
       // Check if event target is this editor's canvas or a child of it
+      // But always allow pointer up if we're dragging a selection (can happen outside canvas)
       const target = event.target as Node | null
-      if (target && !canvas.contains(target) && target !== canvas) {
+      const isDraggingSelection = mouseHandlerRef.current?.isDraggingSelection()
+      if (target && !canvas.contains(target) && target !== canvas && !isDraggingSelection) {
         return
       }
 
@@ -1386,7 +1392,7 @@ export const CodeEditor = ({
       style={autoHeight ? { height: `${Math.max(0, scrollMetrics.contentHeight)}px` } : undefined}
       onMouseDown={() => setActiveEditor(editorIdRef.current)}
     >
-      <canvas ref={canvasRef} className="absolute inset-0 outline-none" />
+      <canvas ref={canvasRef} onContextMenu={e => e.preventDefault()} className="absolute inset-0 outline-none" />
       <textarea
         ref={textareaRef}
         spellCheck={false}

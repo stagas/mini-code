@@ -252,7 +252,7 @@ export interface EditorHeader {
     viewWidth: number,
   ): void
   /** Called when header is clicked */
-  pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
+  pointerDown?(event: PointerEvent, x: number, y: number, offsetX: number, offsetY: number): void
   /** Called when pointer moves while header is active */
   pointerMove?(x: number, y: number, offsetX: number, offsetY: number): void
   /** Called when pointer is released */
@@ -500,7 +500,7 @@ export class CanvasEditor {
 
     for (let ti = 0; ti < tokens.length; ti++) {
       const token = tokens[ti]
-      const color = getTokenColor(token.type, theme)
+      const color = getTokenColor(token.type, theme, token)
       const text = token.content
 
       // Determine start index, consume pending skip now and reset immediately
@@ -1278,6 +1278,7 @@ export class CanvasEditor {
       if (segmentContent.length > 0) {
         result.push({
           type: token.type,
+          color: token.color,
           content: segmentContent,
           length: segmentContent.length,
         })
@@ -2668,7 +2669,7 @@ export class CanvasEditor {
     }
 
     // Margins so caret isn't flush to edge
-    const margin = 16
+    const margin = 4
 
     // Check if caret is already fully visible
     const caretVisibleX = caretX >= this.scrollX + margin && caretX <= this.scrollX + viewportWidth - margin
@@ -3218,6 +3219,7 @@ export class CanvasEditor {
     }
 
     // Process 'above' widgets to expand upward to fill empty lines
+    // Only keep 'above' widgets that have at least one empty line above them.
     const widgetAdjustments = new Map<EditorWidget, { firstEmptyLineAbove: number; adjustedHeight: number }>()
     for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
       const widgets = widgetsByVisualLine.get(visualIndex)
@@ -3240,13 +3242,29 @@ export class CanvasEditor {
           }
         }
 
-        // Calculate adjusted height to fill empty lines above
-        const baseHeight = this.getWidgetHeight(widget)
-        const additionalHeight = emptyLinesAbove * this.lineHeight
-        const adjustedHeight = baseHeight + additionalHeight
+        // Only create an adjustment if there is at least one empty line above.
+        if (emptyLinesAbove > 0) {
+          const baseHeight = this.getWidgetHeight(widget)
+          const additionalHeight = emptyLinesAbove * this.lineHeight
+          const adjustedHeight = baseHeight + additionalHeight
 
-        // Store adjustment (widget stays on original line, but expands upward)
-        widgetAdjustments.set(widget, { firstEmptyLineAbove, adjustedHeight })
+          // Store adjustment (widget stays on original line, but expands upward)
+          widgetAdjustments.set(widget, { firstEmptyLineAbove, adjustedHeight })
+        }
+        // If there are no empty lines above, we intentionally do NOT add an adjustment.
+        // Later we'll filter out such 'above' widgets so they won't be rendered or affect spacing.
+      }
+    }
+
+    // Filter out 'above' widgets that had no empty lines above (we only want to render above widgets
+    // that expand into empty lines). This prevents non-expanded 'above' widgets from affecting layout.
+    for (const [visualIndex, ws] of widgetsByVisualLine.entries()) {
+      if (ws.above && ws.above.length > 0) {
+        const filteredAbove = ws.above.filter(w => widgetAdjustments.has(w))
+        if (filteredAbove.length !== ws.above.length) {
+          ws.above = filteredAbove
+          widgetsByVisualLine.set(visualIndex, ws)
+        }
       }
     }
 
@@ -3824,7 +3842,6 @@ export class CanvasEditor {
 
     // Draw header if present
     if (this.options.header) {
-      const textPadding = this.getTextPadding()
       const showVBar = content.height > contentHeight + 1
       const viewX = textPadding
       const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
@@ -4472,6 +4489,11 @@ export class CanvasEditor {
     }
   }
 
+  public updateHeader(header: EditorHeader) {
+    this.options.header = header
+    this.maybeDraw()
+  }
+
   public updateWidgets(widgets: EditorWidget[]) {
     // Update widgets immediately
     // Clear any pending update
@@ -4989,7 +5011,7 @@ export class CanvasEditor {
     return this.isHeaderPointerDown && !!this.options.header
   }
 
-  public handleHeaderPointerDown(x: number, y: number): boolean {
+  public handleHeaderPointerDown(event: PointerEvent, x: number, y: number): boolean {
     const header = this.options.header
     if (!header) return false
     const headerHeight = this.getHeaderHeight()
@@ -5000,7 +5022,7 @@ export class CanvasEditor {
     this.isHeaderPointerDown = true
     const offsetX = x
     const offsetY = y
-    header.pointerDown?.(x, y, offsetX, offsetY)
+    header.pointerDown?.(event, x, y, offsetX, offsetY)
     header.pointerMove?.(x, y, offsetX, offsetY)
     return true
   }
@@ -5024,8 +5046,10 @@ export class CanvasEditor {
 
   public handleWidgetPointerDown(x: number, y: number): boolean {
     this.ensureWidgetPositions()
+    const headerHeight = this.getHeaderHeight()
     const adjustedX = x + this.scrollX
-    const adjustedY = y + this.scrollY
+    // Convert viewport Y to content Y: subtract header area, then add scrollY
+    const adjustedY = y - headerHeight + this.scrollY
 
     // Check if any widget was clicked
     for (const [widget, pos] of this.widgetPositions.entries()) {
@@ -5039,7 +5063,8 @@ export class CanvasEditor {
         this.isWidgetPointerDown = true
         this.activeWidgetPosition = { ...pos }
         const widgetViewportX = pos.x - this.scrollX
-        const widgetViewportY = pos.y - this.scrollY
+        // Widget's Y position on screen includes header offset
+        const widgetViewportY = pos.y - this.scrollY + headerHeight
         const offsetX = x - widgetViewportX
         const offsetY = y - widgetViewportY
         widget.pointerDown?.(x, y, offsetX, offsetY)
@@ -5056,8 +5081,10 @@ export class CanvasEditor {
     if (!this.activeWidget || !this.isWidgetPointerDown || !this.activeWidgetPosition) return
 
     const pos = this.activeWidgetPosition
+    const headerHeight = this.getHeaderHeight()
     const widgetViewportX = pos.x - this.scrollX
-    const widgetViewportY = pos.y - this.scrollY
+    // Account for header offset when computing widget's screen Y
+    const widgetViewportY = pos.y - this.scrollY + headerHeight
     const offsetX = x - widgetViewportX
     const offsetY = y - widgetViewportY
     this.activeWidget.pointerMove?.(x, y, offsetX, offsetY)
