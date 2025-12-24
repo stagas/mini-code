@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { type Theme, defaultTheme } from './syntax.ts'
+import { defaultTheme, type Theme } from './syntax.ts'
 
 export interface EditorError {
   line: number
@@ -36,7 +36,8 @@ const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensio
           return changed ? next : prev
         })
       }
-    } else if (!visible) {
+    }
+    else if (!visible) {
       setMeasuredSize(prev => prev ? null : prev)
     }
   }, [visible, error, position.x, position.y])
@@ -63,7 +64,8 @@ const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensio
   if (!measuredSize) {
     finalX = -9999
     finalY = -9999
-  } else {
+  }
+  else {
     const popupWidth = measuredSize.width
     const popupHeight = measuredSize.height
 
@@ -72,13 +74,15 @@ const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensio
     if (rightEdge <= viewportWidth - margin) {
       finalX = position.x
       maxWidth = undefined
-    } else {
+    }
+    else {
       const shiftedX = viewportWidth - popupWidth - margin
 
       if (shiftedX >= margin) {
         finalX = shiftedX
         maxWidth = undefined
-      } else {
+      }
+      else {
         finalX = margin
         maxWidth = viewportWidth - 2 * margin
       }
@@ -89,12 +93,15 @@ const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensio
 
     if (spaceBelow >= popupHeight) {
       finalY = position.y + lineHeight + spacing
-    } else if (spaceAbove >= popupHeight) {
+    }
+    else if (spaceAbove >= popupHeight) {
       finalY = position.y - popupHeight - spacing
-    } else {
+    }
+    else {
       if (spaceAbove > spaceBelow) {
         finalY = margin
-      } else {
+      }
+      else {
         finalY = position.y + lineHeight + spacing
       }
     }

@@ -45,6 +45,8 @@ const findMatchingBrace = (
     depth: number
   }[] = []
 
+  const openingBraces = new Set(['{', '(', '['])
+
   for (let lineIndex = 0; lineIndex < highlightedCode.length; lineIndex++) {
     const line = highlightedCode[lineIndex]
     let currentColumn = 0
@@ -85,7 +87,7 @@ const findMatchingBrace = (
           tokenIndex,
           token,
           position: currentColumn,
-          isOpening: false,
+          isOpening: openingBraces.has(token.content),
           depth: -1, // Unmatched braces get depth -1
         })
       }
@@ -388,6 +390,7 @@ export class CanvasEditor {
     charWidth?: number
     ligatureArrowWidth?: number
     ligatureLineArrowWidth?: number
+    spaceWidth?: number
   } = {}
   private gutterWidthCache: number | null = null
   private textPaddingCache: number | null = null
@@ -487,6 +490,8 @@ export class CanvasEditor {
   ): number {
     let currentX = startX
     let pendingSkipNextLeading = false
+    let batchText = ''
+    let batchColor = ''
 
     // Pre-compute measurement cache values to avoid repeated checks
     if (!this.measurementCache.ligatureArrowWidth) {
@@ -496,7 +501,17 @@ export class CanvasEditor {
       this.measurementCache.ligatureLineArrowWidth = ctx.measureText('->').width
     }
     const arrowWidth = this.measurementCache.ligatureArrowWidth
+    const arrowHalfWidth = arrowWidth / 2
     const lineArrowWidth = this.measurementCache.ligatureLineArrowWidth
+
+    const flushBatch = () => {
+      if (batchText) {
+        ctx.fillStyle = batchColor
+        ctx.fillText(batchText, currentX, y)
+        currentX += ctx.measureText(batchText).width
+        batchText = ''
+      }
+    }
 
     for (let ti = 0; ti < tokens.length; ti++) {
       const token = tokens[ti]
@@ -506,18 +521,6 @@ export class CanvasEditor {
       // Determine start index, consume pending skip now and reset immediately
       let i = pendingSkipNextLeading ? 1 : 0
       pendingSkipNextLeading = false
-
-      // Batch consecutive characters to reduce canvas API calls
-      let batchText = ''
-
-      const flushBatch = () => {
-        if (batchText) {
-          ctx.fillStyle = color
-          ctx.fillText(batchText, currentX, y)
-          currentX += ctx.measureText(batchText).width
-          batchText = ''
-        }
-      }
 
       const textLen = text.length
       const isLastToken = ti + 1 >= tokens.length
@@ -529,10 +532,20 @@ export class CanvasEditor {
         const nextCharInSame = !isLastChar ? text[i + 1] : null
         const nextChar = nextCharInSame ?? nextTokenFirstChar
 
-        if (ch === '|' && nextChar === '>') {
+        let ligatureType: '|>' | '->' | null = null
+        if (ch === '|' && nextChar === '>') ligatureType = '|>'
+        else if (ch === '-' && nextChar === '>') ligatureType = '->'
+
+        if (ligatureType) {
           flushBatch()
-          this.drawArrowLigature(ctx, currentX, y, color, arrowWidth / 2)
-          currentX += arrowWidth
+          if (ligatureType === '|>') {
+            this.drawArrowLigature(ctx, currentX, y, color, arrowHalfWidth)
+            currentX += arrowWidth
+          }
+          else {
+            this.drawLineArrowLigature(ctx, currentX, y, color, lineArrowWidth)
+            currentX += lineArrowWidth
+          }
 
           if (nextCharInSame === '>') {
             i++
@@ -543,26 +556,16 @@ export class CanvasEditor {
           break
         }
 
-        if (ch === '-' && nextChar === '>') {
+        if (batchColor !== color) {
           flushBatch()
-          this.drawLineArrowLigature(ctx, currentX, y, color, lineArrowWidth)
-          currentX += lineArrowWidth
-
-          if (nextCharInSame === '>') {
-            i++
-            continue
-          }
-
-          pendingSkipNextLeading = true
-          break
+          batchColor = color
         }
 
         batchText += ch
       }
-
-      flushBatch()
     }
 
+    flushBatch()
     return currentX
   }
 
@@ -587,6 +590,13 @@ export class CanvasEditor {
     // Calculate width needed for line numbers + some padding
     this.gutterWidthCache = maxLineNumber * this.measurementCache.charWidth + 2
     return this.gutterWidthCache
+  }
+
+  private getSpaceWidth(ctx: CanvasRenderingContext2D): number {
+    if (!this.measurementCache.spaceWidth) {
+      this.measurementCache.spaceWidth = ctx.measureText(' ').width
+    }
+    return this.measurementCache.spaceWidth
   }
 
   private getTextPadding(): number {
@@ -1937,7 +1947,7 @@ export class CanvasEditor {
     // Adjust scroll position to keep content properly visible after resize
     this.adjustScrollAfterResize(oldWidth, oldHeight, newWidth, newHeight)
 
-    this.maybeDraw()
+    this.draw()
     this.updateFunctionSignature() // Need to update popup positions when canvas resizes
   }
 
@@ -2155,13 +2165,18 @@ export class CanvasEditor {
         this.resize()
       }
       else {
-        // Normal resize - throttle
         if (resizeTimeout) {
           clearTimeout(resizeTimeout)
+          resizeTimeout = null
         }
-        resizeTimeout = setTimeout(() => {
-          this.resize()
-        }, 16) // ~60fps throttle
+        this.resize()
+        // Normal resize - throttle
+        // if (resizeTimeout) {
+        //   clearTimeout(resizeTimeout)
+        // }
+        // resizeTimeout = setTimeout(() => {
+        //   this.resize()
+        // }, 16) // ~60fps throttle
       }
     }
 
@@ -3339,7 +3354,7 @@ export class CanvasEditor {
     const width = this.canvas.width / (window.devicePixelRatio || 1)
     const height = this.canvas.height / (window.devicePixelRatio || 1)
     const headerHeight = this.getHeaderHeight()
-    const contentHeight = height - headerHeight
+    const contentHeight = height // - headerHeight
 
     // Configure text rendering
     this.setFont(ctx)
@@ -3415,7 +3430,7 @@ export class CanvasEditor {
     const textPadding = this.getTextPadding()
 
     // Calculate visible line range for viewport culling
-    const visibleStartY = this.scrollY
+    const visibleStartY = this.scrollY - headerHeight
     const visibleEndY = this.scrollY + contentHeight
 
     // Draw overlay widgets behind text (no pointer events, truly behind)
@@ -3832,7 +3847,7 @@ export class CanvasEditor {
         }
 
         // Skip lines outside the visible content viewport (accounting for header)
-        if (yScreen + this.lineHeight < headerHeight || yScreen > headerHeight + contentHeight) {
+        if (yScreen + this.lineHeight < 0 || yScreen > contentHeight) {
           return
         }
 
@@ -4610,6 +4625,7 @@ export class CanvasEditor {
     const wrappedLines = this.getWrappedLines(ctx)
     const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
     const textPadding = this.getTextPadding()
+    const headerHeight = this.getHeaderHeight()
 
     // Reset gutter hover flag first
     this.isHoveringGutter = false
@@ -4623,7 +4639,7 @@ export class CanvasEditor {
       if (x >= 0 && x < gutterEnd) {
         // Mouse is in gutter area, find which line it corresponds to
         // Line numbers scroll with content, so we need to account for scroll and widgets
-        const adjustedY = y + this.scrollY
+        const adjustedY = y - headerHeight + this.scrollY
         const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
 
         const wrappedLine = wrappedLines[clampedVisualLineIndex]
@@ -4639,7 +4655,7 @@ export class CanvasEditor {
     }
 
     // Not in gutter, check normal error hover on text content
-    const adjustedY = y + this.scrollY
+    const adjustedY = y - headerHeight + this.scrollY
     const adjustedX = x + this.scrollX
     const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
 
@@ -4775,7 +4791,8 @@ export class CanvasEditor {
         }
 
         const viewportX = preCalculatedContentX! - this.scrollX + rect.left
-        const viewportY = preCalculatedContentY! - this.scrollY + rect.top
+        const headerHeight = this.getHeaderHeight()
+        const viewportY = preCalculatedContentY! - this.scrollY + rect.top + headerHeight
 
         this.callbacks.onErrorPositionChange?.({
           x: viewportX,
@@ -4805,6 +4822,11 @@ export class CanvasEditor {
     for (const error of this.errors) {
       const visualStart = this.logicalToVisualPosition(error.line, error.startColumn, wrappedLines)
       const visualEnd = this.logicalToVisualPosition(error.line, error.endColumn, wrappedLines)
+      const overflowWidthForLine = (lineEndColumn: number): number => {
+        const overflowColumns = Math.max(0, error.endColumn - lineEndColumn)
+        if (overflowColumns === 0) return 0
+        return overflowColumns * this.getSpaceWidth(ctx)
+      }
 
       // Viewport culling: skip if error is not visible
       const startYOffset = yOffsets.get(visualStart.visualLine) || 0
@@ -4841,6 +4863,7 @@ export class CanvasEditor {
 
           const startX = textPadding + ctx.measureText(startText).width
           const errorWidth = ctx.measureText(errorText).width
+          const totalErrorWidth = errorWidth + overflowWidthForLine(wrappedLine.endColumn)
           const yOffset = yOffsets.get(visualStart.visualLine) || 0
           // Add max height of 'above' widgets on this line (they are in the same row)
           let aboveHeight = 0
@@ -4860,8 +4883,8 @@ export class CanvasEditor {
           let currentX = startX
           ctx.moveTo(currentX, y)
 
-          while (currentX < startX + errorWidth) {
-            const nextX = Math.min(currentX + squiggleWidth / 2, startX + errorWidth)
+          while (currentX < startX + totalErrorWidth) {
+            const nextX = Math.min(currentX + squiggleWidth / 2, startX + totalErrorWidth)
             ctx.lineTo(
               nextX,
               y
@@ -4898,7 +4921,8 @@ export class CanvasEditor {
             aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
           }
           const y = this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + this.lineHeight - 3
-          let startX: number, errorWidth: number
+          let startX: number
+          let errorWidth: number
 
           if (visualLine === visualStart.visualLine) {
             const startText = wrappedLine.text.substring(0, visualStart.visualColumn)
@@ -4916,6 +4940,10 @@ export class CanvasEditor {
             errorWidth = ctx.measureText(wrappedLine.text).width
           }
 
+          const totalErrorWidth = errorWidth + (
+            visualLine === visualEnd.visualLine ? overflowWidthForLine(wrappedLine.endColumn) : 0
+          )
+
           ctx.strokeStyle = theme.errorSquigglyColor
           ctx.lineWidth = 1.5
           ctx.beginPath()
@@ -4925,8 +4953,8 @@ export class CanvasEditor {
           let currentX = startX
           ctx.moveTo(currentX, y)
 
-          while (currentX < startX + errorWidth) {
-            const nextX = Math.min(currentX + squiggleWidth / 2, startX + errorWidth)
+          while (currentX < startX + totalErrorWidth) {
+            const nextX = Math.min(currentX + squiggleWidth / 2, startX + totalErrorWidth)
             ctx.lineTo(
               nextX,
               y

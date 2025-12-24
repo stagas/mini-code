@@ -144,7 +144,7 @@ export const highlightCode = (
     const lines = code.split('\n')
     const highlightedLines: HighlightedLine[] = []
     let globalBraceDepth = 0
-    const globalBraceStack: { char: string; depth: number }[] = []
+    const globalBraceStack: { char: string; depth: number; token: Token }[] = []
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
       const line = lines[lineIndex]
@@ -178,6 +178,10 @@ export const highlightCode = (
       })
     }
 
+    for (const brace of globalBraceStack) {
+      brace.token.type = 'brace-unmatched'
+    }
+
     return highlightedLines
   }
   catch (error) {
@@ -192,7 +196,7 @@ export const highlightCode = (
 const addRainbowBraces = (
   tokens: Token[],
   startDepth: number,
-  globalBraceStack: { char: string; depth: number }[],
+  globalBraceStack: { char: string; depth: number; token: Token }[],
   theme: Theme,
 ): Token[] => {
   const result: Token[] = []
@@ -211,12 +215,13 @@ const addRainbowBraces = (
 
     const char = token.content
     if (openingBraces.has(char)) {
-      braceStack.push({ char, depth: currentDepth })
-      result.push({
+      const braceToken: Token = {
         type: `brace-open-${currentDepth % rainbowLength}`,
         content: char,
         length: char.length,
-      })
+      }
+      braceStack.push({ char, depth: currentDepth, token: braceToken })
+      result.push(braceToken)
       currentDepth++
     }
     else if (closingBraces.has(char)) {

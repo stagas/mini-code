@@ -789,8 +789,8 @@ export const CodeEditor = ({
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
       // Update CodeFile scroll position and track it
       lastScrollRef.current = { x: sx, y: sy }
-      // codeFileRef.current.scrollX = sx
-      // codeFileRef.current.scrollY = sy
+      codeFileRef.current.scrollX = sx
+      codeFileRef.current.scrollY = sy
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
@@ -825,8 +825,8 @@ export const CodeEditor = ({
         }
         // Update CodeFile scroll position and track it
         lastScrollRef.current = { x: sx, y: sy }
-        // codeFileRef.current.scrollX = sx
-        // codeFileRef.current.scrollY = sy
+        codeFileRef.current.scrollX = sx
+        codeFileRef.current.scrollY = sy
 
         // Update selection during auto-scroll when dragging
         if (mouseHandlerRef.current?.isDraggingSelection() && lastMousePositionRef.current.event) {
@@ -889,7 +889,7 @@ export const CodeEditor = ({
     canvasEditorRef.current.setActive(currentActive)
 
     // Restore scroll position from CodeFile (synchronously, no delay)
-    // canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
+    canvasEditorRef.current.setScroll(codeFile.scrollX, codeFile.scrollY)
 
     // Wire up word-wrap-aware movement to the input handler
     if (inputHandlerRef.current) {
