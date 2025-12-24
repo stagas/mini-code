@@ -1019,7 +1019,7 @@ export class CanvasEditor {
       if (widgets?.above && widgets.above.length > 0) {
         aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
       }
-      return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 3
+      return this.padding + visualLine * this.lineHeight + yOffset + aboveHeight + (isFirstLine ? 1 : 0) - 5
     }
 
     // Convert logical selection to visual positions
@@ -1379,9 +1379,12 @@ export class CanvasEditor {
       ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
       : this.getContentSize(ctx)
 
+    const headerHeight = this.getHeaderHeight()
+    const newContentHeight = newHeight - headerHeight
+
     // Calculate new maximum scroll values
     const maxScrollX = Math.max(0, contentSize.width - newWidth)
-    const maxScrollY = Math.max(0, contentSize.height - newHeight)
+    const maxScrollY = Math.max(0, contentSize.height - newContentHeight)
 
     // Adjust horizontal scroll to keep content visible
     // When wordWrap is false, preserve the leftmost scroll position
@@ -1397,9 +1400,7 @@ export class CanvasEditor {
     }
 
     // Adjust vertical scroll to keep content visible
-    const headerHeight = this.getHeaderHeight()
     const oldContentHeight = oldHeight - headerHeight
-    const newContentHeight = newHeight - headerHeight
     if (newContentHeight < oldContentHeight) {
       // Canvas got shorter - adjust scroll to keep bottom edge visible
       const bottomEdge = this.scrollY + oldContentHeight
@@ -3354,7 +3355,7 @@ export class CanvasEditor {
     const width = this.canvas.width / (window.devicePixelRatio || 1)
     const height = this.canvas.height / (window.devicePixelRatio || 1)
     const headerHeight = this.getHeaderHeight()
-    const contentHeight = height // - headerHeight
+    const contentHeight = height - headerHeight
 
     // Configure text rendering
     this.setFont(ctx)
@@ -3484,7 +3485,7 @@ export class CanvasEditor {
           const showVBar = content.height > height + 1
           const viewX = this.scrollX + textPadding
           const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight, viewX, viewWidth)
+          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth)
         }
       }
     }
@@ -3880,7 +3881,7 @@ export class CanvasEditor {
         }
 
         // Skip lines outside the visible content viewport (accounting for header)
-        if (yScreen + this.lineHeight < 0 || yScreen > contentHeight) {
+        if (yScreen + this.lineHeight < 0 || yScreen > height) {
           return
         }
 
