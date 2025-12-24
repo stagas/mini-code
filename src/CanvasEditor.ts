@@ -3497,28 +3497,29 @@ export class CanvasEditor {
       ? findMatchingBrace(highlightedCode, this.inputState.caret.line, this.inputState.caret.column)
       : null
 
+    // Pass 1: Calculate positions and render all widgets
+    const showVBar = content.height > height + 1
+    const viewX = this.scrollX + textPadding
+    const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
       const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
       let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
 
-      // Draw 'above' widgets before the line
       const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
+
+      // Handle 'above' widgets
       if (widgets?.above && widgets.above.length > 0) {
-        // Use base height for line spacing (not adjusted height)
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
         for (const widget of widgets.above) {
-          // Calculate position based on widget's column (convert from 1-based to 0-based)
           const widgetColumn = widget.column - 1
           const adjustment = this.widgetAdjustments.get(widget)
-          // Widget stays on its original line for horizontal positioning
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
-          // Calculate width based on widget's length
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
           const baseHeight = this.getWidgetHeight(widget)
           const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
-          // Widget starts from first empty line above and extends down to the defining line
           const widgetY = adjustment
             ? this.padding + adjustment.firstEmptyLineAbove * this.lineHeight
               + (widgetLayout.yOffsets.get(adjustment.firstEmptyLineAbove) || 0) - 1.5
@@ -3530,49 +3531,155 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            const showVBar = content.height > height + 1
-            const viewX = this.scrollX + textPadding
-            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
             widget.render(ctx, widgetX, widgetY - 2.5, widgetWidth, widgetHeight, viewX, viewWidth)
           }
         }
-        // Advance y by the base height (not adjusted) so line spacing isn't affected
         y += maxAboveHeight
       }
 
-      // Skip lines outside the visible viewport
+      // Handle inline widgets
+      const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
+      if (inlineWidgetsForLine.length > 0) {
+        const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+        if (logicalHighlighted) {
+          const segmentTokens = this.extractTokensForSegment(
+            logicalHighlighted.tokens,
+            wrappedLine.startColumn,
+            wrappedLine.endColumn,
+          )
+          const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
+          const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+          let currentX = textPadding
+          let tokenIndex = 0
+          let tokenOffset = 0
+
+          for (const { widget, column } of sortedInlineWidgets) {
+            const targetColumn = columnInWrappedLine(column)
+            let accumulatedLength = 0
+
+            while (tokenIndex < segmentTokens.length
+              && accumulatedLength + segmentTokens[tokenIndex].length - tokenOffset <= targetColumn)
+            {
+              const token = segmentTokens[tokenIndex]
+              currentX += ctx.measureText(token.content.substring(tokenOffset)).width
+              accumulatedLength += token.length - tokenOffset
+              tokenIndex++
+              tokenOffset = 0
+            }
+
+            if (tokenIndex < segmentTokens.length && accumulatedLength < targetColumn) {
+              const token = segmentTokens[tokenIndex]
+              const charsNeeded = targetColumn - accumulatedLength
+              const partialContent = token.content.substring(tokenOffset, tokenOffset + charsNeeded)
+              currentX += ctx.measureText(partialContent).width
+              tokenOffset += charsNeeded
+            }
+
+            const widgetX = currentX
+            const widgetY = y - 0.5
+            const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+            const widgetHeight = this.getWidgetHeight(widget)
+            this.widgetPositions.set(widget, {
+              x: widgetX,
+              y: widgetY,
+              width: widgetWidth,
+              height: widgetHeight,
+            })
+            if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+              widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
+            }
+            currentX += widgetWidth
+          }
+        }
+        else {
+          let currentX = textPadding
+          const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+          for (const { widget, column } of sortedInlineWidgets) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            if (columnInWrappedLine > 0) {
+              const textSegment = wrappedLine.text.substring(0, columnInWrappedLine)
+              currentX += ctx.measureText(textSegment).width
+            }
+
+            const widgetX = currentX
+            const widgetY = y - 0.5
+            const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+            const widgetHeight = this.getWidgetHeight(widget)
+            this.widgetPositions.set(widget, {
+              x: widgetX,
+              y: widgetY,
+              width: widgetWidth,
+              height: widgetHeight,
+            })
+            if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+              widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
+            }
+            currentX += widgetWidth
+          }
+        }
+      }
+
+      // Handle 'below' widgets
+      if (widgets?.below && widgets.below.length > 0) {
+        const widgetY = y + this.lineHeight
+        for (const widget of widgets.below) {
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetHeight = this.getWidgetHeight(widget)
+          this.widgetPositions.set(widget, {
+            x: widgetX,
+            y: widgetY,
+            width: widgetWidth,
+            height: widgetHeight,
+          })
+          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
+          }
+        }
+      }
+    })
+
+    // Pass 2: Draw all lines with text and syntax highlighting
+    wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
+      const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
+      let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
+
+      const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
+      if (widgets?.above && widgets.above.length > 0) {
+        const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+        y += maxAboveHeight
+      }
+
       if (y + this.lineHeight < visibleStartY || y > visibleEndY) {
         return
       }
 
-      // Get inline widgets for this line
       const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
-
-      // Get syntax highlighting for this logical line
       const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+
       if (logicalHighlighted) {
-        // Extract tokens for this wrapped segment
         const segmentTokens = this.extractTokensForSegment(
           logicalHighlighted.tokens,
           wrappedLine.startColumn,
           wrappedLine.endColumn,
         )
 
-        // Draw tokens and inline widgets together
         let currentX = textPadding
         const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
-
-        // Sort inline widgets by column
         const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
 
         let tokenIndex = 0
-        let tokenOffset = 0 // offset within current token
+        let tokenOffset = 0
 
         for (const { widget, column } of sortedInlineWidgets) {
           const targetColumn = columnInWrappedLine(column)
-
-          // Draw tokens up to widget
           let accumulatedLength = 0
+
           while (tokenIndex < segmentTokens.length
             && accumulatedLength + segmentTokens[tokenIndex].length - tokenOffset <= targetColumn)
           {
@@ -3590,7 +3697,6 @@ export class CanvasEditor {
             tokenOffset = 0
           }
 
-          // If widget is in the middle of a token, draw partial token
           if (tokenIndex < segmentTokens.length && accumulatedLength < targetColumn) {
             const token = segmentTokens[tokenIndex]
             const charsNeeded = targetColumn - accumulatedLength
@@ -3606,33 +3712,9 @@ export class CanvasEditor {
             accumulatedLength += charsNeeded
           }
 
-          // Draw widget
-          const widgetX = currentX
-          const widgetY = y - 0.5
-          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
-          const widgetHeight = this.getWidgetHeight(widget)
-          this.widgetPositions.set(widget, {
-            x: widgetX,
-            y: widgetY,
-            width: widgetWidth,
-            height: widgetHeight,
-          })
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            const showVBar = content.height > height + 1
-            const viewX = this.scrollX + textPadding
-            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            const showVBar = content.height > height + 1
-            const viewX = this.scrollX + textPadding
-            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
-          currentX += widgetWidth
+          currentX += ctx.measureText('X'.repeat(widget.length)).width
         }
 
-        // Draw remaining tokens after last widget
         while (tokenIndex < segmentTokens.length) {
           const token = segmentTokens[tokenIndex]
           const remainingContent = token.content.substring(tokenOffset)
@@ -3647,7 +3729,6 @@ export class CanvasEditor {
           tokenOffset = 0
         }
 
-        // Draw brace matching for any line that might contain braces (only when active)
         if (matchingBraces) {
           this.drawBraceMatchingForWrappedLine(
             ctx,
@@ -3661,7 +3742,6 @@ export class CanvasEditor {
         }
       }
       else {
-        // Fallback: draw plain text with inline widgets
         let currentX = textPadding
         const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
 
@@ -3669,7 +3749,6 @@ export class CanvasEditor {
         for (const { widget, column } of sortedInlineWidgets) {
           const columnInWrappedLine = column - wrappedLine.startColumn
 
-          // Draw text before widget
           if (columnInWrappedLine > lastColumn) {
             const textSegment = wrappedLine.text.substring(lastColumn, columnInWrappedLine)
             currentX = this.drawTokensWithCustomLigatures(
@@ -3681,28 +3760,10 @@ export class CanvasEditor {
             )
           }
 
-          // Draw widget
-          const widgetX = currentX
-          const widgetY = y - 0.5
-          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
-          const widgetHeight = this.getWidgetHeight(widget)
-          this.widgetPositions.set(widget, {
-            x: widgetX,
-            y: widgetY,
-            width: widgetWidth,
-            height: widgetHeight,
-          })
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            const showVBar = content.height > height + 1
-            const viewX = this.scrollX + textPadding
-            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
-          currentX += widgetWidth
+          currentX += ctx.measureText('X'.repeat(widget.length)).width
           lastColumn = columnInWrappedLine
         }
 
-        // Draw remaining text after last widget
         if (lastColumn < wrappedLine.text.length) {
           const textSegment = wrappedLine.text.substring(lastColumn)
           this.drawTokensWithCustomLigatures(
@@ -3712,34 +3773,6 @@ export class CanvasEditor {
             y,
             theme,
           )
-        }
-      }
-
-      // Draw 'below' widgets after the line
-      if (widgets?.below && widgets.below.length > 0) {
-        // All 'below' widgets on the same line share the same Y position (horizontal row)
-        const widgetY = y + this.lineHeight
-        for (const widget of widgets.below) {
-          // Calculate position based on widget's column (convert from 1-based to 0-based)
-          const widgetColumn = widget.column - 1
-          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
-          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
-          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
-          // Calculate width based on widget's length
-          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
-          const widgetHeight = this.getWidgetHeight(widget)
-          this.widgetPositions.set(widget, {
-            x: widgetX,
-            y: widgetY,
-            width: widgetWidth,
-            height: widgetHeight,
-          })
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            const showVBar = content.height > height + 1
-            const viewX = this.scrollX + textPadding
-            const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
         }
       }
     })
