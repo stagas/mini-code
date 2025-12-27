@@ -1,3 +1,4 @@
+import { animationManager } from './animation-manager.ts'
 import { defaultTheme, type Theme } from './syntax.ts'
 
 export type PopupCanvasPointerEvent = {
@@ -38,7 +39,6 @@ type PopupCanvasState = {
   entries: Map<string, PopupCanvasEntry>
   hitRegions: PopupCanvasHitRegion[]
   wantsPointer: boolean
-  rafId: number | null
   lastHoverIndex: number
   onResize: (() => void) | null
   onPointerMove: ((event: PointerEvent) => void) | null
@@ -51,7 +51,6 @@ const state: PopupCanvasState = {
   entries: new Map(),
   hitRegions: [],
   wantsPointer: false,
-  rafId: null,
   lastHoverIndex: -1,
   onResize: null,
   onPointerMove: null,
@@ -137,8 +136,6 @@ const destroyCanvasIfUnused = () => {
   if (state.entries.size !== 0) return
   if (!state.canvas) return
 
-  if (state.rafId !== null) cancelAnimationFrame(state.rafId)
-  state.rafId = null
   state.hitRegions = []
   state.wantsPointer = false
   state.lastHoverIndex = -1
@@ -157,9 +154,8 @@ const destroyCanvasIfUnused = () => {
 
 const scheduleDraw = () => {
   if (typeof window === 'undefined') return
-  if (state.rafId !== null) return
-  state.rafId = requestAnimationFrame(() => {
-    state.rafId = null
+  if (animationManager.isRegistered('popupCanvasDraw')) return
+  animationManager.nextFrame('popupCanvasDraw', () => {
     draw()
   })
 }

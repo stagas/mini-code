@@ -1,3 +1,4 @@
+import { animationManager } from './animation-manager.ts'
 import {
   type AutocompleteInfo,
   calculateAutocompletePosition,
@@ -328,7 +329,6 @@ export class CanvasEditor {
   private lastTouchMoveTime: number = 0
   private lastTouchMoveX: number = 0
   private lastTouchMoveY: number = 0
-  private momentumRaf: number | null = null
   private touchStartTime: number = 0
   private velocitySamples: Array<{ time: number; vx: number; vy: number }> = []
   private lastFunctionCallInfo: FunctionCallInfo | null = null
@@ -353,7 +353,6 @@ export class CanvasEditor {
   private readonly padding = 16
   private readonly lineHeight = 20
   private isActive = false
-  private autocompleteRaf: number | null = null
   private autocompleteDebounceTimer: number | null = null
   private wheelScrollDebounceTimer: number | null = null
   private isWheelScrolling: boolean = false
@@ -427,15 +426,11 @@ export class CanvasEditor {
       return null
     },
   }
-  private autoScrollRaf: number | null = null
   private autoScrollDirection: { x: number; y: number } | null = null
   private autoScrollLastTime: number | null = null
-  private caretBlinkRaf: number | null = null
   private caretOpacity: number = 1
   private caretBlinkStartTime: number = 0
   private lastCaretActivityTime: number = 0
-  private animationRaf: number | null = null
-  private drawRaf: number | null = null
   private activeWidget: EditorWidget | null = null
   private isWidgetPointerDown = false
   private isHeaderPointerDown = false
@@ -1841,17 +1836,9 @@ export class CanvasEditor {
       this.resizeObserver.disconnect()
       this.resizeObserver = null
     }
-    if (this.autocompleteRaf !== null) {
-      cancelAnimationFrame(this.autocompleteRaf)
-      this.autocompleteRaf = null
-    }
     if (this.autocompleteDebounceTimer !== null) {
       clearTimeout(this.autocompleteDebounceTimer)
       this.autocompleteDebounceTimer = null
-    }
-    if (this.drawRaf !== null) {
-      cancelAnimationFrame(this.drawRaf)
-      this.drawRaf = null
     }
     if (this.widgetUpdateTimeout !== null) {
       clearTimeout(this.widgetUpdateTimeout)
@@ -2607,7 +2594,7 @@ export class CanvasEditor {
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       })
       // This eliminates a weird flicker probably caused by some other reactive change
-      requestAnimationFrame(() => {
+      animationManager.nextFrame('scrollFlickerFix', () => {
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         queueMicrotask(() => {
@@ -2707,19 +2694,15 @@ export class CanvasEditor {
   }
 
   public stopAutoScroll() {
-    if (this.autoScrollRaf !== null) {
-      cancelAnimationFrame(this.autoScrollRaf)
-      this.autoScrollRaf = null
-    }
+    animationManager.unregister('autoScroll')
     this.autoScrollDirection = null
     this.autoScrollLastTime = null
   }
 
   private startMomentumScroll() {
     // Stop any existing momentum scroll first
-    if (this.momentumRaf !== null) {
-      cancelAnimationFrame(this.momentumRaf)
-      this.momentumRaf = null
+    if (animationManager.isRegistered('momentumScroll')) {
+      animationManager.unregister('momentumScroll')
     }
 
     const deceleration = 0.95
@@ -2728,11 +2711,6 @@ export class CanvasEditor {
     let velocityY = this.touchVelocityY
 
     const momentum = () => {
-      // Check if momentum was cancelled (new touch started)
-      if (this.momentumRaf === null) {
-        return
-      }
-
       const dpr = window.devicePixelRatio || 1
       const viewportWidth = this.canvas.width / dpr
       const headerHeight = this.getHeaderHeight()
@@ -2740,7 +2718,7 @@ export class CanvasEditor {
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
-        this.momentumRaf = null
+        animationManager.unregister('momentumScroll')
         return
       }
 
@@ -2798,36 +2776,30 @@ export class CanvasEditor {
 
       // Stop if velocity is too low
       if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
-        this.momentumRaf = null
+        animationManager.unregister('momentumScroll')
         return
       }
-
-      // Continue animation
-      this.momentumRaf = requestAnimationFrame(momentum)
     }
 
-    this.momentumRaf = requestAnimationFrame(momentum)
+    animationManager.register('momentumScroll', momentum)
   }
 
   private stopMomentumScroll() {
-    if (this.momentumRaf !== null) {
-      cancelAnimationFrame(this.momentumRaf)
-      this.momentumRaf = null
-    }
+    animationManager.unregister('momentumScroll')
     this.touchVelocityX = 0
     this.touchVelocityY = 0
   }
 
   private startAutoScroll() {
-    if (this.autoScrollRaf !== null) {
-      cancelAnimationFrame(this.autoScrollRaf)
+    if (animationManager.isRegistered('autoScroll')) {
+      animationManager.unregister('autoScroll')
     }
 
     this.autoScrollLastTime = performance.now()
 
     const scroll = (currentTime: number) => {
       if (!this.autoScrollDirection) {
-        this.autoScrollRaf = null
+        animationManager.unregister('autoScroll')
         this.autoScrollLastTime = null
         return
       }
@@ -2839,7 +2811,7 @@ export class CanvasEditor {
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
-        this.autoScrollRaf = null
+        animationManager.unregister('autoScroll')
         this.autoScrollLastTime = null
         return
       }
@@ -2889,27 +2861,24 @@ export class CanvasEditor {
         this.updateFunctionSignature()
       }
 
-      if (this.autoScrollDirection) {
-        this.autoScrollRaf = requestAnimationFrame(scroll)
-      }
-      else {
-        this.autoScrollRaf = null
+      if (!this.autoScrollDirection) {
+        animationManager.unregister('autoScroll')
         this.autoScrollLastTime = null
       }
     }
 
-    this.autoScrollRaf = requestAnimationFrame(scroll)
+    animationManager.register('autoScroll', scroll)
   }
 
   private startCaretBlink() {
-    if (this.caretBlinkRaf !== null) return
+    if (animationManager.isRegistered('caretBlink')) return
     this.caretBlinkStartTime = performance.now()
     this.lastCaretActivityTime = performance.now()
     this.caretOpacity = 1
 
     const blink = () => {
       if (!this.isActive) {
-        this.caretBlinkRaf = null
+        animationManager.unregister('caretBlink')
         return
       }
 
@@ -2929,17 +2898,13 @@ export class CanvasEditor {
       }
 
       this.maybeDraw()
-      this.caretBlinkRaf = requestAnimationFrame(blink)
     }
 
-    this.caretBlinkRaf = requestAnimationFrame(blink)
+    animationManager.register('caretBlink', blink)
   }
 
   private stopCaretBlink() {
-    if (this.caretBlinkRaf !== null) {
-      cancelAnimationFrame(this.caretBlinkRaf)
-      this.caretBlinkRaf = null
-    }
+    animationManager.unregister('caretBlink')
     this.caretOpacity = 1
   }
 
@@ -2957,21 +2922,17 @@ export class CanvasEditor {
   }
 
   private startAnimationLoop() {
-    if (this.animationRaf !== null) return
+    if (animationManager.isRegistered('mainAnimation')) return
 
     const animate = () => {
       this.draw()
-      this.animationRaf = requestAnimationFrame(animate)
     }
 
-    this.animationRaf = requestAnimationFrame(animate)
+    animationManager.register('mainAnimation', animate, -1000) // High priority
   }
 
   private stopAnimationLoop() {
-    if (this.animationRaf !== null) {
-      cancelAnimationFrame(this.animationRaf)
-      this.animationRaf = null
-    }
+    animationManager.unregister('mainAnimation')
   }
 
   private updateCanvasSize() {
@@ -3690,7 +3651,7 @@ export class CanvasEditor {
         ctx.save()
         ctx.globalAlpha = this.caretOpacity
         ctx.fillStyle = theme.caret
-        ctx.fillRect(caretX, caretY, 2, this.lineHeight - 1)
+        ctx.fillRect(caretX - .75, caretY - 1.5, 1.5, this.lineHeight - 1)
         ctx.restore()
 
         // Record caret content-space coordinates precisely for popup positioning
@@ -3785,14 +3746,13 @@ export class CanvasEditor {
 
   private maybeDraw() {
     // Only draw if not animating (animation loop handles drawing)
-    if (this.animationRaf !== null) {
+    if (animationManager.isRegistered('mainAnimation')) {
       return
     }
 
-    // Batch multiple draw calls in the same frame using requestAnimationFrame
-    if (this.drawRaf === null) {
-      this.drawRaf = requestAnimationFrame(() => {
-        this.drawRaf = null
+    // Batch multiple draw calls in the same frame using AnimationManager
+    if (!animationManager.isRegistered('drawBatch')) {
+      animationManager.nextFrame('drawBatch', () => {
         this.draw()
       })
     }
@@ -4367,14 +4327,108 @@ export class CanvasEditor {
         // Force immediate update if canvas state is already finalized (e.g., after error updates)
         if (changed && this.lastAutocompleteInfo !== null) {
           // Schedule three frames to ensure caret/layout state is finalized before measuring
-          if (this.autocompleteRaf !== null) cancelAnimationFrame(this.autocompleteRaf)
-          this.autocompleteRaf = requestAnimationFrame(() => {
-            this.autocompleteRaf = requestAnimationFrame(() => {
-              this.autocompleteRaf = requestAnimationFrame(() => {
-                computeAndPublish()
-                this.autocompleteRaf = null
-              })
-            })
+          animationManager.nextFrame('autocompleteDelay', () => {
+            // Recalculate position after the delay to ensure layout is settled
+            const ctx = this.canvas.getContext('2d')
+            if (!ctx) return
+
+            this.setFont(ctx)
+            const textPadding = this.getTextPadding()
+
+            // Recalculate caret position (similar to computeAndPublish logic)
+            let contentX: number | undefined
+            let contentY: number | undefined
+
+            if (this.options.wordWrap) {
+              const wrappedLines = this.getWrappedLines(ctx)
+              const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
+              const caretVisualPos = this.logicalToVisualPosition(
+                this.inputState.caret.line,
+                this.inputState.caret.column,
+                wrappedLines,
+              )
+              const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
+              let aboveHeight = 0
+              const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
+              if (widgets?.above && widgets.above.length > 0) {
+                aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+              }
+              contentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset + aboveHeight
+
+              const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
+              if (caretWrappedLine) {
+                const textBeforeCaretInSegment = caretWrappedLine.text.substring(
+                  0,
+                  caretVisualPos.visualColumn,
+                )
+                contentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
+
+                // Account for inline widgets before the caret
+                const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
+                for (const { widget, column } of inlineWidgetsForLine) {
+                  const columnInWrappedLine = column - caretWrappedLine.startColumn
+                  if (columnInWrappedLine <= caretVisualPos.visualColumn) {
+                    contentX += ctx.measureText('X'.repeat(widget.length)).width
+                  }
+                }
+              }
+            }
+            else {
+              const wrappedLines = this.getWrappedLines(ctx)
+              const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
+              const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
+              let aboveHeight = 0
+              const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
+              if (widgets?.above && widgets.above.length > 0) {
+                aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+              }
+
+              const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
+              const textBeforeCaret = caretLine.substring(0, this.inputState.caret.column)
+              contentX = textPadding + ctx.measureText(textBeforeCaret).width
+
+              // Account for inline widgets before the caret
+              const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(this.inputState.caret.line) || []
+              for (const { widget, column } of inlineWidgetsForLine) {
+                if (column <= this.inputState.caret.column) {
+                  contentX += ctx.measureText('X'.repeat(widget.length)).width
+                }
+              }
+
+              contentY = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
+            }
+
+            const position = calculateAutocompletePosition(
+              this.inputState.caret.line,
+              this.inputState.caret.column,
+              textPadding,
+              this.lineHeight,
+              ctx,
+              this.inputState.lines,
+              this.container.getBoundingClientRect(),
+              this.scrollX,
+              this.scrollY,
+              contentY!,
+              contentX!,
+            )
+            const headerHeight = this.getHeaderHeight()
+
+            const newPosition = {
+              x: Math.round(position.x),
+              y: Math.round(position.y + headerHeight),
+            }
+
+            // Only update if position actually changed
+            const positionChanged = !this.lastAutocompletePosition
+              || this.lastAutocompletePosition.x !== newPosition.x
+              || this.lastAutocompletePosition.y !== newPosition.y
+
+            this.lastAutocompletePosition = newPosition
+            if (positionChanged) {
+              this.callbacks.onAutocompletePositionChange?.(newPosition)
+            }
           })
         }
         else {
@@ -4509,7 +4563,7 @@ export class CanvasEditor {
 
     // Defer canvas size update to avoid feedback loop with ResizeObserver
     // The draw will use current canvas size, and metrics will be updated correctly
-    requestAnimationFrame(() => {
+    animationManager.nextFrame('errorUpdateDefer', () => {
       this.updateCanvasSize()
 
       const drawCtx = this.canvas.getContext('2d')
