@@ -227,12 +227,13 @@ const FunctionSignaturePopup = ({
               }
 
               for (const seg of segments) write(seg)
-              if (separatorSegment) write(separatorSegment)
 
               if (isActive) {
                 const rw = x - rectLeft
                 if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
               }
+
+              if (separatorSegment) write(separatorSegment)
 
               if (paintRun) {
                 if (isActive) {
