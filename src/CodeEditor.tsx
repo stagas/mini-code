@@ -4,8 +4,6 @@ import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './activ
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile } from './CodeFile.ts'
-import { setPopupCanvasDrawable, type PopupCanvasDrawable } from './popup-canvas.ts'
-import { drawAutocompletePopup } from './popup-drawables.ts'
 import { type EditorError } from './editor-error.ts'
 import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignature } from './function-signature.ts'
 import { History } from './history.ts'
@@ -16,6 +14,8 @@ import {
   type KeyOverrideFunction,
 } from './input.ts'
 import { MouseHandler } from './mouse.ts'
+import { type PopupCanvasDrawable, setPopupCanvasDrawable } from './popup-canvas.ts'
+import { drawAutocompletePopup } from './popup-drawables.ts'
 import { defaultTheme, type Theme, type Tokenizer } from './syntax.ts'
 
 interface CodeEditorProps {
@@ -160,17 +160,23 @@ export const CodeEditor = ({
       const oldText = lastTextRef.current
       const linesChanged = oldText !== newText
 
+      // Keep `lines` referentially stable when text didn't change.
+      // This avoids expensive downstream work (wrap/layout/autocomplete) that keys off `lines` identity.
+      const nextState: InputState = !linesChanged && newState.lines !== oldState.lines
+        ? { ...newState, lines: oldState.lines }
+        : newState
+
       // Only update if something actually changed
       if (!caretChanged && !selectionChanged && !linesChanged) {
         return
       }
 
       isUserInputRef.current = true
-      setInputStateInternal(newState)
-      inputStateRef.current = newState
+      setInputStateInternal(nextState)
+      inputStateRef.current = nextState
 
       // Always update CodeFile to trigger subscriptions
-      codeFileRef.current.inputState = newState
+      codeFileRef.current.inputState = nextState
 
       if (linesChanged) {
         lastTextRef.current = newText

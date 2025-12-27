@@ -33,6 +33,121 @@ const isInsideString = (line: string, column: number): boolean => {
   return inString
 }
 
+const KEYWORDS = new Set([
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'continue',
+  'debugger',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'export',
+  'extends',
+  'finally',
+  'for',
+  'function',
+  'if',
+  'import',
+  'in',
+  'instanceof',
+  'let',
+  'new',
+  'return',
+  'super',
+  'switch',
+  'this',
+  'throw',
+  'try',
+  'typeof',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+  'await',
+  'async',
+  'static',
+  'null',
+  'true',
+  'false',
+  'undefined',
+])
+
+const isKeyword = (word: string): boolean => KEYWORDS.has(word)
+
+const isIdentifierStart = (char: string | undefined): boolean => {
+  if (!char) return false
+  const code = char.charCodeAt(0)
+  return (code >= 65 && code <= 90) // A-Z
+    || (code >= 97 && code <= 122) // a-z
+    || code === 95 // _
+    || code === 36 // $
+}
+
+const isIdentifierChar = (char: string | undefined): boolean => {
+  if (!char) return false
+  const code = char.charCodeAt(0)
+  return (code >= 65 && code <= 90) // A-Z
+    || (code >= 97 && code <= 122) // a-z
+    || (code >= 48 && code <= 57) // 0-9
+    || code === 95 // _
+    || code === 36 // $
+}
+
+const forEachIdentifier = (lines: string[], onIdentifier: (identifier: string) => void) => {
+  for (const line of lines) {
+    let inString = false
+    let stringChar = ''
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i]
+
+      if (inString) {
+        if (char === '\\') {
+          i++
+          continue
+        }
+        if (char === stringChar) {
+          inString = false
+          stringChar = ''
+        }
+        continue
+      }
+
+      if (char === '"' || char === '\'' || char === '`') {
+        inString = true
+        stringChar = char
+        continue
+      }
+
+      if (!isIdentifierStart(char)) continue
+
+      const start = i
+      i++
+      while (i < line.length && isIdentifierChar(line[i])) i++
+
+      let identifier = line.slice(start, i)
+
+      while (line[i] === '.' && isIdentifierStart(line[i + 1])) {
+        const dotIndex = i
+        i += 2
+        while (i < line.length && isIdentifierChar(line[i])) i++
+        identifier += line.slice(dotIndex, i)
+      }
+
+      i--
+
+      if (!isKeyword(identifier)) {
+        onIdentifier(identifier)
+      }
+    }
+  }
+}
+
 /**
  * Find the word being typed at the cursor position
  * Only returns a word if the cursor is at the end of a word (indicating active typing)
@@ -92,42 +207,7 @@ export const findCurrentWord = (
  */
 export const extractIdentifiers = (lines: string[]): Set<string> => {
   const identifiers = new Set<string>()
-
-  for (const line of lines) {
-    // Regex to match identifiers (including dotted ones like console.log)
-    const identifierRegex = /[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*/g
-    const matches = line.matchAll(identifierRegex)
-
-    for (const match of matches) {
-      const identifier = match[0]
-      const startIndex = match.index!
-
-      // Check if this identifier is inside a string by tracking string state up to its start
-      let inStringAtStart = false
-      let currentStringChar = ''
-
-      for (let i = 0; i < startIndex; i++) {
-        const char = line[i]
-
-        if (!inStringAtStart && (char === '"' || char === '\'' || char === '`')) {
-          inStringAtStart = true
-          currentStringChar = char
-          continue
-        }
-
-        if (inStringAtStart && char === currentStringChar && (i === 0 || line[i - 1] !== '\\')) {
-          inStringAtStart = false
-          currentStringChar = ''
-          continue
-        }
-      }
-
-      // Only add if not inside a string and not a keyword
-      if (!inStringAtStart && !isKeyword(identifier)) {
-        identifiers.add(identifier)
-      }
-    }
-  }
+  forEachIdentifier(lines, identifier => identifiers.add(identifier))
 
   return identifiers
 }
@@ -135,53 +215,6 @@ export const extractIdentifiers = (lines: string[]): Set<string> => {
 /**
  * Check if a word is a JavaScript keyword
  */
-const isKeyword = (word: string): boolean => {
-  const keywords = new Set([
-    'break',
-    'case',
-    'catch',
-    'class',
-    'const',
-    'continue',
-    'debugger',
-    'default',
-    'delete',
-    'do',
-    'else',
-    'export',
-    'extends',
-    'finally',
-    'for',
-    'function',
-    'if',
-    'import',
-    'in',
-    'instanceof',
-    'let',
-    'new',
-    'return',
-    'super',
-    'switch',
-    'this',
-    'throw',
-    'try',
-    'typeof',
-    'var',
-    'void',
-    'while',
-    'with',
-    'yield',
-    'await',
-    'async',
-    'static',
-    'null',
-    'true',
-    'false',
-    'undefined',
-  ])
-  return keywords.has(word)
-}
-
 /**
  * Get autocomplete suggestions based on current word
  */
@@ -192,56 +225,52 @@ export const getAutocompleteSuggestions = (
 ): string[] => {
   if (!currentWord) return []
 
-  const suggestions = new Set<string>()
-
-  // Add identifiers from code
-  const identifiers = extractIdentifiers(lines)
-  for (const identifier of identifiers) {
-    suggestions.add(identifier)
-  }
-
-  // Add function names from definitions (excluding deprecated ones)
-  for (const [funcName, funcDef] of Object.entries(functionDefinitions)) {
-    if (!funcDef.deprecated) {
-      suggestions.add(funcName)
-    }
-  }
-
   // Handle dot-prefixed matching: if current word starts with '.', match suggestions that start with '.'
   const startsWithDot = currentWord.startsWith('.')
-  const prefix = currentWord.toLowerCase()
+  const wordWithoutDot = startsWithDot ? currentWord.slice(1) : currentWord
+  const prefixLower = wordWithoutDot.toLowerCase()
 
-  let filtered: string[]
-  if (startsWithDot) {
-    // Match suggestions that start with '.' and match the rest
-    filtered = Array.from(suggestions).filter(suggestion => {
+  const matches = new Set<string>()
+
+  const matchesPrefix = (suggestion: string): boolean => {
+    if (suggestion === currentWord) return false
+
+    if (startsWithDot) {
       if (!suggestion.startsWith('.')) return false
-      const suggestionWithoutDot = suggestion.substring(1)
-      const wordWithoutDot = currentWord.substring(1)
-      return suggestionWithoutDot.toLowerCase().startsWith(wordWithoutDot.toLowerCase())
+      return suggestion.slice(1).toLowerCase().startsWith(prefixLower)
+    }
+
+    return suggestion.toLowerCase().startsWith(prefixLower)
+  }
+
+  if (!startsWithDot) {
+    forEachIdentifier(lines, id => {
+      if (matchesPrefix(id)) matches.add(id)
     })
   }
-  else {
-    // Regular prefix matching
-    filtered = Array.from(suggestions).filter(suggestion => suggestion.toLowerCase().startsWith(prefix))
+
+  for (const [funcName, funcDef] of Object.entries(functionDefinitions)) {
+    if (funcDef.deprecated) continue
+    if (matchesPrefix(funcName)) matches.add(funcName)
   }
 
-  // Remove the current word itself from suggestions
-  const withoutSelf = filtered.filter(s => s !== currentWord)
+  const withoutSelf = Array.from(matches)
 
   // Sort by relevance:
   // 1. Exact case match comes first
   // 2. Case-insensitive match but different case
   // 3. Then alphabetically
-  return withoutSelf.sort((a, b) => {
-    const aExact = a.startsWith(currentWord)
-    const bExact = b.startsWith(currentWord)
+  return withoutSelf
+    .sort((a, b) => {
+      const aExact = a.startsWith(currentWord)
+      const bExact = b.startsWith(currentWord)
 
-    if (aExact && !bExact) return -1
-    if (!aExact && bExact) return 1
+      if (aExact && !bExact) return -1
+      if (!aExact && bExact) return 1
 
-    return a.localeCompare(b)
-  })
+      return a.localeCompare(b)
+    })
+    .slice(0, 200)
 }
 
 /**

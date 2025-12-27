@@ -4221,46 +4221,46 @@ export class CanvasEditor {
       const ctx = this.canvas.getContext('2d')
       if (ctx) {
         this.setFont(ctx)
-        let preCalculatedCaretContentY: number | undefined
-        let preCalculatedCaretContentX: number | undefined
         const textPadding = this.getTextPadding()
-        if (this.options.wordWrap) {
-          const wrappedLines = this.getWrappedLines(ctx)
-          const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+        const computeCaretContentFallback = (
+          ctx: CanvasRenderingContext2D,
+          textPadding: number,
+        ): { x?: number; y?: number } => {
+          if (this.options.wordWrap) {
+            const wrappedLines = this.getWrappedLines(ctx)
+            const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
 
-          const caretVisualPos = this.logicalToVisualPosition(
-            this.inputState.caret.line,
-            this.inputState.caret.column,
-            wrappedLines,
-          )
-          const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
-          let aboveHeight = 0
-          const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
-          if (widgets?.above && widgets.above.length > 0) {
-            aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
-          }
-          preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset
-            + aboveHeight
-
-          const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
-          if (caretWrappedLine) {
-            const textBeforeCaretInSegment = caretWrappedLine.text.substring(
-              0,
-              caretVisualPos.visualColumn,
+            const caretVisualPos = this.logicalToVisualPosition(
+              this.inputState.caret.line,
+              this.inputState.caret.column,
+              wrappedLines,
             )
-            preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
+            const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
+            let aboveHeight = 0
+            const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
+            if (widgets?.above && widgets.above.length > 0) {
+              aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+            }
+            const y = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset + aboveHeight
+
+            const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
+            if (!caretWrappedLine) return { y }
+
+            const textBeforeCaretInSegment = caretWrappedLine.text.substring(0, caretVisualPos.visualColumn)
+            let x = textPadding + ctx.measureText(textBeforeCaretInSegment).width
 
             // Account for inline widgets before the caret
             const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
             for (const { widget, column } of inlineWidgetsForLine) {
               const columnInWrappedLine = column - caretWrappedLine.startColumn
               if (columnInWrappedLine <= caretVisualPos.visualColumn) {
-                preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+                x += ctx.measureText('X'.repeat(widget.length)).width
               }
             }
+
+            return { x, y }
           }
-        }
-        else {
+
           // Non-wrapped: compute caret X/Y in content space
           const wrappedLines = this.getWrappedLines(ctx)
           const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
@@ -4274,23 +4274,29 @@ export class CanvasEditor {
 
           const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
           const textBeforeCaret = caretLine.substring(0, this.inputState.caret.column)
-          preCalculatedCaretContentX = textPadding + ctx.measureText(textBeforeCaret).width
+          let x = textPadding + ctx.measureText(textBeforeCaret).width
 
           // Account for inline widgets before the caret
           const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(this.inputState.caret.line) || []
           for (const { widget, column } of inlineWidgetsForLine) {
             if (column <= this.inputState.caret.column) {
-              preCalculatedCaretContentX += ctx.measureText('X'.repeat(widget.length)).width
+              x += ctx.measureText('X'.repeat(widget.length)).width
             }
           }
 
-          preCalculatedCaretContentY = this.padding + this.inputState.caret.line * this.lineHeight + yOffset
-            + aboveHeight
+          const y = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
+          return { x, y }
         }
 
-        const computeAndPublish = () => {
-          const contentX = this.lastCaretContentX ?? preCalculatedCaretContentX
-          const contentY = this.lastCaretContentY ?? preCalculatedCaretContentY
+        const publishPosition = (
+          ctx: CanvasRenderingContext2D,
+          textPadding: number,
+          fallback?: { x?: number; y?: number },
+        ) => {
+          const contentX = this.lastCaretContentX ?? fallback?.x
+          const contentY = this.lastCaretContentY ?? fallback?.y
+          if (contentX === undefined || contentY === undefined) return
+
           const position = calculateAutocompletePosition(
             this.inputState.caret.line,
             this.inputState.caret.column,
@@ -4322,117 +4328,30 @@ export class CanvasEditor {
           }
         }
 
+        const fallback = (this.lastCaretContentX === null || this.lastCaretContentY === null)
+          ? computeCaretContentFallback(ctx, textPadding)
+          : undefined
+
         // If autocomplete info hasn't changed, update position immediately (e.g., during scroll)
         // Only delay when autocomplete info is changing (new suggestions, etc.)
         // Force immediate update if canvas state is already finalized (e.g., after error updates)
         if (changed && this.lastAutocompleteInfo !== null) {
-          // Schedule three frames to ensure caret/layout state is finalized before measuring
+          // Delay slightly to ensure caret/layout state is finalized before measuring
           animationManager.nextFrame('autocompleteDelay', () => {
-            // Recalculate position after the delay to ensure layout is settled
             const ctx = this.canvas.getContext('2d')
             if (!ctx) return
 
             this.setFont(ctx)
             const textPadding = this.getTextPadding()
+            const fallback = (this.lastCaretContentX === null || this.lastCaretContentY === null)
+              ? computeCaretContentFallback(ctx, textPadding)
+              : undefined
 
-            // Recalculate caret position (similar to computeAndPublish logic)
-            let contentX: number | undefined
-            let contentY: number | undefined
-
-            if (this.options.wordWrap) {
-              const wrappedLines = this.getWrappedLines(ctx)
-              const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
-
-              const caretVisualPos = this.logicalToVisualPosition(
-                this.inputState.caret.line,
-                this.inputState.caret.column,
-                wrappedLines,
-              )
-              const yOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
-              let aboveHeight = 0
-              const widgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
-              if (widgets?.above && widgets.above.length > 0) {
-                aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
-              }
-              contentY = this.padding + caretVisualPos.visualLine * this.lineHeight + yOffset + aboveHeight
-
-              const caretWrappedLine = wrappedLines[caretVisualPos.visualLine]
-              if (caretWrappedLine) {
-                const textBeforeCaretInSegment = caretWrappedLine.text.substring(
-                  0,
-                  caretVisualPos.visualColumn,
-                )
-                contentX = textPadding + ctx.measureText(textBeforeCaretInSegment).width
-
-                // Account for inline widgets before the caret
-                const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(caretVisualPos.visualLine) || []
-                for (const { widget, column } of inlineWidgetsForLine) {
-                  const columnInWrappedLine = column - caretWrappedLine.startColumn
-                  if (columnInWrappedLine <= caretVisualPos.visualColumn) {
-                    contentX += ctx.measureText('X'.repeat(widget.length)).width
-                  }
-                }
-              }
-            }
-            else {
-              const wrappedLines = this.getWrappedLines(ctx)
-              const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
-
-              const yOffset = widgetLayout.yOffsets.get(this.inputState.caret.line) || 0
-              let aboveHeight = 0
-              const widgets = widgetLayout.widgetsByVisualLine.get(this.inputState.caret.line)
-              if (widgets?.above && widgets.above.length > 0) {
-                aboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
-              }
-
-              const caretLine = this.inputState.lines[this.inputState.caret.line] || ''
-              const textBeforeCaret = caretLine.substring(0, this.inputState.caret.column)
-              contentX = textPadding + ctx.measureText(textBeforeCaret).width
-
-              // Account for inline widgets before the caret
-              const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(this.inputState.caret.line) || []
-              for (const { widget, column } of inlineWidgetsForLine) {
-                if (column <= this.inputState.caret.column) {
-                  contentX += ctx.measureText('X'.repeat(widget.length)).width
-                }
-              }
-
-              contentY = this.padding + this.inputState.caret.line * this.lineHeight + yOffset + aboveHeight
-            }
-
-            const position = calculateAutocompletePosition(
-              this.inputState.caret.line,
-              this.inputState.caret.column,
-              textPadding,
-              this.lineHeight,
-              ctx,
-              this.inputState.lines,
-              this.container.getBoundingClientRect(),
-              this.scrollX,
-              this.scrollY,
-              contentY!,
-              contentX!,
-            )
-            const headerHeight = this.getHeaderHeight()
-
-            const newPosition = {
-              x: Math.round(position.x),
-              y: Math.round(position.y + headerHeight),
-            }
-
-            // Only update if position actually changed
-            const positionChanged = !this.lastAutocompletePosition
-              || this.lastAutocompletePosition.x !== newPosition.x
-              || this.lastAutocompletePosition.y !== newPosition.y
-
-            this.lastAutocompletePosition = newPosition
-            if (positionChanged) {
-              this.callbacks.onAutocompletePositionChange?.(newPosition)
-            }
+            publishPosition(ctx, textPadding, fallback)
           })
         }
         else {
-          computeAndPublish()
+          publishPosition(ctx, textPadding, fallback)
         }
       }
     }
