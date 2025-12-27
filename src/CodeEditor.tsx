@@ -1289,18 +1289,19 @@ export const CodeEditor = ({
         return
       }
 
+      const wasWidgetActive = canvasEditorRef.current?.isWidgetPointerActive()
+
       // Check if event target is this editor's canvas or a child of it
       // But always allow pointer up if we're dragging a selection (can happen outside canvas)
       const target = event.target as Node | null
       const isDraggingSelection = mouseHandlerRef.current?.isDraggingSelection()
-      if (target && !canvas.contains(target) && target !== canvas && !isDraggingSelection) {
+      if (!wasWidgetActive && target && !canvas.contains(target) && target !== canvas && !isDraggingSelection) {
         return
       }
 
       event.preventDefault()
 
       // Handle widget pointer up first
-      const wasWidgetActive = canvasEditorRef.current?.isWidgetPointerActive()
       canvasEditorRef.current?.handleWidgetPointerUp()
 
       // If a widget was active, don't proceed with caret/selection/focus
