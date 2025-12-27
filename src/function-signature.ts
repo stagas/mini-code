@@ -192,83 +192,87 @@ export const findFunctionCallContext = (
   cursorColumn: number,
   functionDefinitions: Record<string, FunctionSignature> = {},
 ): FunctionCallInfo | null => {
-  // Convert cursor position to global position for easier searching
-  const clampedCursorLine = Math.max(0, Math.min(cursorLine, lines.length))
-  let cursorGlobalPos = 0
-  for (let i = 0; i < clampedCursorLine; i++) {
-    const line = lines[i] ?? ''
-    cursorGlobalPos += line.length + 1 // +1 for newline
-  }
-  cursorGlobalPos += cursorColumn
-
-  // Join all lines to work with a single string
   const code = lines.join('\n')
 
-  // Check if cursor is on a function name followed by opening parenthesis
-  const beforeCursor = code.substring(0, cursorGlobalPos)
-  const afterCursor = code.substring(cursorGlobalPos)
-
-  // Find word boundaries around cursor
-  // Also match dot methods like .walk
-  const beforeMatch = beforeCursor.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)$/)
-  const afterMatch = afterCursor.match(/^([a-zA-Z0-9_$]*)/)
-
-  if (beforeMatch || afterMatch) {
-    const wordStart = beforeMatch ? cursorGlobalPos - beforeMatch[1].length : cursorGlobalPos
-    const wordEnd = afterMatch ? cursorGlobalPos + afterMatch[1].length : cursorGlobalPos
-    const currentWord = code.substring(wordStart, wordEnd)
-
-    // Check if there's an opening parenthesis right after this word (with optional whitespace)
-    const afterWord = code.substring(wordEnd).match(/^\s*\(/)
-    if (afterWord) {
-      const openParenPos = wordEnd + afterWord[0].length - 1
-
-      // Convert global position back to line/column
-      let remainingPos = openParenPos
-      let openLine = 0
-      let openColumn = 0
-
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const lineLength = lines[lineIndex].length
-        if (remainingPos <= lineLength) {
-          openLine = lineIndex
-          openColumn = remainingPos
-          break
-        }
-        remainingPos -= lineLength + 1
-      }
-
-      return {
-        functionName: currentWord,
-        currentArgumentIndex: 0,
-        currentParameterName: undefined,
-        openParenPosition: { line: openLine, column: openColumn },
-      }
+  const lineStarts: number[] = new Array(lines.length)
+  {
+    let pos = 0
+    for (let i = 0; i < lines.length; i++) {
+      lineStarts[i] = pos
+      pos += (lines[i]?.length ?? 0) + 1
     }
   }
 
-  // Find all parentheses and their positions
-  const parens: { char: string; position: number; line: number; column: number }[] = []
+  const findLine = (pos: number): number => {
+    let low = 0
+    let high = lineStarts.length - 1
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      const start = lineStarts[mid] ?? 0
+      const nextStart = (mid + 1 < lineStarts.length) ? (lineStarts[mid + 1] ?? code.length) : code.length + 1
+      if (pos < start) high = mid - 1
+      else if (pos >= nextStart) low = mid + 1
+      else return mid
+    }
+    return Math.max(0, Math.min(lineStarts.length - 1, low))
+  }
 
-  for (let i = 0; i < code.length; i++) {
-    const char = code[i]
-    if (char === '(' || char === ')') {
-      // Convert global position back to line/column
-      let remainingPos = i
-      let line = 0
-      let column = 0
+  const toLineColumn = (pos: number): { line: number; column: number } => {
+    const line = findLine(pos)
+    return { line, column: pos - (lineStarts[line] ?? 0) }
+  }
 
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const lineLength = lines[lineIndex].length
-        if (remainingPos <= lineLength) {
-          line = lineIndex
-          column = remainingPos
-          break
+  const clampedCursorLine = Math.max(0, Math.min(cursorLine, Math.max(0, lines.length - 1)))
+  const clampedCursorColumn = Math.max(0, Math.min(cursorColumn, lines[clampedCursorLine]?.length ?? 0))
+  const cursorGlobalPos = Math.max(0, Math.min(
+    (lineStarts[clampedCursorLine] ?? 0) + clampedCursorColumn,
+    code.length,
+  ))
+  // If the caret is immediately after a closing paren, treat it as "on" the paren
+  // so we can still resolve the surrounding call context.
+  const cursorPos = (cursorGlobalPos > 0 && code[cursorGlobalPos - 1] === ')')
+    ? cursorGlobalPos - 1
+    : cursorGlobalPos
+
+  // Check if cursor is on a function name followed by opening parenthesis
+  const beforeCursor = code.substring(0, cursorPos)
+  const afterCursor = code.substring(cursorPos)
+
+  const isIdent = (c: string): boolean => /[a-zA-Z0-9_$]/.test(c)
+  const isIdentStart = (c: string): boolean => /[a-zA-Z_$]/.test(c)
+  const isValidName = (s: string): boolean =>
+    /^(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$]*)(\.[a-zA-Z_$][a-zA-Z0-9_$]*)*$/.test(s)
+
+  // Robust word boundary scan around the cursor (handles cases where regex misses)
+  {
+    let start = cursorPos
+    while (start > 0) {
+      const c = code[start - 1]!
+      if (isIdent(c) || c === '.') start--
+      else break
+    }
+    let end = cursorPos
+    while (end < code.length) {
+      const c = code[end]!
+      if (isIdent(c) || c === '.') end++
+      else break
+    }
+    if (start < end) {
+      const word = code.substring(start, end)
+      // Don't treat '.' by itself or malformed dotted chains as a function name.
+      if (word.length > 0 && isValidName(word)) {
+        const afterWord = code.substring(end).match(/^\s*\(/)
+        if (afterWord) {
+          const openParenPos = end + afterWord[0].length - 1
+          const lc = toLineColumn(openParenPos)
+          return {
+            functionName: word,
+            currentArgumentIndex: 0,
+            currentParameterName: undefined,
+            openParenPosition: lc,
+          }
         }
-        remainingPos -= lineLength + 1 // +1 for newline
       }
-
-      parens.push({ char, position: i, line, column })
     }
   }
 
@@ -279,65 +283,50 @@ export const findFunctionCallContext = (
     openColumn: number
     functionName: string
   } | null = null
-  let smallestRange = Infinity
+  {
+    // Scan only up to the cursor. This is much more stable for "in-progress" code,
+    // especially inside callbacks where parentheses may be temporarily unbalanced later.
+    const prefix = code.substring(0, cursorPos)
+    const openStack: number[] = []
+    let inString = false
+    let stringChar = ''
 
-  // Find matched parentheses pairs
-  const stack: { position: number; line: number; column: number }[] = []
+    for (let i = 0; i < prefix.length; i++) {
+      const char = prefix[i]
 
-  for (const paren of parens) {
-    if (paren.char === '(') {
-      stack.push({ position: paren.position, line: paren.line, column: paren.column })
-    }
-    else if (paren.char === ')') {
-      if (stack.length > 0) {
-        const openParen = stack.pop()!
-
-        // Check if cursor is inside this parentheses pair
-        if (cursorGlobalPos > openParen.position && cursorGlobalPos <= paren.position) {
-          const range = paren.position - openParen.position
-
-          // Find the function name before the opening parenthesis
-          const beforeParen = code.substring(0, openParen.position).trim()
-          // Look for function name that might be preceded by operators like |> or other characters
-          // Also match dot methods like .walk
-          const functionNameMatch = beforeParen.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
-
-          if (functionNameMatch && range < smallestRange) {
-            const functionName = functionNameMatch[1]
-            smallestRange = range
-            bestMatch = {
-              openPos: openParen.position,
-              openLine: openParen.line,
-              openColumn: openParen.column,
-              functionName,
-            }
-          }
-        }
+      if (!inString && (char === '"' || char === '\'' || char === '`')) {
+        inString = true
+        stringChar = char
+        continue
       }
-    }
-  }
-
-  // Check for unmatched opening parentheses (cursor might be in an incomplete function call)
-  for (const openParen of stack) {
-    if (cursorGlobalPos > openParen.position) {
-      const range = cursorGlobalPos - openParen.position
-
-      // Find the function name before the opening parenthesis
-      const beforeParen = code.substring(0, openParen.position).trim()
-      // Look for function name that might be preceded by operators like |> or other characters
-      // Also match dot methods like .walk
-      const functionNameMatch = beforeParen.match(/(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/)
-
-      if (functionNameMatch && range < smallestRange) {
-        const functionName = functionNameMatch[1]
-        smallestRange = range
-        bestMatch = {
-          openPos: openParen.position,
-          openLine: openParen.line,
-          openColumn: openParen.column,
-          functionName,
+      if (inString) {
+        if (char === stringChar && prefix[i - 1] !== '\\') {
+          inString = false
+          stringChar = ''
         }
+        continue
       }
+
+      if (char === '(') openStack.push(i)
+      else if (char === ')') openStack.pop()
+    }
+
+    const functionNameRe = /(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$.]*)\s*$/
+
+    for (let i = openStack.length - 1; i >= 0; i--) {
+      const openPos = openStack[i]!
+      const beforeParen = code.substring(0, openPos).trimEnd()
+      const functionNameMatch = beforeParen.match(functionNameRe)
+      if (!functionNameMatch) continue
+
+      const lc = toLineColumn(openPos)
+      bestMatch = {
+        openPos,
+        openLine: lc.line,
+        openColumn: lc.column,
+        functionName: functionNameMatch[1],
+      }
+      break
     }
   }
 
@@ -347,7 +336,7 @@ export const findFunctionCallContext = (
   const signature = functionDefinitions[bestMatch.functionName]
 
   // Parse all arguments before cursor to determine which parameters have been used
-  const allArgsText = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+  const allArgsText = code.substring(bestMatch.openPos + 1, cursorPos)
   const usedParameterNames = new Set<string>()
   const usedPositionalIndices = new Set<number>()
   let positionalIndex = 0
@@ -451,7 +440,7 @@ export const findFunctionCallContext = (
   }
 
   // Calculate current argument index by counting commas between open paren and cursor
-  const textBetween = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+  const textBetween = code.substring(bestMatch.openPos + 1, cursorPos)
   let commaCount = 0
   let parenDepth2 = 0
   let bracketDepth2 = 0
@@ -488,7 +477,7 @@ export const findFunctionCallContext = (
   }
 
   // Try to extract the current parameter name if we're in a named parameter
-  const fullTextBetween = code.substring(bestMatch.openPos + 1, cursorGlobalPos)
+  const fullTextBetween = code.substring(bestMatch.openPos + 1, cursorPos)
 
   // Find the start of the current argument by looking for the last comma at the top level
   let lastCommaIndex = -1
@@ -645,7 +634,7 @@ export const findFunctionCallContext = (
           const untrimmedArgText = textFromOpenParen.substring(argStartInFullText, argEndInFullText)
           const leadingWhitespace = untrimmedArgText.length - untrimmedArgText.trimStart().length
           const trimmedArgStart = argStartInCode + leadingWhitespace
-          const cursorInArg = cursorGlobalPos - trimmedArgStart
+          const cursorInArg = cursorPos - trimmedArgStart
           const matchEnd = matchIndex + paramName.length
 
           // If cursor is on or within the parameter name, use it
@@ -668,7 +657,7 @@ export const findFunctionCallContext = (
             const argWord = currentArgWordMatch[1]
 
             // Check if there's a colon after the cursor
-            const argTextFromCursor = code.substring(cursorGlobalPos, Math.min(
+            const argTextFromCursor = code.substring(cursorPos, Math.min(
               code.length,
               bestMatch.openPos + 1 + fullTextBetween.length + 100,
             ))

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FunctionParameter, FunctionSignature } from './function-signature.ts'
 import { defaultTheme, type Theme } from './syntax.ts'
 
@@ -21,26 +21,50 @@ const FunctionSignaturePopup = ({
   theme = defaultTheme,
   onDimensionsChange,
 }: FunctionSignaturePopupProps) => {
-  const popupRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLElement | null>(null)
-  const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
+  const anchorRef = useRef<HTMLDivElement>(null)
+  const candidateRefs = useRef(new Map<string, HTMLDivElement | null>())
   const [positionOffset, setPositionOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  })
+  const [layoutTick, setLayoutTick] = useState(0)
+  const [selected, setSelected] = useState<{
+    id: string
+    left: number
+    top: number
+    maxWidth: number
+    boxShadow: string
+    measured: { width: number; height: number }
+  } | null>(null)
   const onDimensionsChangeRef = useRef(onDimensionsChange)
+  const layoutPassRef = useRef(0)
+  const lastPositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
 
   useEffect(() => {
     onDimensionsChangeRef.current = onDimensionsChange
   }, [onDimensionsChange])
 
-  // Calculate position offset - runs after layout to ensure accurate measurements
-  const calculateOffset = useCallback(() => {
-    if (!popupRef.current) {
-      setPositionOffset({ x: 0, y: 0 })
+  const margin = 0
+  const lineHeight = 20
+  const caretGap = 1
+
+  const computeContainer = useCallback((): {
+    offset: { x: number; y: number }
+    viewport: { width: number; height: number }
+  } => {
+    const start = anchorRef.current?.parentElement
+    if (!start) {
       containerRef.current = null
-      return
+      return {
+        offset: { x: 0, y: 0 },
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      }
     }
 
     // Find the nearest ancestor with transforms that creates a containing block for fixed positioning
-    let element: HTMLElement | null = popupRef.current.parentElement
+    let element: HTMLElement | null = start
     let transformAncestor: HTMLElement | null = null
 
     while (element) {
@@ -62,163 +86,327 @@ const FunctionSignaturePopup = ({
     }
 
     containerRef.current = transformAncestor
-
-    if (transformAncestor) {
-      // Get the container's bounding rect (accounts for transforms)
-      const containerRect = transformAncestor.getBoundingClientRect()
-      // The position passed in is viewport coordinates, but if there's a transform ancestor,
-      // fixed positioning is relative to that ancestor, so we need to adjust
-      setPositionOffset({
-        x: containerRect.left,
-        y: containerRect.top,
-      })
+    if (!transformAncestor) {
+      return {
+        offset: { x: 0, y: 0 },
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+      }
     }
-    else {
-      setPositionOffset({ x: 0, y: 0 })
+
+    const rect = transformAncestor.getBoundingClientRect()
+    const style = window.getComputedStyle(transformAncestor)
+    const borderLeft = Number.parseFloat(style.borderLeftWidth) || 0
+    const borderRight = Number.parseFloat(style.borderRightWidth) || 0
+    const borderTop = Number.parseFloat(style.borderTopWidth) || 0
+    const borderBottom = Number.parseFloat(style.borderBottomWidth) || 0
+    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0
+    const paddingRight = Number.parseFloat(style.paddingRight) || 0
+    const paddingTop = Number.parseFloat(style.paddingTop) || 0
+    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+
+    // For transformed ancestors, fixed positioning is relative to the padding box.
+    const offsetX = rect.left + borderLeft + paddingLeft
+    const offsetY = rect.top + borderTop + paddingTop
+    const viewportWidth = Math.max(0, rect.width - borderLeft - borderRight - paddingLeft - paddingRight)
+    const viewportHeight = Math.max(0, rect.height - borderTop - borderBottom - paddingTop - paddingBottom)
+    return {
+      offset: { x: offsetX, y: offsetY },
+      viewport: { width: viewportWidth, height: viewportHeight },
     }
   }, [])
 
-  // Find the containing block for fixed positioning and calculate offset
+  useEffect(() => {
+    if (!visible) return
+    const onWindowChange = () => setLayoutTick(t => t + 1)
+    window.addEventListener('resize', onWindowChange, { passive: true })
+    window.addEventListener('scroll', onWindowChange, { passive: true, capture: true })
+    return () => {
+      window.removeEventListener('resize', onWindowChange)
+      window.removeEventListener('scroll', onWindowChange, true)
+    }
+  }, [visible])
+
+  const effective = useMemo(() => {
+    const adjustedX = position.x - positionOffset.x
+    const adjustedY = position.y - positionOffset.y
+    // CanvasEditor draws caret at (lastCaretContentY - 2) with height (lineHeight - 1).
+    const caretLineTop = adjustedY - 2
+    const caretLineBottom = adjustedY + lineHeight - 1
+
+    return {
+      adjustedX,
+      caretLineTop,
+      caretLineBottom,
+      viewportWidth: viewportSize.width,
+      viewportHeight: viewportSize.height,
+    }
+  }, [position.x, position.y, positionOffset.x, positionOffset.y, viewportSize.width, viewportSize.height])
+
+  type Quadrant = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
+  const fractions = useMemo(() => [0.25, 0.5, 0.75, 1] as const, [])
+
+  const candidates = useMemo(() => {
+    if (!visible) return []
+
+    const leftW = Math.max(0, effective.adjustedX - margin)
+    const rightW = Math.max(0, effective.viewportWidth - margin - effective.adjustedX)
+    const topH = Math.max(0, effective.caretLineTop - margin)
+    const bottomH = Math.max(0, effective.viewportHeight - margin - effective.caretLineBottom)
+
+    const defs: Array<{ quadrant: Quadrant; w: number; h: number }> = [
+      { quadrant: 'bottomRight', w: rightW, h: bottomH },
+      { quadrant: 'bottomLeft', w: leftW, h: bottomH },
+      { quadrant: 'topRight', w: rightW, h: topH },
+      { quadrant: 'topLeft', w: leftW, h: topH },
+    ]
+
+    const out: Array<{ id: string; quadrant: Quadrant; frac: number; maxWidth: number }> = []
+    for (const d of defs) {
+      if (d.w <= 0 || d.h <= 0) continue
+      for (const frac of fractions) {
+        const maxWidth = Math.max(1, Math.floor(d.w * frac))
+        out.push({ id: `${d.quadrant}:${frac}`, quadrant: d.quadrant, frac, maxWidth })
+      }
+    }
+    return out
+  }, [
+    visible,
+    effective.adjustedX,
+    effective.viewportWidth,
+    effective.viewportHeight,
+    effective.caretLineTop,
+    effective.caretLineBottom,
+    fractions,
+    margin,
+  ])
+
+  const setCandidateRef = useCallback((id: string) => {
+    return (el: HTMLDivElement | null) => {
+      candidateRefs.current.set(id, el)
+    }
+  }, [])
+
   useLayoutEffect(() => {
     if (!visible) {
-      setPositionOffset({ x: 0, y: 0 })
       containerRef.current = null
+      layoutPassRef.current = 0
+      lastPositionRef.current = { x: 0, y: 0 }
+      setSelected(prev => (prev ? null : prev))
+      setPositionOffset(prev => (prev.x === 0 && prev.y === 0 ? prev : { x: 0, y: 0 }))
+      setViewportSize({ width: window.innerWidth, height: window.innerHeight })
       return
     }
 
-    // Use RAF to ensure DOM is fully laid out
-    const rafId = requestAnimationFrame(() => {
-      calculateOffset()
-    })
+    // Reset layout pass counter when position changes significantly
+    const positionChanged = Math.abs(position.x - lastPositionRef.current.x) > 5
+      || Math.abs(position.y - lastPositionRef.current.y) > 5
+    if (positionChanged) {
+      layoutPassRef.current = 0
+      lastPositionRef.current = { x: position.x, y: position.y }
+      setSelected(prev => (prev ? null : prev))
+    }
 
-    return () => cancelAnimationFrame(rafId)
-  }, [visible, position.x, position.y])
+    layoutPassRef.current += 1
 
-  // Measure popup dimensions
-  useEffect(() => {
-    if (visible && popupRef.current) {
-      // Use RAF to ensure layout is complete before measuring
-      const rafId = requestAnimationFrame(() => {
-        if (!popupRef.current) return
-        const rect = popupRef.current.getBoundingClientRect()
-        if (rect.width > 0 && rect.height > 0) {
-          setMeasuredSize(prev => {
-            const next = { width: rect.width, height: rect.height }
-            const changed = !prev || prev.width !== next.width || prev.height !== next.height
-            return changed ? next : prev
-          })
+    const { offset, viewport } = computeContainer()
+    const offsetChanged = offset.x !== positionOffset.x || offset.y !== positionOffset.y
+    const viewportChanged = viewport.width !== viewportSize.width || viewport.height !== viewportSize.height
+    if (offsetChanged) setPositionOffset(offset)
+    if (viewportChanged) setViewportSize(viewport)
+    if (offsetChanged || viewportChanged) {
+      setSelected(prev => (prev ? null : prev))
+      return
+    }
+
+    // Skip first layout pass to let position/offset settle
+    if (layoutPassRef.current < 2) {
+      setLayoutTick(t => t + 1)
+      return
+    }
+
+    if (candidates.length === 0) return
+
+    const viewportLeft = margin
+    const viewportRight = effective.viewportWidth - margin
+    const viewportTop = margin
+    const viewportBottom = effective.viewportHeight - margin
+
+    const overlapCaret = (top: number, height: number) => {
+      const bottom = top + height
+      return bottom > effective.caretLineTop && top < effective.caretLineBottom
+    }
+
+    const place = (quadrant: Quadrant, measured: { width: number; height: number }) => {
+      const isTop = quadrant.startsWith('top')
+      const isLeft = quadrant.endsWith('Left')
+
+      const top = isTop
+        ? Math.floor(effective.caretLineTop - caretGap - measured.height)
+        : Math.ceil(effective.caretLineBottom + caretGap)
+      const left = isLeft
+        ? Math.floor(effective.adjustedX - measured.width)
+        : Math.ceil(effective.adjustedX)
+
+      return { left, top }
+    }
+
+    const overflowAmount = (left: number, top: number, measured: { width: number; height: number }) => {
+      const right = left + measured.width
+      const bottom = top + measured.height
+      const overLeft = Math.max(viewportLeft - left, 0)
+      const overRight = Math.max(right - viewportRight, 0)
+      const overTop = Math.max(viewportTop - top, 0)
+      const overBottom = Math.max(bottom - viewportBottom, 0)
+      return overLeft + overRight + overTop + overBottom
+    }
+
+    let best: {
+      id: string
+      left: number
+      top: number
+      maxWidth: number
+      boxShadow: string
+      measured: { width: number; height: number }
+      overflow: number
+      rightPref: number
+      belowPref: number
+    } | null = null
+
+    for (const c of candidates) {
+      const el = candidateRefs.current.get(c.id)
+      if (!el) continue
+      const rect = el.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) continue
+
+      const measured = { width: Math.round(rect.width), height: Math.round(rect.height) }
+      const { left, top } = place(c.quadrant, measured)
+      if (overlapCaret(top, measured.height)) continue
+
+      const overflow = overflowAmount(left, top, measured)
+      const rightPref = c.quadrant.endsWith('Right') ? 0 : 1
+      const belowPref = c.quadrant.startsWith('bottom') ? 0 : 1
+
+      const boxShadow = c.quadrant.startsWith('top')
+        ? '0 -12px 24px -8px rgba(0, 0, 0, 0.45)'
+        : '0 12px 24px -8px rgba(0, 0, 0, 0.45)'
+
+      const next = {
+        id: c.id,
+        left,
+        top,
+        maxWidth: c.maxWidth,
+        boxShadow,
+        measured,
+        overflow,
+        rightPref,
+        belowPref,
+      }
+
+      if (!best) {
+        best = next
+        continue
+      }
+
+      const bestFits = best.overflow === 0
+      const nextFits = next.overflow === 0
+
+      if (bestFits !== nextFits) {
+        if (nextFits) best = next
+        continue
+      }
+
+      if (!bestFits && next.overflow !== best.overflow) {
+        if (next.overflow < best.overflow) best = next
+        continue
+      }
+
+      // Among fitting options: prefer right side, then lowest height.
+      if (nextFits && next.rightPref !== best.rightPref) {
+        if (next.rightPref < best.rightPref) best = next
+        continue
+      }
+
+      if (next.measured.height !== best.measured.height) {
+        if (next.measured.height < best.measured.height) best = next
+        continue
+      }
+
+      if (next.measured.width !== best.measured.width) {
+        if (next.measured.width < best.measured.width) best = next
+        continue
+      }
+
+      if (next.maxWidth !== best.maxWidth) {
+        if (next.maxWidth < best.maxWidth) best = next
+        continue
+      }
+
+      if (next.belowPref !== best.belowPref) {
+        if (next.belowPref < best.belowPref) best = next
+      }
+    }
+
+    if (!best) return
+
+    setSelected(prev => {
+      if (!prev) {
+        return {
+          id: best.id,
+          left: best.left,
+          top: best.top,
+          maxWidth: best.maxWidth,
+          boxShadow: best.boxShadow,
+          measured: best.measured,
         }
-      })
-
-      return () => cancelAnimationFrame(rafId)
-    }
-    else if (!visible) {
-      setMeasuredSize(prev => prev ? null : prev)
-    }
-  }, [visible, signature, currentArgumentIndex, position.x, position.y])
-
-  // Recalculate offset after measurement to ensure accurate positioning
-  useEffect(() => {
-    if (visible && measuredSize && popupRef.current) {
-      const rafId = requestAnimationFrame(() => {
-        calculateOffset()
-      })
-      return () => cancelAnimationFrame(rafId)
-    }
-  }, [visible, measuredSize, calculateOffset])
+      }
+      const same = prev.id === best.id
+        && prev.left === best.left
+        && prev.top === best.top
+        && prev.maxWidth === best.maxWidth
+        && prev.measured.width === best.measured.width
+        && prev.measured.height === best.measured.height
+      return same
+        ? prev
+        : {
+          id: best.id,
+          left: best.left,
+          top: best.top,
+          maxWidth: best.maxWidth,
+          boxShadow: best.boxShadow,
+          measured: best.measured,
+        }
+    })
+  }, [
+    visible,
+    layoutTick,
+    computeContainer,
+    signature,
+    currentArgumentIndex,
+    currentParameterName,
+    theme,
+    candidates,
+    effective.adjustedX,
+    effective.caretLineTop,
+    effective.caretLineBottom,
+    effective.viewportWidth,
+    effective.viewportHeight,
+    caretGap,
+    margin,
+    position.x,
+    position.y,
+    positionOffset.x,
+    positionOffset.y,
+    viewportSize.width,
+    viewportSize.height,
+  ])
 
   // Notify parent of dimension changes in a separate effect
   useEffect(() => {
-    if (measuredSize) {
-      onDimensionsChangeRef.current?.(measuredSize.width, measuredSize.height)
+    if (selected) {
+      onDimensionsChangeRef.current?.(selected.measured.width, selected.measured.height)
     }
-  }, [measuredSize])
+  }, [selected])
   if (!visible) return null
-
-  const viewportWidth = window.innerWidth
-  const viewportHeight = window.innerHeight
-  const margin = 10
-  const lineHeight = 20
-  const spacing = 5
-
-  // Adjust position if container has transforms (fixed positioning becomes relative to transformed ancestor)
-  const adjustedX = position.x - positionOffset.x
-  const adjustedY = position.y - positionOffset.y
-
-  let finalX = adjustedX
-  let finalY = adjustedY
-  let maxWidthStyle: number | undefined = undefined
-
-  if (!measuredSize) {
-    // First render: position off-screen to allow measurement without constraint
-    finalX = -9999
-    finalY = -9999
-  }
-  else {
-    const popupWidth = measuredSize.width
-    const popupHeight = measuredSize.height
-
-    // If container has transforms, use container-relative viewport
-    const containerRect = containerRef.current?.getBoundingClientRect()
-    const effectiveViewportWidth = containerRect ? containerRect.width : viewportWidth
-    const effectiveViewportHeight = containerRect ? containerRect.height : viewportHeight
-    const effectiveMargin = margin
-    const availableWidth = Math.max(effectiveViewportWidth - 2 * effectiveMargin, 0)
-    maxWidthStyle = availableWidth > 0 ? availableWidth : undefined
-
-    // HORIZONTAL: Try to fit at natural width, shift left if needed
-    const rightEdge = adjustedX + popupWidth
-
-    if (rightEdge <= effectiveViewportWidth - effectiveMargin) {
-      // Fits at cursor position
-      finalX = adjustedX
-    }
-    else {
-      // Would overflow right edge - try shifting left
-      const shiftedX = effectiveViewportWidth - popupWidth - effectiveMargin
-
-      if (shiftedX >= effectiveMargin) {
-        // Can fit by shifting left
-        finalX = shiftedX
-      }
-      else {
-        // Too wide even when shifted - constrain width
-        finalX = effectiveMargin
-      }
-    }
-
-    // VERTICAL: Prefer below, fallback to above, ensure cursor is never covered
-    const cursorTop = adjustedY
-    const cursorBottom = adjustedY + lineHeight
-    const spaceAbove = cursorTop - effectiveMargin
-    const spaceBelow = effectiveViewportHeight - cursorBottom - effectiveMargin
-
-    if (spaceBelow >= popupHeight + spacing) {
-      // Show below cursor with spacing
-      finalY = cursorBottom
-    }
-    else if (spaceAbove >= popupHeight + spacing) {
-      // Show above cursor with spacing
-      finalY = cursorTop - popupHeight - spacing
-    }
-    else {
-      // Doesn't fit either way - choose side with more space and clamp
-      if (spaceBelow >= spaceAbove) {
-        // Below: start after cursor line
-        finalY = cursorBottom
-        if (finalY + popupHeight > effectiveViewportHeight - effectiveMargin) {
-          finalY = Math.max(cursorBottom + spacing, effectiveViewportHeight - popupHeight - effectiveMargin)
-        }
-      }
-      else {
-        // Above: ensure bottom edge doesn't overlap cursor
-        finalY = Math.max(effectiveMargin, cursorTop - popupHeight - spacing)
-        if (finalY + popupHeight > cursorTop - spacing) {
-          finalY = Math.max(effectiveMargin, cursorTop - popupHeight - spacing)
-        }
-      }
-    }
-  }
 
   // Find the effective parameter index
   // If currentParameterName is provided, use it to find the matching parameter
@@ -282,117 +470,150 @@ const FunctionSignaturePopup = ({
     )
   }
 
-  return (
-    <div
-      ref={popupRef}
-      className="fixed z-[9999] rounded-lg shadow-2xl pointer-events-none"
-      style={{
-        left: `${finalX}px`,
-        top: `${finalY - 2}px`,
-        backgroundColor: theme.functionSignaturePopup.background,
-        borderColor: theme.functionSignaturePopup.border,
-        borderWidth: '1px',
-        borderStyle: 'solid',
-        ...(maxWidthStyle ? { maxWidth: `${maxWidthStyle}px` } : {}),
-      }}
-    >
-      <div className="p-3">
-        <div className="text-sm">
-          <div className="break-words" style={{ color: theme.functionSignaturePopup.text, font: theme.font }}>
-            <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">
-              {signature.name}
-            </span>
-            <span style={{ color: theme.functionSignaturePopup.separator }}>(</span>
-            {signature.parameters.map((param, index) =>
-              renderParameter(param, index, index === signature.parameters.length - 1)
-            )}
-            <span style={{ color: theme.functionSignaturePopup.separator }}>)</span>
-            {signature.returnType && (
-              <>
-                <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-                <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">
-                  {signature.returnType}
-                </span>
-              </>
-            )}
-          </div>
+  const frameStyleBase: CSSProperties = {
+    backgroundColor: theme.functionSignaturePopup.background,
+    borderColor: theme.functionSignaturePopup.border,
+    borderWidth: '1px',
+    borderStyle: 'solid',
+  }
 
-          {signature.description && (
-            <div className="text-sm font-semibold mt-2 leading-relaxed break-words"
-              style={{ color: theme.functionSignaturePopup.description }}
-            >
-              {signature.description}
-            </div>
+  const content = (
+    <div className="p-3">
+      <div className="text-sm">
+        <div className="break-words" style={{ color: theme.functionSignaturePopup.text, font: theme.font }}>
+          <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">
+            {signature.name}
+          </span>
+          <span style={{ color: theme.functionSignaturePopup.separator }}>(</span>
+          {signature.parameters.map((param, index) =>
+            renderParameter(param, index, index === signature.parameters.length - 1)
           )}
-
-          {/* Current parameter details */}
-          {signature.parameters[effectiveParameterIndex] && (
-            <div className="mt-2 pt-2"
-              style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
-                borderTopStyle: 'solid' }}
-            >
-              <div className="text-sm font-semibold break-words">
-                <span style={{ color: theme.functionSignaturePopup.parameterName }} className="font-semibold">
-                  {signature.parameters[effectiveParameterIndex].name}
-                  {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
-                </span>
-                {signature.parameters[effectiveParameterIndex].type && (
-                  <>
-                    <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-                    <span style={{ color: theme.functionSignaturePopup.parameterType }} className="break-all">
-                      {signature.parameters[effectiveParameterIndex].type}
-                    </span>
-                  </>
-                )}
-                {signature.parameters[effectiveParameterIndex].optional && (
-                  <span style={{ color: theme.functionSignaturePopup.separator }} className="ml-1">(optional)</span>
-                )}
-              </div>
-              {signature.parameters[effectiveParameterIndex].description && (
-                <div className="text-sm mt-1 leading-relaxed break-words"
-                  style={{ color: theme.functionSignaturePopup.description }}
-                >
-                  {signature.parameters[effectiveParameterIndex].description}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Examples */}
-          {signature.examples && signature.examples.length > 0 && (
-            <div className="mt-3 pt-3"
-              style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
-                borderTopStyle: 'solid' }}
-            >
-              <div className="text-xs font-semibold mb-2 uppercase tracking-wide"
-                style={{ color: theme.functionSignaturePopup.separator }}
-              >
-                Examples
-              </div>
-              <div className="space-y-2">
-                {signature.examples.map((example, index) => (
-                  <div
-                    key={index}
-                    className="rounded px-2 py-1.5 break-words font-mono"
-                    style={{
-                      backgroundColor: 'rgba(0, 0, 0, 0.2)',
-                      borderColor: theme.functionSignaturePopup.border,
-                      borderWidth: '1px',
-                      borderStyle: 'solid',
-                      color: theme.functionSignaturePopup.text,
-                      font: theme.font,
-                      fontSize: '0.85rem',
-                    }}
-                  >
-                    {example}
-                  </div>
-                ))}
-              </div>
-            </div>
+          <span style={{ color: theme.functionSignaturePopup.separator }}>)</span>
+          {signature.returnType && (
+            <>
+              <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
+              <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">
+                {signature.returnType}
+              </span>
+            </>
           )}
         </div>
+
+        {signature.description && (
+          <div className="text-sm font-semibold mt-2 leading-relaxed break-words"
+            style={{ color: theme.functionSignaturePopup.description }}
+          >
+            {signature.description}
+          </div>
+        )}
+
+        {/* Current parameter details */}
+        {signature.parameters[effectiveParameterIndex] && (
+          <div className="mt-2 pt-2"
+            style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
+              borderTopStyle: 'solid' }}
+          >
+            <div className="text-sm font-semibold break-words" style={{ font: theme.font }}>
+              <span style={{ color: theme.functionSignaturePopup.parameterName }} className="font-semibold">
+                {signature.parameters[effectiveParameterIndex].name}
+                {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
+              </span>
+              {signature.parameters[effectiveParameterIndex].type && (
+                <>
+                  <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
+                  <span style={{ color: theme.functionSignaturePopup.parameterType }} className="break-all">
+                    {signature.parameters[effectiveParameterIndex].type}
+                  </span>
+                </>
+              )}
+              {signature.parameters[effectiveParameterIndex].optional && (
+                <span style={{ color: theme.functionSignaturePopup.separator }} className="ml-1">(optional)</span>
+              )}
+            </div>
+            {signature.parameters[effectiveParameterIndex].description && (
+              <div className="text-sm mt-1 leading-relaxed break-words"
+                style={{ color: theme.functionSignaturePopup.description }}
+              >
+                {signature.parameters[effectiveParameterIndex].description}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Examples */}
+        {signature.examples && signature.examples.length > 0 && (
+          <div className="mt-3 pt-3"
+            style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
+              borderTopStyle: 'solid' }}
+          >
+            <div className="text-xs font-semibold mb-2 uppercase tracking-wide"
+              style={{ color: theme.functionSignaturePopup.separator }}
+            >
+              Examples
+            </div>
+            <div className="space-y-2">
+              {signature.examples.map((example, index) => (
+                <div
+                  key={index}
+                  className="rounded px-2 py-1.5 break-words font-mono"
+                  style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+                    borderColor: theme.functionSignaturePopup.border,
+                    borderWidth: '1px',
+                    borderStyle: 'solid',
+                    color: theme.functionSignaturePopup.text,
+                    font: theme.font,
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  {example}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  )
+
+  return (
+    <>
+      <div ref={anchorRef} className="fixed" style={{ left: 0, top: 0, width: 0, height: 0 }} />
+
+      {/* Offscreen measured candidates (4 quadrants × 1/4..4/4 of that quadrant width) */}
+      {candidates.map(c => (
+        <div
+          key={c.id}
+          ref={setCandidateRef(c.id)}
+          className="fixed rounded-lg pointer-events-none"
+          style={{
+            left: '-9999px',
+            top: '-9999px',
+            visibility: 'hidden',
+            maxWidth: `${c.maxWidth}px`,
+            ...frameStyleBase,
+          }}
+        >
+          {content}
+        </div>
+      ))}
+
+      {/* Selected visible popup */}
+      {selected && (
+        <div
+          className="fixed z-[9999] rounded-lg pointer-events-none"
+          style={{
+            left: `${selected.left}px`,
+            top: `${selected.top}px`,
+            boxShadow: selected.boxShadow,
+            maxWidth: `${selected.maxWidth}px`,
+            ...frameStyleBase,
+          }}
+        >
+          {content}
+        </div>
+      )}
+    </>
   )
 }
 

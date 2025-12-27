@@ -23,6 +23,11 @@ export interface Selection {
   end: { line: number; column: number }
 }
 
+export const isSelectionEmpty = (selection: Selection): boolean => {
+  const { start, end } = selection
+  return start.line === end.line && start.column === end.column
+}
+
 export interface InputState {
   caret: CaretPosition
   selection: Selection | null
@@ -1216,8 +1221,7 @@ export class InputHandler {
   }
 
   private isSelectionEmpty(selection: Selection): boolean {
-    const { start, end } = selection
-    return start.line === end.line && start.column === end.column
+    return isSelectionEmpty(selection)
   }
 
   private deleteSelection(state: InputState) {

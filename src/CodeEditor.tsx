@@ -15,6 +15,7 @@ import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
 import { History } from './history.ts'
 import {
   getSelectedText,
+  isSelectionEmpty,
   InputHandler,
   type InputState,
   type KeyOverrideFunction,
@@ -83,10 +84,13 @@ export const CodeEditor = ({
   // Function signature popup state
   const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
   const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [popupDimensions, setPopupDimensions] = useState<{ width: number; height: number }>({
-    width: 400,
-    height: 120,
-  })
+  const [popupPositionKey, setPopupPositionKey] = useState<string>('')
+  const callKeyRef = useRef<string>('')
+
+  const getCallKey = (info: FunctionCallInfo | null): string => {
+    if (!info) return ''
+    return `${info.functionName}:${info.openParenPosition.line}:${info.openParenPosition.column}`
+  }
 
   // Autocomplete state
   const [autocompleteInfo, setAutocompleteInfo] = useState<AutocompleteInfo | null>(null)
@@ -778,8 +782,24 @@ export const CodeEditor = ({
 
   // Store callbacks in refs to avoid recreating CanvasEditor
   const callbacksRef = useRef<CanvasEditorCallbacks>({
-    onFunctionCallChange: setFunctionCallInfo,
-    onPopupPositionChange: setPopupPosition,
+    onFunctionCallChange: info => {
+      callKeyRef.current = getCallKey(info)
+      setPopupPositionKey(prev => {
+        const next = callKeyRef.current
+        return prev === next ? prev : next
+      })
+      setFunctionCallInfo(info)
+      if (!info) {
+        setPopupPositionKey(prev => prev === '' ? prev : '')
+      }
+    },
+    onPopupPositionChange: pos => {
+      setPopupPosition(pos)
+      setPopupPositionKey(prev => {
+        const next = callKeyRef.current
+        return prev === next ? prev : next
+      })
+    },
     onAutocompleteChange: setAutocompleteInfo,
     onAutocompletePositionChange: pos => {
       setAutocompletePosition(pos)
@@ -810,8 +830,24 @@ export const CodeEditor = ({
   // Keep callbacks ref up to date
   useEffect(() => {
     callbacksRef.current = {
-      onFunctionCallChange: setFunctionCallInfo,
-      onPopupPositionChange: setPopupPosition,
+      onFunctionCallChange: info => {
+        callKeyRef.current = getCallKey(info)
+        setPopupPositionKey(prev => {
+          const next = callKeyRef.current
+          return prev === next ? prev : next
+        })
+        setFunctionCallInfo(info)
+        if (!info) {
+          setPopupPositionKey(prev => prev === '' ? prev : '')
+        }
+      },
+      onPopupPositionChange: pos => {
+        setPopupPosition(pos)
+        setPopupPositionKey(prev => {
+          const next = callKeyRef.current
+          return prev === next ? prev : next
+        })
+      },
       onAutocompleteChange: setAutocompleteInfo,
       onAutocompletePositionChange: pos => {
         setAutocompletePosition(pos)
@@ -1508,18 +1544,15 @@ export const CodeEditor = ({
         && isActive
         && functionCallInfo
         && functionDefinitions[functionCallInfo.functionName]
+        && popupPositionKey === getCallKey(functionCallInfo)
         && window.innerWidth >= 600 && (
         <FunctionSignaturePopup
           signature={functionDefinitions[functionCallInfo.functionName]}
           currentArgumentIndex={functionCallInfo.currentArgumentIndex}
           currentParameterName={functionCallInfo.currentParameterName}
           position={popupPosition}
-          visible={!inputState.selection}
+          visible={!inputState.selection || isSelectionEmpty(inputState.selection)}
           theme={theme ?? defaultTheme}
-          onDimensionsChange={(width, height) => {
-            setPopupDimensions({ width, height })
-            canvasEditorRef.current?.setPopupDimensions(width, height)
-          }}
         />
       )}
 
@@ -1528,7 +1561,7 @@ export const CodeEditor = ({
         <ErrorPopup
           error={hoveredError}
           position={errorPosition}
-          visible={!inputState.selection}
+          visible={!inputState.selection || isSelectionEmpty(inputState.selection)}
           theme={theme ?? defaultTheme}
         />
       )}

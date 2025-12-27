@@ -1,4 +1,4 @@
-import type { CaretPosition, InputState } from './input.ts'
+import { isSelectionEmpty, type CaretPosition, type InputState } from './input.ts'
 
 export class MouseHandler {
   private canvas: HTMLCanvasElement
@@ -331,7 +331,7 @@ export class MouseHandler {
     // If we have a zero-length selection (no actual dragging occurred), clear it
     if (
       currentState.selection
-      && this.isSelectionEmpty(currentState.selection)
+      && isSelectionEmpty(currentState.selection)
       && this.clickCount === 1
     ) {
       const newState = { ...currentState }
@@ -343,14 +343,6 @@ export class MouseHandler {
     this.dragStartPosition = null
     this.isWordSelection = false
     this.isLineSelection = false
-  }
-
-  private isSelectionEmpty(selection: {
-    start: { line: number; column: number }
-    end: { line: number; column: number }
-  }): boolean {
-    const { start, end } = selection
-    return start.line === end.line && start.column === end.column
   }
 
   private getCaretPositionFromCoordinates(x: number, y: number, lines: string[]): CaretPosition {

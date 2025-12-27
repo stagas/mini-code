@@ -4056,10 +4056,9 @@ export class CanvasEditor {
         const caretYOffset = widgetLayout.yOffsets.get(caretVisualPos.visualLine) || 0
         let caretAboveHeight = 0
         const caretWidgets = widgetLayout.widgetsByVisualLine.get(caretVisualPos.visualLine)
-        if (caretWidgets?.above) {
-          for (const widget of caretWidgets.above) {
-            caretAboveHeight += this.getWidgetHeight(widget)
-          }
+        if (caretWidgets?.above && caretWidgets.above.length > 0) {
+          const maxAboveHeight = Math.max(...caretWidgets.above.map(w => this.getWidgetHeight(w)))
+          caretAboveHeight = maxAboveHeight
         }
         preCalculatedCaretContentY = this.padding + caretVisualPos.visualLine * this.lineHeight + caretYOffset
           + caretAboveHeight
