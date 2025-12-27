@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { defaultTheme, type Theme } from './syntax.ts'
+import { useEffect, useMemo, useRef } from 'react'
+import { setPopupCanvasDrawable, type PopupCanvasHitRegion, popupCanvasThemeFallback } from './popup-canvas.ts'
+import { fillRoundedRectWithShadow, fontWithWeight, strokeRoundedRect } from './popup-drawing.ts'
+import { type Theme } from './syntax.ts'
 
 interface AutocompletePopupProps {
   suggestions: string[]
@@ -16,156 +18,182 @@ const AutocompletePopup = ({
   selectedIndex,
   position,
   visible,
-  theme = defaultTheme,
+  theme,
   onSelect,
   onHover,
 }: AutocompletePopupProps) => {
-  const popupRef = useRef<HTMLDivElement>(null)
-  const selectedItemRef = useRef<HTMLDivElement>(null)
-  const containerRef = useRef<HTMLElement | null>(null)
-  const [positionOffset, setPositionOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const idRef = useRef<string>(Math.random().toString(36).slice(2))
+  const effectiveTheme = popupCanvasThemeFallback(theme)
 
-  // Calculate position offset - runs after layout to ensure accurate measurements
-  const calculateOffset = useCallback(() => {
-    if (!popupRef.current) {
-      setPositionOffset({ x: 0, y: 0 })
-      containerRef.current = null
-      return
-    }
+  const onSelectRef = useRef(onSelect)
+  const onHoverRef = useRef(onHover)
+  useEffect(() => {
+    onSelectRef.current = onSelect
+    onHoverRef.current = onHover
+  }, [onSelect, onHover])
 
-    // Find the nearest ancestor with transforms that creates a containing block for fixed positioning
-    let element: HTMLElement | null = popupRef.current.parentElement
-    let transformAncestor: HTMLElement | null = null
-
-    while (element) {
-      const style = window.getComputedStyle(element)
-      const transform = style.transform
-      const willChange = style.willChange
-      const filter = style.filter
-      const perspective = style.perspective
-      if (
-        transform !== 'none'
-        || (willChange && (willChange.includes('transform') || willChange.includes('filter')))
-        || filter !== 'none'
-        || (perspective !== 'none' && perspective !== '')
-      ) {
-        transformAncestor = element
-        break
-      }
-      element = element.parentElement
-    }
-
-    containerRef.current = transformAncestor
-
-    if (transformAncestor) {
-      // Get the container's bounding rect (accounts for transforms)
-      const containerRect = transformAncestor.getBoundingClientRect()
-      // The position passed in is viewport coordinates, but if there's a transform ancestor,
-      // fixed positioning is relative to that ancestor, so we need to adjust
-      setPositionOffset({
-        x: containerRect.left,
-        y: containerRect.top,
-      })
-    }
-    else {
-      setPositionOffset({ x: 0, y: 0 })
+  const stable = useMemo(() => {
+    return {
+      id: idRef.current,
     }
   }, [])
 
-  // Find the containing block for fixed positioning and calculate offset
-  useLayoutEffect(() => {
-    if (!visible) {
-      setPositionOffset({ x: 0, y: 0 })
-      containerRef.current = null
+  useEffect(() => {
+    const id = stable.id
+    if (!visible || suggestions.length === 0 || (position.x === 0 && position.y === 0)) {
+      setPopupCanvasDrawable(id, null)
       return
     }
 
-    // Use RAF to ensure DOM is fully laid out
-    const rafId = requestAnimationFrame(() => {
-      calculateOffset()
+    setPopupCanvasDrawable(id, {
+      priority: 20,
+      wantsPointer: true,
+      draw: ({ context, width, height }) => {
+        const paddingY = 4
+        const paddingX = 12
+        const rowHeight = 20
+        const margin = 10
+        const radius = 8
+        const lineHeight = 20
+        const spacing = -2
+
+        context.font = effectiveTheme.font
+        context.textBaseline = 'top'
+
+        const maxTextWidth = Math.max(
+          1,
+          Math.min(520, width - 2 * margin - 2 * paddingX),
+        )
+
+        let textWidth = 0
+        for (const s of suggestions) {
+          const w = Math.ceil(context.measureText(s).width)
+          if (w > textWidth) textWidth = w
+          if (textWidth >= maxTextWidth) {
+            textWidth = maxTextWidth
+            break
+          }
+        }
+
+        let popupWidth = Math.min(width - 2 * margin, textWidth + paddingX * 2)
+        popupWidth = Math.max(140, popupWidth)
+
+        const maxRowsByViewport = Math.max(
+          1,
+          Math.floor((height - 2 * margin - paddingY * 2) / rowHeight),
+        )
+        const visibleRows = Math.min(suggestions.length, Math.min(12, maxRowsByViewport))
+        const popupHeight = paddingY * 2 + visibleRows * rowHeight
+
+        let left = position.x
+        left = Math.min(left, width - margin - popupWidth)
+        left = Math.max(margin, left)
+
+        const belowTop = position.y + lineHeight + spacing
+        const aboveTop = position.y - spacing - popupHeight
+        const fitsBelow = belowTop + popupHeight <= height - margin
+        const fitsAbove = aboveTop >= margin
+        const top = fitsBelow ? belowTop : (fitsAbove ? aboveTop : Math.max(margin, Math.min(belowTop, height - margin - popupHeight)))
+
+        const canScroll = suggestions.length > visibleRows
+        const startIndex = canScroll
+          ? Math.max(0, Math.min(suggestions.length - visibleRows, selectedIndex - Math.floor(visibleRows / 2)))
+          : 0
+
+        fillRoundedRectWithShadow(
+          context,
+          left,
+          top,
+          popupWidth,
+          popupHeight,
+          radius,
+          effectiveTheme.autocompletePopup.background,
+          { color: 'rgba(0, 0, 0, 0.45)', blur: 24, offsetX: 0, offsetY: 12 },
+        )
+        strokeRoundedRect(
+          context,
+          left,
+          top,
+          popupWidth,
+          popupHeight,
+          radius,
+          { color: effectiveTheme.autocompletePopup.border, width: 1 },
+        )
+
+        const regions: PopupCanvasHitRegion[] = []
+        const listLeft = left
+        const listTop = top + paddingY
+        for (let i = 0; i < visibleRows; i++) {
+          const index = startIndex + i
+          const text = suggestions[index]
+          const isSelected = index === selectedIndex
+          const rowTop = listTop + i * rowHeight
+
+          if (isSelected) {
+            fillRoundedRectWithShadow(
+              context,
+              listLeft + 2,
+              rowTop,
+              popupWidth - 4,
+              rowHeight,
+              6,
+              effectiveTheme.autocompletePopup.selectedBackground,
+              null,
+            )
+          }
+
+          context.font = isSelected
+            ? fontWithWeight(effectiveTheme.font, 500)
+            : effectiveTheme.font
+          context.fillStyle = isSelected
+            ? effectiveTheme.autocompletePopup.selectedText
+            : effectiveTheme.autocompletePopup.text
+          context.fillText(text, left + paddingX, rowTop + 4)
+
+          regions.push({
+            left: listLeft,
+            top: rowTop,
+            width: popupWidth,
+            height: rowHeight,
+            onHover: () => onHoverRef.current?.(index),
+            onSelect: () => onSelectRef.current?.(index),
+          })
+        }
+
+        if (canScroll) {
+          const trackWidth = 6
+          const trackLeft = left + popupWidth - trackWidth - 3
+          const trackTop = top + paddingY + 2
+          const trackHeight = popupHeight - paddingY * 2 - 4
+
+          context.fillStyle = 'rgba(255, 255, 255, 0.08)'
+          fillRoundedRectWithShadow(context, trackLeft, trackTop, trackWidth, trackHeight, 3, context.fillStyle, null)
+
+          const thumbHeight = Math.max(18, Math.floor(trackHeight * (visibleRows / suggestions.length)))
+          const maxThumbTop = trackTop + trackHeight - thumbHeight
+          const t = startIndex / Math.max(1, suggestions.length - visibleRows)
+          const thumbTop = Math.floor(trackTop + t * (maxThumbTop - trackTop))
+
+          context.fillStyle = 'rgba(255, 255, 255, 0.22)'
+          fillRoundedRectWithShadow(context, trackLeft, thumbTop, trackWidth, thumbHeight, 3, context.fillStyle, null)
+        }
+
+        return regions
+      },
     })
 
-    return () => cancelAnimationFrame(rafId)
-  }, [visible, position.x, position.y, calculateOffset])
+    return () => setPopupCanvasDrawable(id, null)
+  }, [
+    stable,
+    visible,
+    suggestions,
+    selectedIndex,
+    position.x,
+    position.y,
+    effectiveTheme,
+  ])
 
-  // Keep selected item in view as selection changes
-  useEffect(() => {
-    if (visible && selectedItemRef.current) {
-      selectedItemRef.current.scrollIntoView({ block: 'nearest' })
-    }
-  }, [visible, selectedIndex])
-
-  // Minimal guard: don't render until we have a non-zero position
-  if (!visible || suggestions.length === 0) return null
-  if (position.x === 0 && position.y === 0) return null
-
-  // Adjust position if container has transforms (fixed positioning becomes relative to transformed ancestor)
-  const adjustedX = position.x - positionOffset.x
-  const adjustedY = position.y - positionOffset.y
-
-  // Simple placement: below the caret with slight spacing
-  const lineHeight = 20
-  const spacing = -2
-  const left = adjustedX
-  const top = adjustedY + lineHeight + spacing
-
-  return (
-    <div
-      ref={popupRef}
-      className="fixed z-[9999] rounded-lg shadow-2xl overflow-auto cursor-default"
-      style={{
-        left: `${left}px`,
-        top: `${top}px`,
-        backgroundColor: theme.autocompletePopup.background,
-        borderColor: theme.autocompletePopup.border,
-        borderWidth: '1px',
-        borderStyle: 'solid',
-      }}
-      onMouseDown={e => {
-        // Keep editor focus stable while interacting with the popup
-        e.preventDefault()
-        e.stopPropagation()
-      }}
-    >
-      <div className="py-1">
-        {suggestions.map((suggestion, index) => {
-          const isSelected = index === selectedIndex
-          return (
-            <div
-              key={suggestion}
-              ref={isSelected ? selectedItemRef : undefined}
-              className="px-3 py-1 text-sm cursor-default"
-              style={{
-                font: theme.font,
-                backgroundColor: isSelected
-                  ? theme.autocompletePopup.selectedBackground
-                  : 'transparent',
-                color: isSelected ? theme.autocompletePopup.selectedText : theme.autocompletePopup.text,
-              }}
-              onMouseEnter={e => {
-                if (!isSelected) {
-                  e.currentTarget.style.backgroundColor = theme.autocompletePopup.hoverBackground
-                }
-                onHover?.(index)
-              }}
-              onMouseLeave={e => {
-                if (!isSelected) {
-                  e.currentTarget.style.backgroundColor = 'transparent'
-                }
-              }}
-              onMouseDown={e => {
-                e.preventDefault()
-                e.stopPropagation()
-                onSelect?.(index)
-              }}
-            >
-              {suggestion}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
+  return null
 }
 
 export default AutocompletePopup

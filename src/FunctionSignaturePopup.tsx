@@ -1,6 +1,10 @@
-import { type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { FunctionParameter, FunctionSignature } from './function-signature.ts'
-import { defaultTheme, type Theme } from './syntax.ts'
+import { useEffect, useMemo, useRef } from 'react'
+import { type FunctionParameter, type FunctionSignature } from './function-signature.ts'
+import { drawTokensWithCustomLigatures, extractTokensForSegment, type MonoLigatureCache } from './mono-text.ts'
+import { popupCanvasThemeFallback, popupCanvasUiFont, setPopupCanvasDrawable } from './popup-canvas.ts'
+import { fillRoundedRectWithShadow, fontWithWeight, maxLineWidth, strokeRoundedRect,
+  wrapText } from './popup-drawing.ts'
+import { defaultTokenizer, highlightCode, type Theme, type Token, type Tokenizer } from './syntax.ts'
 
 interface FunctionSignaturePopupProps {
   signature: FunctionSignature
@@ -9,6 +13,7 @@ interface FunctionSignaturePopupProps {
   position: { x: number; y: number }
   visible: boolean
   theme?: Theme
+  tokenizer?: Tokenizer
   onDimensionsChange?: (width: number, height: number) => void
 }
 
@@ -18,603 +23,627 @@ const FunctionSignaturePopup = ({
   currentParameterName,
   position,
   visible,
-  theme = defaultTheme,
+  theme,
+  tokenizer,
   onDimensionsChange,
 }: FunctionSignaturePopupProps) => {
-  const containerRef = useRef<HTMLElement | null>(null)
-  const anchorRef = useRef<HTMLDivElement>(null)
-  const candidateRefs = useRef(new Map<string, HTMLDivElement | null>())
-  const [positionOffset, setPositionOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  })
-  const [layoutTick, setLayoutTick] = useState(0)
-  const [selected, setSelected] = useState<{
-    id: string
-    left: number
-    top: number
-    maxWidth: number
-    boxShadow: string
-    measured: { width: number; height: number }
-  } | null>(null)
+  const idRef = useRef<string>(Math.random().toString(36).slice(2))
+  const effectiveTheme = popupCanvasThemeFallback(theme)
   const onDimensionsChangeRef = useRef(onDimensionsChange)
-  const layoutPassRef = useRef(0)
-  const lastPositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const lastDimensionsRef = useRef<{ width: number; height: number } | null>(null)
+  const exampleLigatureCacheRef = useRef<MonoLigatureCache>({})
 
   useEffect(() => {
     onDimensionsChangeRef.current = onDimensionsChange
   }, [onDimensionsChange])
 
-  const margin = 0
-  const lineHeight = 20
-  const caretGap = 1
-
-  const computeContainer = useCallback((): {
-    offset: { x: number; y: number }
-    viewport: { width: number; height: number }
-  } => {
-    const start = anchorRef.current?.parentElement
-    if (!start) {
-      containerRef.current = null
-      return {
-        offset: { x: 0, y: 0 },
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-      }
-    }
-
-    // Find the nearest ancestor with transforms that creates a containing block for fixed positioning
-    let element: HTMLElement | null = start
-    let transformAncestor: HTMLElement | null = null
-
-    while (element) {
-      const style = window.getComputedStyle(element)
-      const transform = style.transform
-      const willChange = style.willChange
-      const filter = style.filter
-      const perspective = style.perspective
-      if (
-        transform !== 'none'
-        || (willChange && (willChange.includes('transform') || willChange.includes('filter')))
-        || filter !== 'none'
-        || (perspective !== 'none' && perspective !== '')
-      ) {
-        transformAncestor = element
-        break
-      }
-      element = element.parentElement
-    }
-
-    containerRef.current = transformAncestor
-    if (!transformAncestor) {
-      return {
-        offset: { x: 0, y: 0 },
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-      }
-    }
-
-    const rect = transformAncestor.getBoundingClientRect()
-    const style = window.getComputedStyle(transformAncestor)
-    const borderLeft = Number.parseFloat(style.borderLeftWidth) || 0
-    const borderRight = Number.parseFloat(style.borderRightWidth) || 0
-    const borderTop = Number.parseFloat(style.borderTopWidth) || 0
-    const borderBottom = Number.parseFloat(style.borderBottomWidth) || 0
-    const paddingLeft = Number.parseFloat(style.paddingLeft) || 0
-    const paddingRight = Number.parseFloat(style.paddingRight) || 0
-    const paddingTop = Number.parseFloat(style.paddingTop) || 0
-    const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
-
-    // For transformed ancestors, fixed positioning is relative to the padding box.
-    const offsetX = rect.left + borderLeft + paddingLeft
-    const offsetY = rect.top + borderTop + paddingTop
-    const viewportWidth = Math.max(0, rect.width - borderLeft - borderRight - paddingLeft - paddingRight)
-    const viewportHeight = Math.max(0, rect.height - borderTop - borderBottom - paddingTop - paddingBottom)
-    return {
-      offset: { x: offsetX, y: offsetY },
-      viewport: { width: viewportWidth, height: viewportHeight },
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!visible) return
-    const onWindowChange = () => setLayoutTick(t => t + 1)
-    window.addEventListener('resize', onWindowChange, { passive: true })
-    window.addEventListener('scroll', onWindowChange, { passive: true, capture: true })
-    return () => {
-      window.removeEventListener('resize', onWindowChange)
-      window.removeEventListener('scroll', onWindowChange, true)
-    }
-  }, [visible])
-
-  const effective = useMemo(() => {
-    const adjustedX = position.x - positionOffset.x
-    const adjustedY = position.y - positionOffset.y
-    // CanvasEditor draws caret at (lastCaretContentY - 2) with height (lineHeight - 1).
-    const caretLineTop = adjustedY - 2
-    const caretLineBottom = adjustedY + lineHeight - 1
-
-    return {
-      adjustedX,
-      caretLineTop,
-      caretLineBottom,
-      viewportWidth: viewportSize.width,
-      viewportHeight: viewportSize.height,
-    }
-  }, [position.x, position.y, positionOffset.x, positionOffset.y, viewportSize.width, viewportSize.height])
-
-  type Quadrant = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
-  const fractions = useMemo(() => [0.25, 0.5, 0.75, 1] as const, [])
-
-  const candidates = useMemo(() => {
-    if (!visible) return []
-
-    const leftW = Math.max(0, effective.adjustedX - margin)
-    const rightW = Math.max(0, effective.viewportWidth - margin - effective.adjustedX)
-    const topH = Math.max(0, effective.caretLineTop - margin)
-    const bottomH = Math.max(0, effective.viewportHeight - margin - effective.caretLineBottom)
-
-    const defs: Array<{ quadrant: Quadrant; w: number; h: number }> = [
-      { quadrant: 'bottomRight', w: rightW, h: bottomH },
-      { quadrant: 'bottomLeft', w: leftW, h: bottomH },
-      { quadrant: 'topRight', w: rightW, h: topH },
-      { quadrant: 'topLeft', w: leftW, h: topH },
-    ]
-
-    const out: Array<{ id: string; quadrant: Quadrant; frac: number; maxWidth: number }> = []
-    for (const d of defs) {
-      if (d.w <= 0 || d.h <= 0) continue
-      for (const frac of fractions) {
-        const maxWidth = Math.max(1, Math.floor(d.w * frac))
-        out.push({ id: `${d.quadrant}:${frac}`, quadrant: d.quadrant, frac, maxWidth })
-      }
-    }
-    return out
-  }, [
-    visible,
-    effective.adjustedX,
-    effective.viewportWidth,
-    effective.viewportHeight,
-    effective.caretLineTop,
-    effective.caretLineBottom,
-    fractions,
-    margin,
-  ])
-
-  const setCandidateRef = useCallback((id: string) => {
-    return (el: HTMLDivElement | null) => {
-      candidateRefs.current.set(id, el)
-    }
-  }, [])
-
-  useLayoutEffect(() => {
-    if (!visible) {
-      containerRef.current = null
-      layoutPassRef.current = 0
-      lastPositionRef.current = { x: 0, y: 0 }
-      setSelected(prev => (prev ? null : prev))
-      setPositionOffset(prev => (prev.x === 0 && prev.y === 0 ? prev : { x: 0, y: 0 }))
-      setViewportSize({ width: window.innerWidth, height: window.innerHeight })
-      return
-    }
-
-    // Reset layout pass counter when position changes significantly
-    const positionChanged = Math.abs(position.x - lastPositionRef.current.x) > 5
-      || Math.abs(position.y - lastPositionRef.current.y) > 5
-    if (positionChanged) {
-      layoutPassRef.current = 0
-      lastPositionRef.current = { x: position.x, y: position.y }
-      setSelected(prev => (prev ? null : prev))
-    }
-
-    layoutPassRef.current += 1
-
-    const { offset, viewport } = computeContainer()
-    const offsetChanged = offset.x !== positionOffset.x || offset.y !== positionOffset.y
-    const viewportChanged = viewport.width !== viewportSize.width || viewport.height !== viewportSize.height
-    if (offsetChanged) setPositionOffset(offset)
-    if (viewportChanged) setViewportSize(viewport)
-    if (offsetChanged || viewportChanged) {
-      setSelected(prev => (prev ? null : prev))
-      return
-    }
-
-    // Skip first layout pass to let position/offset settle
-    if (layoutPassRef.current < 2) {
-      setLayoutTick(t => t + 1)
-      return
-    }
-
-    if (candidates.length === 0) return
-
-    const viewportLeft = margin
-    const viewportRight = effective.viewportWidth - margin
-    const viewportTop = margin
-    const viewportBottom = effective.viewportHeight - margin
-
-    const overlapCaret = (top: number, height: number) => {
-      const bottom = top + height
-      return bottom > effective.caretLineTop && top < effective.caretLineBottom
-    }
-
-    const place = (quadrant: Quadrant, measured: { width: number; height: number }) => {
-      const isTop = quadrant.startsWith('top')
-      const isLeft = quadrant.endsWith('Left')
-
-      const top = isTop
-        ? Math.floor(effective.caretLineTop - caretGap - measured.height)
-        : Math.ceil(effective.caretLineBottom + caretGap)
-      const left = isLeft
-        ? Math.floor(effective.adjustedX - measured.width)
-        : Math.ceil(effective.adjustedX)
-
-      return { left, top }
-    }
-
-    const overflowAmount = (left: number, top: number, measured: { width: number; height: number }) => {
-      const right = left + measured.width
-      const bottom = top + measured.height
-      const overLeft = Math.max(viewportLeft - left, 0)
-      const overRight = Math.max(right - viewportRight, 0)
-      const overTop = Math.max(viewportTop - top, 0)
-      const overBottom = Math.max(bottom - viewportBottom, 0)
-      return overLeft + overRight + overTop + overBottom
-    }
-
-    let best: {
-      id: string
-      left: number
-      top: number
-      maxWidth: number
-      boxShadow: string
-      measured: { width: number; height: number }
-      overflow: number
-      rightPref: number
-      belowPref: number
-    } | null = null
-
-    for (const c of candidates) {
-      const el = candidateRefs.current.get(c.id)
-      if (!el) continue
-      const rect = el.getBoundingClientRect()
-      if (rect.width <= 0 || rect.height <= 0) continue
-
-      const measured = { width: Math.round(rect.width), height: Math.round(rect.height) }
-      const { left, top } = place(c.quadrant, measured)
-      if (overlapCaret(top, measured.height)) continue
-
-      const overflow = overflowAmount(left, top, measured)
-      const rightPref = c.quadrant.endsWith('Right') ? 0 : 1
-      const belowPref = c.quadrant.startsWith('bottom') ? 0 : 1
-
-      const boxShadow = c.quadrant.startsWith('top')
-        ? '0 -12px 24px -8px rgba(0, 0, 0, 0.45)'
-        : '0 12px 24px -8px rgba(0, 0, 0, 0.45)'
-
-      const next = {
-        id: c.id,
-        left,
-        top,
-        maxWidth: c.maxWidth,
-        boxShadow,
-        measured,
-        overflow,
-        rightPref,
-        belowPref,
-      }
-
-      if (!best) {
-        best = next
-        continue
-      }
-
-      const bestFits = best.overflow === 0
-      const nextFits = next.overflow === 0
-
-      if (bestFits !== nextFits) {
-        if (nextFits) best = next
-        continue
-      }
-
-      if (!bestFits && next.overflow !== best.overflow) {
-        if (next.overflow < best.overflow) best = next
-        continue
-      }
-
-      // Among fitting options: prefer right side, then lowest height.
-      if (nextFits && next.rightPref !== best.rightPref) {
-        if (next.rightPref < best.rightPref) best = next
-        continue
-      }
-
-      if (next.measured.height !== best.measured.height) {
-        if (next.measured.height < best.measured.height) best = next
-        continue
-      }
-
-      if (next.measured.width !== best.measured.width) {
-        if (next.measured.width < best.measured.width) best = next
-        continue
-      }
-
-      if (next.maxWidth !== best.maxWidth) {
-        if (next.maxWidth < best.maxWidth) best = next
-        continue
-      }
-
-      if (next.belowPref !== best.belowPref) {
-        if (next.belowPref < best.belowPref) best = next
-      }
-    }
-
-    if (!best) return
-
-    setSelected(prev => {
-      if (!prev) {
-        return {
-          id: best.id,
-          left: best.left,
-          top: best.top,
-          maxWidth: best.maxWidth,
-          boxShadow: best.boxShadow,
-          measured: best.measured,
-        }
-      }
-      const same = prev.id === best.id
-        && prev.left === best.left
-        && prev.top === best.top
-        && prev.maxWidth === best.maxWidth
-        && prev.measured.width === best.measured.width
-        && prev.measured.height === best.measured.height
-      return same
-        ? prev
-        : {
-          id: best.id,
-          left: best.left,
-          top: best.top,
-          maxWidth: best.maxWidth,
-          boxShadow: best.boxShadow,
-          measured: best.measured,
-        }
-    })
-  }, [
-    visible,
-    layoutTick,
-    computeContainer,
-    signature,
-    currentArgumentIndex,
-    currentParameterName,
-    theme,
-    candidates,
-    effective.adjustedX,
-    effective.caretLineTop,
-    effective.caretLineBottom,
-    effective.viewportWidth,
-    effective.viewportHeight,
-    caretGap,
-    margin,
-    position.x,
-    position.y,
-    positionOffset.x,
-    positionOffset.y,
-    viewportSize.width,
-    viewportSize.height,
-  ])
-
-  // Notify parent of dimension changes in a separate effect
-  useEffect(() => {
-    if (selected) {
-      onDimensionsChangeRef.current?.(selected.measured.width, selected.measured.height)
-    }
-  }, [selected])
-  if (!visible) return null
-
-  // Find the effective parameter index
-  // If currentParameterName is provided, use it to find the matching parameter
-  // Otherwise, use positional index and handle rest parameters
   const getEffectiveParameterIndex = (argIndex: number, paramName?: string): number => {
-    // If we have a named parameter, find it by name
     if (paramName) {
       const paramIndex = signature.parameters.findIndex(
         param => param.name === paramName || param.name === `...${paramName}`,
       )
-      if (paramIndex >= 0) {
-        return paramIndex
-      }
+      if (paramIndex >= 0) return paramIndex
     }
 
-    // Fall back to positional index with rest parameter handling
     for (let i = signature.parameters.length - 1; i >= 0; i--) {
       const param = signature.parameters[i]
-      if (param.name.startsWith('...') && i <= argIndex) {
-        return i
-      }
+      if (param.name.startsWith('...') && i <= argIndex) return i
     }
     return argIndex
   }
 
   const effectiveParameterIndex = getEffectiveParameterIndex(currentArgumentIndex, currentParameterName)
 
-  const renderParameter = (param: FunctionParameter, index: number, isLast: boolean) => {
-    const isActive = index === effectiveParameterIndex
-    const paramText = (
-      <span>
-        <span style={{ color: theme.functionSignaturePopup.parameterName }}>
-          {param.name}
-          {param.optional ? '?' : ''}
-        </span>
-        {param.type
-          ? (
-            <>
-              <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-              <span style={{ color: theme.functionSignaturePopup.parameterType }}>{param.type}</span>
-            </>
+  const stable = useMemo(() => ({ id: idRef.current }), [])
+
+  useEffect(() => {
+    const id = stable.id
+    if (!visible) {
+      setPopupCanvasDrawable(id, null)
+      return
+    }
+
+    setPopupCanvasDrawable(id, {
+      priority: 10,
+      wantsPointer: false,
+      draw: ({ context, width, height }) => {
+        const padding = 12
+        const radius = 8
+        const lineHeight = 20
+        const caretGap = 1
+        const margin = 0
+
+        const monoFont = effectiveTheme.font
+        const monoBoldFont = fontWithWeight(monoFont, 600)
+        const uiFont = popupCanvasUiFont(14, 20, 400)
+        const uiBoldFont = popupCanvasUiFont(14, 20, 600)
+        const uiXsBoldFont = popupCanvasUiFont(12, 16, 600)
+
+        context.textBaseline = 'alphabetic'
+
+        const caretLineTop = position.y - 2
+        const caretLineBottom = position.y + lineHeight - 1
+        const leftW = Math.max(0, position.x - margin)
+        const rightW = Math.max(0, width - margin - position.x)
+        const topH = Math.max(0, caretLineTop - margin)
+        const bottomH = Math.max(0, height - margin - caretLineBottom)
+
+        type Quadrant = 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight'
+        const fractions = [0.25, 0.5, 0.75, 1] as const
+        const defs: Array<{ quadrant: Quadrant; w: number; h: number }> = [
+          { quadrant: 'bottomRight', w: rightW, h: bottomH },
+          { quadrant: 'bottomLeft', w: leftW, h: bottomH },
+          { quadrant: 'topRight', w: rightW, h: topH },
+          { quadrant: 'topLeft', w: leftW, h: topH },
+        ]
+
+        const overlapCaret = (top: number, popupHeight: number) => {
+          const bottom = top + popupHeight
+          return bottom > caretLineTop && top < caretLineBottom
+        }
+
+        const place = (quadrant: Quadrant, popupWidth: number, popupHeight: number) => {
+          const isTop = quadrant.startsWith('top')
+          const isLeft = quadrant.endsWith('Left')
+          const top = isTop
+            ? Math.floor(caretLineTop - caretGap - popupHeight)
+            : Math.ceil(caretLineBottom + caretGap)
+          const left = isLeft
+            ? Math.floor(position.x - popupWidth)
+            : Math.ceil(position.x)
+          return { left, top }
+        }
+
+        const overflowAmount = (left: number, top: number, popupWidth: number, popupHeight: number) => {
+          const right = left + popupWidth
+          const bottom = top + popupHeight
+          const overLeft = Math.max(margin - left, 0)
+          const overRight = Math.max(right - (width - margin), 0)
+          const overTop = Math.max(margin - top, 0)
+          const overBottom = Math.max(bottom - (height - margin), 0)
+          return overLeft + overRight + overTop + overBottom
+        }
+
+        const layout = (frameWidth: number, left: number, top: number, paint: boolean) => {
+          const contentLeft = left + padding
+          const contentTop = top + padding
+          const contentWidth = Math.max(1, frameWidth - padding * 2)
+          const contentRight = contentLeft + contentWidth
+
+          const fontNormal = monoFont
+          const fontBold = monoBoldFont
+
+          const measure = (font: string, text: string) => {
+            context.font = font
+            return context.measureText(text).width
+          }
+
+          context.font = fontNormal
+          const metrics = context.measureText('Mg')
+          const ascent = metrics.actualBoundingBoxAscent || 12
+          const descent = metrics.actualBoundingBoxDescent || 4
+          const textHeight = ascent + descent
+          const baselineOffset = ascent
+          const highlightPadX = 4
+          const highlightPadY = 1
+          const highlightTopOffset = Math.floor((lineHeight - textHeight) / 2) - highlightPadY
+          const highlightHeight = Math.ceil(textHeight + highlightPadY * 2)
+
+          let x = contentLeft
+          let y = contentTop
+          let usedWidth = 0
+
+          const ensureFits = (w: number) => {
+            if (x !== contentLeft && x + w > contentRight) {
+              x = contentLeft
+              y += lineHeight
+            }
+          }
+
+          const drawText = (font: string, color: string, text: string, left: number, top: number) => {
+            context.font = font
+            context.fillStyle = color
+            context.fillText(text, left, top + baselineOffset)
+          }
+
+          const addText = (font: string, color: string, text: string) => {
+            context.font = font
+            const w = context.measureText(text).width
+            ensureFits(w)
+            if (paint) {
+              drawText(font, color, text, x, y)
+            }
+            x += w
+            usedWidth = Math.max(usedWidth, x - contentLeft)
+          }
+
+          const addParam = (param: FunctionParameter, index: number, isLast: boolean) => {
+            const isActive = index === effectiveParameterIndex
+            const segments: Array<{ font: string; color: string; text: string }> = [
+              {
+                font: fontNormal,
+                color: effectiveTheme.functionSignaturePopup.parameterName,
+                text: `${param.name}${param.optional ? '?' : ''}`,
+              },
+            ]
+            if (param.type) {
+              segments.push({ font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator, text: ':' })
+              segments.push({
+                font: fontNormal,
+                color: effectiveTheme.functionSignaturePopup.parameterType,
+                text: param.type,
+              })
+            }
+            const separatorText = isLast ? '' : ', '
+            const separatorSegment = separatorText
+              ? { font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator, text: separatorText }
+              : null
+
+            const run = (paintRun: boolean) => {
+              const startX = x
+              const startY = y
+              let rectLeft = startX
+              let rectTop = startY
+              const rects: Array<{ left: number; top: number; width: number }> = []
+              const items: Array<{ font: string; color: string; text: string; left: number; top: number }> = []
+
+              const write = (seg: { font: string; color: string; text: string }) => {
+                context.font = seg.font
+                const w = context.measureText(seg.text).width
+                if (x !== contentLeft && x + w > contentRight) {
+                  if (isActive) {
+                    const rw = x - rectLeft
+                    if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
+                  }
+                  x = contentLeft
+                  y += lineHeight
+                  if (isActive) {
+                    rectLeft = x
+                    rectTop = y
+                  }
+                }
+                items.push({ ...seg, left: x, top: y })
+                x += w
+              }
+
+              for (const seg of segments) write(seg)
+              if (separatorSegment) write(separatorSegment)
+
+              if (isActive) {
+                const rw = x - rectLeft
+                if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
+              }
+
+              if (paintRun) {
+                if (isActive) {
+                  for (const r of rects) {
+                    fillRoundedRectWithShadow(
+                      context,
+                      r.left - highlightPadX,
+                      r.top + highlightTopOffset - 5,
+                      r.width + highlightPadX * 1.5,
+                      highlightHeight + 4,
+                      5,
+                      effectiveTheme.functionSignaturePopup.activeParameterBackground,
+                      null,
+                    )
+                  }
+                }
+                for (const item of items) {
+                  drawText(
+                    item.font,
+                    isActive ? effectiveTheme.functionSignaturePopup.activeParameterText : item.color,
+                    item.text,
+                    item.left,
+                    item.top,
+                  )
+                }
+              }
+
+              usedWidth = Math.max(usedWidth, x - contentLeft)
+            }
+
+            run(paint)
+          }
+
+          // Signature line
+          addText(fontBold, effectiveTheme.functionSignaturePopup.functionName, signature.name)
+          addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, '(')
+          signature.parameters.forEach((param, index) =>
+            addParam(param, index, index === signature.parameters.length - 1)
           )
-          : ''}
-      </span>
-    )
+          addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ')')
+          if (signature.returnType) {
+            addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ':')
+            addText(fontNormal, effectiveTheme.functionSignaturePopup.returnType, signature.returnType)
+          }
 
-    return (
-      <span key={index}>
-        <span
-          className={isActive ? 'px-1 rounded' : ''}
-          style={{
-            backgroundColor: isActive ? theme.functionSignaturePopup.activeParameterBackground : 'transparent',
-            color: isActive ? theme.functionSignaturePopup.activeParameterText : theme.functionSignaturePopup.text,
-          }}
-          title={param.description}
-        >
-          {paramText}
-        </span>
-        {!isLast && <span style={{ color: theme.functionSignaturePopup.separator }}>,{' '}</span>}
-      </span>
-    )
-  }
+          x = contentLeft
+          y += lineHeight
 
-  const frameStyleBase: CSSProperties = {
-    backgroundColor: theme.functionSignaturePopup.background,
-    borderColor: theme.functionSignaturePopup.border,
-    borderWidth: '1px',
-    borderStyle: 'solid',
-  }
+          if (signature.description) {
+            y += 8
+            const lines = wrapText(context, uiBoldFont, signature.description, contentWidth)
+            for (const line of lines) {
+              if (paint) {
+                drawText(uiBoldFont, effectiveTheme.functionSignaturePopup.description, line, contentLeft, y)
+              }
+              usedWidth = Math.max(usedWidth, maxLineWidth(context, uiBoldFont, [line]))
+              y += lineHeight
+            }
+          }
 
-  const content = (
-    <div className="p-3">
-      <div className="text-sm">
-        <div className="break-words" style={{ color: theme.functionSignaturePopup.text, font: theme.font }}>
-          <span style={{ color: theme.functionSignaturePopup.functionName }} className="font-semibold">
-            {signature.name}
-          </span>
-          <span style={{ color: theme.functionSignaturePopup.separator }}>(</span>
-          {signature.parameters.map((param, index) =>
-            renderParameter(param, index, index === signature.parameters.length - 1)
-          )}
-          <span style={{ color: theme.functionSignaturePopup.separator }}>)</span>
-          {signature.returnType && (
-            <>
-              <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-              <span style={{ color: theme.functionSignaturePopup.returnType }} className="break-all">
-                {signature.returnType}
-              </span>
-            </>
-          )}
-        </div>
+          const param = signature.parameters[effectiveParameterIndex]
+          if (param) {
+            y += 8
+            if (paint) {
+              context.strokeStyle = effectiveTheme.functionSignaturePopup.border
+              context.lineWidth = 1
+              context.beginPath()
+              context.moveTo(contentLeft, y + 0.5)
+              context.lineTo(left + frameWidth - padding, y + 0.5)
+              context.stroke()
+            }
+            y += 8
 
-        {signature.description && (
-          <div className="text-sm font-semibold mt-2 leading-relaxed break-words"
-            style={{ color: theme.functionSignaturePopup.description }}
-          >
-            {signature.description}
-          </div>
-        )}
+            x = contentLeft
+            const titleSegments: Array<{ font: string; color: string; text: string }> = [
+              {
+                font: fontBold,
+                color: effectiveTheme.functionSignaturePopup.parameterName,
+                text: `${param.name}${param.optional ? '?' : ''}`,
+              },
+            ]
+            if (param.type) {
+              titleSegments.push({ font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator,
+                text: ':' })
+              titleSegments.push({
+                font: fontNormal,
+                color: effectiveTheme.functionSignaturePopup.parameterType,
+                text: param.type,
+              })
+            }
+            // if (param.optional) {
+            //   titleSegments.push({ font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator,
+            //     text: ' (optional)' })
+            // }
 
-        {/* Current parameter details */}
-        {signature.parameters[effectiveParameterIndex] && (
-          <div className="mt-2 pt-2"
-            style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
-              borderTopStyle: 'solid' }}
-          >
-            <div className="text-sm font-semibold break-words" style={{ font: theme.font }}>
-              <span style={{ color: theme.functionSignaturePopup.parameterName }} className="font-semibold">
-                {signature.parameters[effectiveParameterIndex].name}
-                {signature.parameters[effectiveParameterIndex].optional ? '?' : ''}
-              </span>
-              {signature.parameters[effectiveParameterIndex].type && (
-                <>
-                  <span style={{ color: theme.functionSignaturePopup.separator }}>:</span>
-                  <span style={{ color: theme.functionSignaturePopup.parameterType }} className="break-all">
-                    {signature.parameters[effectiveParameterIndex].type}
-                  </span>
-                </>
-              )}
-              {signature.parameters[effectiveParameterIndex].optional && (
-                <span style={{ color: theme.functionSignaturePopup.separator }} className="ml-1">(optional)</span>
-              )}
-            </div>
-            {signature.parameters[effectiveParameterIndex].description && (
-              <div className="text-sm mt-1 leading-relaxed break-words"
-                style={{ color: theme.functionSignaturePopup.description }}
-              >
-                {signature.parameters[effectiveParameterIndex].description}
-              </div>
-            )}
-          </div>
-        )}
+            for (const s of titleSegments) addText(s.font, s.color, s.text)
+            x = contentLeft
+            y += lineHeight
 
-        {/* Examples */}
-        {signature.examples && signature.examples.length > 0 && (
-          <div className="mt-3 pt-3"
-            style={{ borderTopColor: theme.functionSignaturePopup.border, borderTopWidth: '1px',
-              borderTopStyle: 'solid' }}
-          >
-            <div className="text-xs font-semibold mb-2 uppercase tracking-wide"
-              style={{ color: theme.functionSignaturePopup.separator }}
-            >
-              Examples
-            </div>
-            <div className="space-y-2">
-              {signature.examples.map((example, index) => (
-                <div
-                  key={index}
-                  className="rounded px-2 py-1.5 break-words font-mono"
-                  style={{
-                    backgroundColor: 'rgba(0, 0, 0, 0.2)',
-                    borderColor: theme.functionSignaturePopup.border,
-                    borderWidth: '1px',
-                    borderStyle: 'solid',
-                    color: theme.functionSignaturePopup.text,
-                    font: theme.font,
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  {example}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
+            if (param.description) {
+              y += 4
+              const lines = wrapText(context, uiFont, param.description, contentWidth)
+              for (const line of lines) {
+                if (paint) {
+                  drawText(uiFont, effectiveTheme.functionSignaturePopup.description, line, contentLeft, y)
+                }
+                y += lineHeight
+              }
+            }
+          }
 
-  return (
-    <>
-      <div ref={anchorRef} className="fixed" style={{ left: 0, top: 0, width: 0, height: 0 }} />
+          if (signature.examples && signature.examples.length > 0) {
+            y += 12
+            if (paint) {
+              context.strokeStyle = effectiveTheme.functionSignaturePopup.border
+              context.lineWidth = 1
+              context.beginPath()
+              context.moveTo(contentLeft, y + 0.5)
+              context.lineTo(left + frameWidth - padding, y + 0.5)
+              context.stroke()
+            }
+            y += 12
 
-      {/* Offscreen measured candidates (4 quadrants × 1/4..4/4 of that quadrant width) */}
-      {candidates.map(c => (
-        <div
-          key={c.id}
-          ref={setCandidateRef(c.id)}
-          className="fixed rounded-lg pointer-events-none"
-          style={{
-            left: '-9999px',
-            top: '-9999px',
-            visibility: 'hidden',
-            maxWidth: `${c.maxWidth}px`,
-            ...frameStyleBase,
-          }}
-        >
-          {content}
-        </div>
-      ))}
+            if (paint) {
+              drawText(uiXsBoldFont, effectiveTheme.functionSignaturePopup.separator, 'EXAMPLES', contentLeft, y)
+            }
+            y += 18
 
-      {/* Selected visible popup */}
-      {selected && (
-        <div
-          className="fixed z-[9999] rounded-lg pointer-events-none"
-          style={{
-            left: `${selected.left}px`,
-            top: `${selected.top}px`,
-            boxShadow: selected.boxShadow,
-            maxWidth: `${selected.maxWidth}px`,
-            ...frameStyleBase,
-          }}
-        >
-          {content}
-        </div>
-      )}
-    </>
-  )
+            const boxPaddingX = 8
+            const boxPaddingY = 6
+            const boxRadius = 6
+            for (let exampleIndex = 0; exampleIndex < signature.examples.length; exampleIndex++) {
+              const example = signature.examples[exampleIndex]
+              const exampleFont = `11pt ${monoFont.split(' ').slice(1).join(' ')}`
+              const availableWidth = contentWidth - boxPaddingX * 2
+              const highlighted = highlightCode(example, tokenizer ?? defaultTokenizer, effectiveTheme)
+
+              const wrapHighlightedLine = (
+                lineText: string,
+                lineTokens: Token[],
+              ) => {
+                const segments: Array<{ start: number; end: number; text: string }> = []
+                if (lineText.length === 0) return segments
+
+                const tokenBoundaries: number[] = []
+                const spacePositions: number[] = []
+                let currentColumn = 0
+                for (const token of lineTokens) {
+                  const tokenEnd = currentColumn + token.content.length
+                  tokenBoundaries.push(tokenEnd)
+
+                  let spaceIndex = token.content.indexOf(' ')
+                  while (spaceIndex >= 0) {
+                    spacePositions.push(currentColumn + spaceIndex + 1)
+                    spaceIndex = token.content.indexOf(' ', spaceIndex + 1)
+                  }
+
+                  currentColumn = tokenEnd
+                }
+
+                let startColumn = 0
+                while (startColumn < lineText.length) {
+                  const fullText = lineText.substring(startColumn)
+                  if (context.measureText(fullText).width <= availableWidth) {
+                    segments.push({ start: startColumn, end: lineText.length, text: fullText })
+                    break
+                  }
+
+                  let lo = startColumn + 1
+                  let hi = lineText.length
+                  let bestEnd = startColumn + 1
+                  while (lo <= hi) {
+                    const mid = Math.floor((lo + hi) / 2)
+                    const testText = lineText.substring(startColumn, mid)
+                    if (context.measureText(testText).width <= availableWidth) {
+                      bestEnd = mid
+                      lo = mid + 1
+                    }
+                    else {
+                      hi = mid - 1
+                    }
+                  }
+
+                  let lastTokenBoundary = -1
+                  for (let i = tokenBoundaries.length - 1; i >= 0; i--) {
+                    const boundary = tokenBoundaries[i]
+                    if (boundary <= bestEnd && boundary > startColumn) {
+                      lastTokenBoundary = boundary
+                      break
+                    }
+                  }
+
+                  let lastSpaceBoundary = -1
+                  for (let i = spacePositions.length - 1; i >= 0; i--) {
+                    const spacePos = spacePositions[i]
+                    if (spacePos <= bestEnd && spacePos > startColumn) {
+                      lastSpaceBoundary = spacePos
+                      break
+                    }
+                  }
+
+                  const candidateEnd = (lastSpaceBoundary > startColumn)
+                    ? lastSpaceBoundary
+                    : (lastTokenBoundary > startColumn ? lastTokenBoundary : bestEnd)
+
+                  const endColumn = Math.max(startColumn + 1, candidateEnd)
+                  segments.push({
+                    start: startColumn,
+                    end: endColumn,
+                    text: lineText.substring(startColumn, endColumn),
+                  })
+                  startColumn = endColumn
+                }
+
+                return segments
+              }
+
+              context.save()
+              context.font = exampleFont
+              context.textBaseline = 'top'
+
+              const wrapped: Array<{ tokens: Token[]; text: string }> = []
+              for (const line of highlighted) {
+                const segs = wrapHighlightedLine(line.text, line.tokens)
+                if (segs.length === 0) {
+                  wrapped.push({ tokens: [], text: '' })
+                  continue
+                }
+                for (const seg of segs) {
+                  wrapped.push({
+                    tokens: extractTokensForSegment(line.tokens, seg.start, seg.end),
+                    text: seg.text,
+                  })
+                }
+              }
+
+              const boxHeight = boxPaddingY * 2 + Math.max(1, wrapped.length) * lineHeight
+
+              if (paint) {
+                fillRoundedRectWithShadow(
+                  context,
+                  contentLeft,
+                  y,
+                  contentWidth,
+                  boxHeight,
+                  boxRadius,
+                  'rgba(0, 0, 0, 0.2)',
+                  null,
+                )
+                strokeRoundedRect(
+                  context,
+                  contentLeft,
+                  y,
+                  contentWidth,
+                  boxHeight,
+                  boxRadius,
+                  { color: effectiveTheme.functionSignaturePopup.border, width: 1 },
+                )
+                for (let i = 0; i < wrapped.length; i++) {
+                  const row = wrapped[i]
+                  if (!row.text) continue
+                  drawTokensWithCustomLigatures(
+                    context,
+                    row.tokens,
+                    contentLeft + boxPaddingX,
+                    y + boxPaddingY + i * lineHeight + boxPaddingY / 2,
+                    effectiveTheme,
+                    { lineHeight, cache: exampleLigatureCacheRef.current },
+                  )
+                }
+              }
+              context.restore()
+
+              y += boxHeight
+              if (exampleIndex !== signature.examples.length - 1) y += 8
+            }
+          }
+
+          const totalHeight = y - top + padding
+          return { usedWidth, height: Math.max(1, totalHeight) }
+        }
+
+        let best: {
+          quadrant: Quadrant
+          maxWidth: number
+          width: number
+          height: number
+          left: number
+          top: number
+          overflow: number
+          rightPref: number
+          belowPref: number
+        } | null = null
+
+        for (const d of defs) {
+          if (d.w <= 0 || d.h <= 0) continue
+          for (const frac of fractions) {
+            const maxWidth = Math.max(220, Math.floor(d.w * frac))
+            const measured = layout(maxWidth, 0, 0, false)
+            const frameWidth = Math.min(maxWidth, Math.ceil(measured.usedWidth + padding * 2))
+            const frameHeight = measured.height
+
+            const placed = place(d.quadrant, frameWidth, frameHeight)
+            if (overlapCaret(placed.top, frameHeight)) continue
+
+            const overflow = overflowAmount(placed.left, placed.top, frameWidth, frameHeight)
+            const rightPref = d.quadrant.endsWith('Right') ? 0 : 1
+            const belowPref = d.quadrant.startsWith('bottom') ? 0 : 1
+
+            const next = {
+              quadrant: d.quadrant,
+              maxWidth,
+              width: frameWidth,
+              height: frameHeight,
+              left: placed.left,
+              top: placed.top,
+              overflow,
+              rightPref,
+              belowPref,
+            }
+
+            if (!best) {
+              best = next
+              continue
+            }
+
+            const bestFits = best.overflow === 0
+            const nextFits = next.overflow === 0
+            if (bestFits !== nextFits) {
+              if (nextFits) best = next
+              continue
+            }
+            if (!bestFits && next.overflow !== best.overflow) {
+              if (next.overflow < best.overflow) best = next
+              continue
+            }
+            if (nextFits && next.rightPref !== best.rightPref) {
+              if (next.rightPref < best.rightPref) best = next
+              continue
+            }
+            if (next.height !== best.height) {
+              if (next.height < best.height) best = next
+              continue
+            }
+            if (next.width !== best.width) {
+              if (next.width < best.width) best = next
+              continue
+            }
+            if (next.maxWidth !== best.maxWidth) {
+              if (next.maxWidth < best.maxWidth) best = next
+              continue
+            }
+            if (next.belowPref !== best.belowPref) {
+              if (next.belowPref < best.belowPref) best = next
+            }
+          }
+        }
+
+        if (!best) return null
+
+        const shadow = best.quadrant.startsWith('top')
+          ? { color: 'rgba(0, 0, 0, 0.45)', blur: 24, offsetX: 0, offsetY: -12 }
+          : { color: 'rgba(0, 0, 0, 0.45)', blur: 24, offsetX: 0, offsetY: 12 }
+
+        fillRoundedRectWithShadow(
+          context,
+          best.left,
+          best.top,
+          best.width,
+          best.height,
+          radius,
+          effectiveTheme.functionSignaturePopup.background,
+          shadow,
+        )
+        strokeRoundedRect(
+          context,
+          best.left,
+          best.top,
+          best.width,
+          best.height,
+          radius,
+          { color: effectiveTheme.functionSignaturePopup.border, width: 1 },
+        )
+
+        layout(best.width, best.left, best.top, true)
+
+        const last = lastDimensionsRef.current
+        const next = { width: best.width, height: best.height }
+        if (!last || last.width !== next.width || last.height !== next.height) {
+          lastDimensionsRef.current = next
+          onDimensionsChangeRef.current?.(next.width, next.height)
+        }
+
+        return null
+      },
+    })
+
+    return () => setPopupCanvasDrawable(id, null)
+  }, [
+    stable,
+    visible,
+    signature,
+    currentArgumentIndex,
+    currentParameterName,
+    effectiveParameterIndex,
+    position.x,
+    position.y,
+    effectiveTheme,
+  ])
+
+  return null
 }
 
 export default FunctionSignaturePopup

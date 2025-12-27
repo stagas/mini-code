@@ -11,10 +11,10 @@ import {
   type FunctionCallInfo,
 } from './function-signature.ts'
 import type { InputState } from './input.ts'
+import { drawTokensWithCustomLigatures, extractTokensForSegment } from './mono-text.ts'
 import {
   defaultTheme,
   defaultTokenizer,
-  getTokenColor,
   highlightCode,
   type HighlightedLine,
   type Theme,
@@ -408,165 +408,6 @@ export class CanvasEditor {
     this.lineWidthCache.clear()
     this.widgetPositions.clear()
     this.widgetAdjustments.clear()
-  }
-
-  // Draw a custom right arrow for the ligature sequence "|>" with given color and width reservation
-  private drawArrowLigature(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    color: string,
-    reservedWidth: number,
-  ) {
-    // Draw an equilateral triangle (all sides equal) pointing right, centered vertically
-    const side = reservedWidth
-    const height = (Math.sqrt(3) / 2) * side
-    const centerY = y + this.lineHeight / 2 - 3.5
-    const centerX = x + reservedWidth
-
-    // Calculate triangle vertices
-    // Tip (rightmost point)
-    const tipX = centerX + side / 2
-    const tipY = centerY
-    // Bottom left
-    const blX = centerX - side / 2
-    const blY = centerY + height / 2
-    // Top left
-    const tlX = centerX - side / 2
-    const tlY = centerY - height / 2
-
-    ctx.strokeStyle = color
-    ctx.lineWidth = 1.25
-    ctx.lineJoin = 'miter'
-    ctx.beginPath()
-    ctx.moveTo(tipX, tipY)
-    ctx.lineTo(blX, blY)
-    ctx.lineTo(tlX, tlY)
-    ctx.closePath()
-    ctx.stroke()
-  }
-
-  // Draw a line arrow for the ligature sequence "->" with given color and width reservation
-  private drawLineArrowLigature(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    color: string,
-    reservedWidth: number,
-  ) {
-    const centerY = y + this.lineHeight / 2 - 3.5
-    const startX = x + reservedWidth * 0.15
-    const endX = x + reservedWidth * 0.85
-
-    ctx.strokeStyle = color
-    ctx.lineWidth = 1.25
-
-    // Shaft
-    ctx.beginPath()
-    ctx.moveTo(startX, centerY)
-    ctx.lineTo(endX, centerY)
-    ctx.stroke()
-
-    // Arrowhead
-    const head = Math.min(6, reservedWidth * 0.5)
-    const upY = centerY - head * 0.6
-    const downY = centerY + head * 0.6
-
-    ctx.beginPath()
-    ctx.moveTo(endX, centerY)
-    ctx.lineTo(endX - head, upY)
-    ctx.moveTo(endX, centerY)
-    ctx.lineTo(endX - head, downY)
-    ctx.stroke()
-  }
-
-  // Stream through tokens and render text replacing cross-token "|>" with a custom arrow
-  private drawTokensWithCustomLigatures(
-    ctx: CanvasRenderingContext2D,
-    tokens: Token[],
-    startX: number,
-    y: number,
-    theme: Theme,
-  ): number {
-    let currentX = startX
-    let pendingSkipNextLeading = false
-    let batchText = ''
-    let batchColor = ''
-
-    // Pre-compute measurement cache values to avoid repeated checks
-    if (!this.measurementCache.ligatureArrowWidth) {
-      this.measurementCache.ligatureArrowWidth = ctx.measureText('|>').width
-    }
-    if (!this.measurementCache.ligatureLineArrowWidth) {
-      this.measurementCache.ligatureLineArrowWidth = ctx.measureText('->').width
-    }
-    const arrowWidth = this.measurementCache.ligatureArrowWidth
-    const arrowHalfWidth = arrowWidth / 2
-    const lineArrowWidth = this.measurementCache.ligatureLineArrowWidth
-
-    const flushBatch = () => {
-      if (batchText) {
-        ctx.fillStyle = batchColor
-        ctx.fillText(batchText, currentX, y)
-        currentX += ctx.measureText(batchText).width
-        batchText = ''
-      }
-    }
-
-    for (let ti = 0; ti < tokens.length; ti++) {
-      const token = tokens[ti]
-      const color = getTokenColor(token.type, theme, token)
-      const text = token.content
-
-      // Determine start index, consume pending skip now and reset immediately
-      let i = pendingSkipNextLeading ? 1 : 0
-      pendingSkipNextLeading = false
-
-      const textLen = text.length
-      const isLastToken = ti + 1 >= tokens.length
-      const nextTokenFirstChar = !isLastToken ? tokens[ti + 1].content[0] : null
-
-      for (; i < textLen; i++) {
-        const ch = text[i]
-        const isLastChar = i + 1 >= textLen
-        const nextCharInSame = !isLastChar ? text[i + 1] : null
-        const nextChar = nextCharInSame ?? nextTokenFirstChar
-
-        let ligatureType: '|>' | '->' | null = null
-        if (ch === '|' && nextChar === '>') ligatureType = '|>'
-        else if (ch === '-' && nextChar === '>') ligatureType = '->'
-
-        if (ligatureType) {
-          flushBatch()
-          if (ligatureType === '|>') {
-            this.drawArrowLigature(ctx, currentX, y, color, arrowHalfWidth)
-            currentX += arrowWidth
-          }
-          else {
-            this.drawLineArrowLigature(ctx, currentX, y, color, lineArrowWidth)
-            currentX += lineArrowWidth
-          }
-
-          if (nextCharInSame === '>') {
-            i++
-            continue
-          }
-
-          pendingSkipNextLeading = true
-          break
-        }
-
-        if (batchColor !== color) {
-          flushBatch()
-          batchColor = color
-        }
-
-        batchText += ch
-      }
-    }
-
-    flushBatch()
-    return currentX
   }
 
   private getGutterWidth(): number {
@@ -1252,52 +1093,6 @@ export class CanvasEditor {
         }
       }
     }
-  }
-
-  private extractTokensForSegment(
-    tokens: Token[],
-    startColumn: number,
-    endColumn: number,
-  ): Token[] {
-    const result: Token[] = []
-    let currentColumn = 0
-
-    for (const token of tokens) {
-      const tokenStart = currentColumn
-      const tokenEnd = currentColumn + token.content.length
-
-      if (tokenEnd <= startColumn) {
-        // Token is completely before our segment
-        currentColumn = tokenEnd
-        continue
-      }
-
-      if (tokenStart >= endColumn) {
-        // Token is completely after our segment
-        break
-      }
-
-      // Token intersects with our segment
-      const segmentStart = Math.max(startColumn, tokenStart)
-      const segmentEnd = Math.min(endColumn, tokenEnd)
-      const segmentContent = token.content.substring(
-        segmentStart - tokenStart,
-        segmentEnd - tokenStart,
-      )
-
-      if (segmentContent.length > 0) {
-        result.push({
-          type: token.type,
-          color: token.color,
-          content: segmentContent,
-          length: segmentContent.length,
-        })
-      }
-
-      currentColumn = tokenEnd
-    }
-
-    return result
   }
 
   private drawBraceMatchingForWrappedLine(
@@ -3543,7 +3338,7 @@ export class CanvasEditor {
       if (inlineWidgetsForLine.length > 0) {
         const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
         if (logicalHighlighted) {
-          const segmentTokens = this.extractTokensForSegment(
+          const segmentTokens = extractTokensForSegment(
             logicalHighlighted.tokens,
             wrappedLine.startColumn,
             wrappedLine.endColumn,
@@ -3664,7 +3459,7 @@ export class CanvasEditor {
       const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
 
       if (logicalHighlighted) {
-        const segmentTokens = this.extractTokensForSegment(
+        const segmentTokens = extractTokensForSegment(
           logicalHighlighted.tokens,
           wrappedLine.startColumn,
           wrappedLine.endColumn,
@@ -3686,12 +3481,13 @@ export class CanvasEditor {
           {
             const token = segmentTokens[tokenIndex]
             const remainingContent = token.content.substring(tokenOffset)
-            currentX = this.drawTokensWithCustomLigatures(
+            currentX = drawTokensWithCustomLigatures(
               ctx,
               [{ ...token, content: remainingContent, length: remainingContent.length }],
               currentX,
               y,
               theme,
+              { lineHeight: this.lineHeight, cache: this.measurementCache },
             )
             accumulatedLength += token.length - tokenOffset
             tokenIndex++
@@ -3702,12 +3498,13 @@ export class CanvasEditor {
             const token = segmentTokens[tokenIndex]
             const charsNeeded = targetColumn - accumulatedLength
             const partialContent = token.content.substring(tokenOffset, tokenOffset + charsNeeded)
-            currentX = this.drawTokensWithCustomLigatures(
+            currentX = drawTokensWithCustomLigatures(
               ctx,
               [{ ...token, content: partialContent, length: partialContent.length }],
               currentX,
               y,
               theme,
+              { lineHeight: this.lineHeight, cache: this.measurementCache },
             )
             tokenOffset += charsNeeded
             accumulatedLength += charsNeeded
@@ -3719,12 +3516,13 @@ export class CanvasEditor {
         while (tokenIndex < segmentTokens.length) {
           const token = segmentTokens[tokenIndex]
           const remainingContent = token.content.substring(tokenOffset)
-          currentX = this.drawTokensWithCustomLigatures(
+          currentX = drawTokensWithCustomLigatures(
             ctx,
             [{ ...token, content: remainingContent, length: remainingContent.length }],
             currentX,
             y,
             theme,
+            { lineHeight: this.lineHeight, cache: this.measurementCache },
           )
           tokenIndex++
           tokenOffset = 0
@@ -3752,12 +3550,13 @@ export class CanvasEditor {
 
           if (columnInWrappedLine > lastColumn) {
             const textSegment = wrappedLine.text.substring(lastColumn, columnInWrappedLine)
-            currentX = this.drawTokensWithCustomLigatures(
+            currentX = drawTokensWithCustomLigatures(
               ctx,
               [{ type: 'plain', content: textSegment, length: textSegment.length }],
               currentX,
               y,
               theme,
+              { lineHeight: this.lineHeight, cache: this.measurementCache },
             )
           }
 
@@ -3767,12 +3566,13 @@ export class CanvasEditor {
 
         if (lastColumn < wrappedLine.text.length) {
           const textSegment = wrappedLine.text.substring(lastColumn)
-          this.drawTokensWithCustomLigatures(
+          drawTokensWithCustomLigatures(
             ctx,
             [{ type: 'plain', content: textSegment, length: textSegment.length }],
             currentX,
             y,
             theme,
+            { lineHeight: this.lineHeight, cache: this.measurementCache },
           )
         }
       }

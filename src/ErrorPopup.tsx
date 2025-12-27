@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { defaultTheme, type Theme } from './syntax.ts'
+import { useEffect, useMemo, useRef } from 'react'
+import { popupCanvasThemeFallback, popupCanvasUiFont, setPopupCanvasDrawable } from './popup-canvas.ts'
+import { fillRoundedRectWithShadow, strokeRoundedRect, wrapText } from './popup-drawing.ts'
+import { type Theme } from './syntax.ts'
 
 export interface EditorError {
   line: number
@@ -16,120 +18,116 @@ interface ErrorPopupProps {
   onDimensionsChange?: (width: number, height: number) => void
 }
 
-const ErrorPopup = ({ error, position, visible, theme = defaultTheme, onDimensionsChange }: ErrorPopupProps) => {
-  const popupRef = useRef<HTMLDivElement>(null)
-  const [measuredSize, setMeasuredSize] = useState<{ width: number; height: number } | null>(null)
+const ErrorPopup = ({ error, position, visible, theme, onDimensionsChange }: ErrorPopupProps) => {
+  const idRef = useRef<string>(Math.random().toString(36).slice(2))
+  const effectiveTheme = popupCanvasThemeFallback(theme)
   const onDimensionsChangeRef = useRef(onDimensionsChange)
+  const lastDimensionsRef = useRef<{ width: number; height: number } | null>(null)
 
   useEffect(() => {
     onDimensionsChangeRef.current = onDimensionsChange
   }, [onDimensionsChange])
 
-  // Measure popup dimensions
+  const stable = useMemo(() => ({ id: idRef.current }), [])
+
   useEffect(() => {
-    if (visible && popupRef.current) {
-      const rect = popupRef.current.getBoundingClientRect()
-      if (rect.width > 0 && rect.height > 0) {
-        setMeasuredSize(prev => {
-          const next = { width: rect.width, height: rect.height }
-          const changed = !prev || prev.width !== next.width || prev.height !== next.height
-          return changed ? next : prev
-        })
-      }
-    }
-    else if (!visible) {
-      setMeasuredSize(prev => prev ? null : prev)
-    }
-  }, [visible, error, position.x, position.y])
-
-  // Notify parent of dimension changes in a separate effect
-  useEffect(() => {
-    if (measuredSize) {
-      onDimensionsChangeRef.current?.(measuredSize.width, measuredSize.height)
-    }
-  }, [measuredSize])
-
-  if (!visible) return null
-
-  const viewportWidth = window.innerWidth
-  const viewportHeight = window.innerHeight
-  const margin = 10
-  const lineHeight = 20
-  const spacing = 5
-
-  let finalX = position.x
-  let finalY = position.y
-  let maxWidth: number | undefined = undefined
-
-  if (!measuredSize) {
-    finalX = -9999
-    finalY = -9999
-  }
-  else {
-    const popupWidth = measuredSize.width
-    const popupHeight = measuredSize.height
-
-    const rightEdge = position.x + popupWidth
-
-    if (rightEdge <= viewportWidth - margin) {
-      finalX = position.x
-      maxWidth = undefined
-    }
-    else {
-      const shiftedX = viewportWidth - popupWidth - margin
-
-      if (shiftedX >= margin) {
-        finalX = shiftedX
-        maxWidth = undefined
-      }
-      else {
-        finalX = margin
-        maxWidth = viewportWidth - 2 * margin
-      }
+    const id = stable.id
+    if (!visible) {
+      setPopupCanvasDrawable(id, null)
+      return
     }
 
-    const spaceAbove = position.y - margin
-    const spaceBelow = viewportHeight - (position.y + lineHeight) - margin
+    setPopupCanvasDrawable(id, {
+      priority: 30,
+      wantsPointer: false,
+      draw: ({ context, width, height }) => {
+        const margin = 10
+        const lineHeight = 20
+        const spacing = 5
+        const padding = 12
+        const radius = 8
+        const maxWidth = Math.max(160, Math.min(520, width - 2 * margin))
 
-    if (spaceBelow >= popupHeight) {
-      finalY = position.y + lineHeight + spacing
-    }
-    else if (spaceAbove >= popupHeight) {
-      finalY = position.y - popupHeight - spacing
-    }
-    else {
-      if (spaceAbove > spaceBelow) {
-        finalY = margin
-      }
-      else {
-        finalY = position.y + lineHeight + spacing
-      }
-    }
-  }
+        const font = popupCanvasUiFont(14, 20, 400)
+        context.textBaseline = 'alphabetic'
+        context.font = font
+        const metrics = context.measureText('Mg')
+        const ascent = metrics.actualBoundingBoxAscent || 12
+        const baselineOffset = ascent
 
-  return (
-    <div
-      ref={popupRef}
-      className="fixed z-[9999] rounded-lg shadow-2xl pointer-events-none"
-      style={{
-        left: `${finalX}px`,
-        top: `${finalY}px`,
-        backgroundColor: theme.errorPopup.background,
-        borderColor: theme.errorPopup.border,
-        borderWidth: '1px',
-        borderStyle: 'solid',
-        ...(maxWidth ? { maxWidth: `${maxWidth}px` } : {}),
-      }}
-    >
-      <div className="p-3">
-        <div className="text-sm">
-          <div className="break-words leading-relaxed" style={{ color: theme.errorPopup.text }}>
-            {error.message}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
+        const lines = wrapText(context, font, error.message, maxWidth - padding * 2)
+        const contentHeight = Math.max(1, lines.length) * lineHeight
+        const popupWidth = Math.min(
+          maxWidth,
+          Math.ceil(Math.max(120, Math.max(...lines.map(l => context.measureText(l).width), 0) + padding * 2)),
+        )
+        const popupHeight = padding * 2 + contentHeight
+
+        let left = position.x
+        const rightEdge = left + popupWidth
+        if (rightEdge > width - margin) {
+          const shiftedX = width - popupWidth - margin
+          left = shiftedX >= margin ? shiftedX : margin
+        }
+
+        const spaceAbove = position.y - margin
+        const spaceBelow = height - (position.y + lineHeight) - margin
+
+        let top = position.y + lineHeight + spacing
+        if (spaceBelow < popupHeight && spaceAbove >= popupHeight) {
+          top = position.y - popupHeight - spacing
+        }
+        else if (spaceBelow < popupHeight && spaceAbove < popupHeight) {
+          top = spaceAbove > spaceBelow ? margin : position.y + lineHeight + spacing
+        }
+
+        fillRoundedRectWithShadow(
+          context,
+          left,
+          top,
+          popupWidth,
+          popupHeight,
+          radius,
+          effectiveTheme.errorPopup.background,
+          { color: 'rgba(0, 0, 0, 0.45)', blur: 24, offsetX: 0, offsetY: 12 },
+        )
+        strokeRoundedRect(
+          context,
+          left,
+          top,
+          popupWidth,
+          popupHeight,
+          radius,
+          { color: effectiveTheme.errorPopup.border, width: 1 },
+        )
+
+        context.fillStyle = effectiveTheme.errorPopup.text
+        for (let i = 0; i < lines.length; i++) {
+          context.fillText(lines[i], left + padding, top + padding + i * lineHeight + baselineOffset)
+        }
+
+        const last = lastDimensionsRef.current
+        const next = { width: popupWidth, height: popupHeight }
+        if (!last || last.width !== next.width || last.height !== next.height) {
+          lastDimensionsRef.current = next
+          onDimensionsChangeRef.current?.(next.width, next.height)
+        }
+
+        return null
+      },
+    })
+
+    return () => setPopupCanvasDrawable(id, null)
+  }, [
+    stable,
+    visible,
+    error.message,
+    position.x,
+    position.y,
+    effectiveTheme,
+  ])
+
+  return null
 }
 
 export default ErrorPopup

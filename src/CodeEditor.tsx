@@ -1553,6 +1553,7 @@ export const CodeEditor = ({
           position={popupPosition}
           visible={!inputState.selection || isSelectionEmpty(inputState.selection)}
           theme={theme ?? defaultTheme}
+          tokenizer={tokenizer}
         />
       )}
 
