@@ -1,7 +1,7 @@
 export { type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 export * from './CodeEditor.tsx'
 export { CodeFile, type CodeFileState } from './CodeFile.ts'
-export { type EditorError } from './ErrorPopup.tsx'
+export { type EditorError } from './editor-error.ts'
 export {
   functionDefinitions,
   type FunctionParameter,

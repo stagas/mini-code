@@ -221,5 +221,3 @@ export const popupCanvasUiFont = (sizePx: number, lineHeightPx: number, weight: 
   const family = getPopupCanvasInheritedFontFamily()
   return `${weight} ${sizePx}px/${lineHeightPx}px ${family}`
 }
-
-

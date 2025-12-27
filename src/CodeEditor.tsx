@@ -2,20 +2,15 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { flushSync } from 'react-dom'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
-import AutocompletePopup from './AutocompletePopup.tsx'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile } from './CodeFile.ts'
-import ErrorPopup, { type EditorError } from './ErrorPopup.tsx'
-import {
-  type FunctionCallInfo,
-  functionDefinitions as defaultFunctionDefinitions,
-  type FunctionSignature,
-} from './function-signature.ts'
-import FunctionSignaturePopup from './FunctionSignaturePopup.tsx'
+import { setPopupCanvasDrawable, type PopupCanvasDrawable } from './popup-canvas.ts'
+import { drawAutocompletePopup } from './popup-drawables.ts'
+import { type EditorError } from './editor-error.ts'
+import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignature } from './function-signature.ts'
 import { History } from './history.ts'
 import {
   getSelectedText,
-  isSelectionEmpty,
   InputHandler,
   type InputState,
   type KeyOverrideFunction,
@@ -81,17 +76,6 @@ export const CodeEditor = ({
 
   const [inputState, setInputStateInternal] = useState<InputState>(codeFile.inputState)
 
-  // Function signature popup state
-  const [functionCallInfo, setFunctionCallInfo] = useState<FunctionCallInfo | null>(null)
-  const [popupPosition, setPopupPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-  const [popupPositionKey, setPopupPositionKey] = useState<string>('')
-  const callKeyRef = useRef<string>('')
-
-  const getCallKey = (info: FunctionCallInfo | null): string => {
-    if (!info) return ''
-    return `${info.functionName}:${info.openParenPosition.line}:${info.openParenPosition.column}`
-  }
-
   // Autocomplete state
   const [autocompleteInfo, setAutocompleteInfo] = useState<AutocompleteInfo | null>(null)
   const [autocompletePosition, setAutocompletePosition] = useState<{ x: number; y: number }>({
@@ -100,11 +84,17 @@ export const CodeEditor = ({
   })
   const [autocompleteReady, setAutocompleteReady] = useState(false)
   const [autocompleteSelectedIndex, setAutocompleteSelectedIndex] = useState(0)
-  const [viewportWidth, setViewportWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1920)
-
-  // Error popup state
-  const [hoveredError, setHoveredError] = useState<EditorError | null>(null)
-  const [errorPosition, setErrorPosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  const autocompleteInfoRef = useRef<AutocompleteInfo | null>(null)
+  const autocompletePositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+  const autocompleteReadyRef = useRef(false)
+  const autocompleteSelectedIndexRef = useRef(0)
+  const autocompletePopupIdRef = useRef(`ac_${Math.random().toString(36).slice(2)}`)
+  const themeRef = useRef(theme ?? defaultTheme)
+  themeRef.current = theme ?? defaultTheme
+  const autocompleteOnHoverRef = useRef<(index: number) => void>(() => {})
+  const autocompleteOnSelectRef = useRef<(index: number) => void>(() => {})
+  const autocompletePopupDrawableRef = useRef<PopupCanvasDrawable | null>(null)
+  const updateAutocompletePopupCanvasRef = useRef<() => void>(() => {})
 
   const [isActive, setIsActive] = useState(false)
   const editorIdRef = useRef<string>(Math.random().toString(36).slice(2))
@@ -191,6 +181,9 @@ export const CodeEditor = ({
         // Keep lastTextRef in sync even if text didn't change
         lastTextRef.current = newText
       }
+
+      // Keep the popup-canvas autocomplete overlay in sync on caret/selection changes
+      updateAutocompletePopupCanvasRef.current()
     },
     [setValue],
   )
@@ -330,7 +323,10 @@ export const CodeEditor = ({
       // Hide autocomplete first, then signature popup
       if (autocompleteInfo) {
         canvasEditorRef.current?.hideAutocomplete()
-        setAutocompleteSelectedIndex(0)
+        setAutocompleteIndex(0)
+        autocompleteReadyRef.current = false
+        setAutocompleteReady(false)
+        updateAutocompletePopupCanvas()
         e.preventDefault()
         return
       }
@@ -364,46 +360,15 @@ export const CodeEditor = ({
         e.preventDefault()
         const len = autocompleteInfo.suggestions.length
         // Cycle through suggestions (Shift+Tab goes backwards)
-        setAutocompleteSelectedIndex(prev => (prev + (e.shiftKey ? len - 1 : 1)) % len)
+        const prev = autocompleteSelectedIndexRef.current
+        const next = (prev + (e.shiftKey ? len - 1 : 1)) % len
+        setAutocompleteIndex(next)
         return
       }
 
       if (e.key === 'Enter') {
         e.preventDefault()
-        // Accept selected suggestion
-        const currentState = inputStateRef.current
-        const selectedSuggestion = autocompleteInfo.suggestions[autocompleteSelectedIndex]
-        const line = currentState.lines[currentState.caret.line]
-        const newLine = line.substring(0, autocompleteInfo.startColumn)
-          + selectedSuggestion
-          + line.substring(autocompleteInfo.endColumn)
-
-        const newLines = [...currentState.lines]
-        newLines[currentState.caret.line] = newLine
-
-        const newState: InputState = {
-          ...currentState,
-          lines: newLines,
-          caret: {
-            line: currentState.caret.line,
-            column: autocompleteInfo.startColumn + selectedSuggestion.length,
-            columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
-          },
-        }
-
-        // Save to history before applying the change
-        if (inputHandlerRef.current) {
-          // Flush any pending debounced state
-          codeFileRef.current.history.flushDebouncedState(currentState)
-          // Save before state
-          inputHandlerRef.current.saveBeforeStateToHistory(currentState)
-          // Save after state
-          inputHandlerRef.current.saveAfterStateToHistory(newState)
-        }
-
-        setInputState(newState)
-        canvasEditorRef.current?.hideAutocomplete()
-        setAutocompleteSelectedIndex(0)
+        applyAutocompleteSuggestion(autocompleteSelectedIndexRef.current)
         return
       }
     }
@@ -437,7 +402,10 @@ export const CodeEditor = ({
       // Hide autocomplete on navigation or modifier keys
       // Don't hide when Shift is pressed alone (needed for Shift+Tab navigation)
       canvasEditorRef.current?.hideAutocomplete()
-      setAutocompleteSelectedIndex(0)
+      setAutocompleteIndex(0)
+      autocompleteReadyRef.current = false
+      setAutocompleteReady(false)
+      updateAutocompletePopupCanvas()
     }
 
     // Intercept undo/redo to get widget data before InputHandler processes them
@@ -543,39 +511,10 @@ export const CodeEditor = ({
     inputHandlerRef.current?.handleKeyDown(e, inputStateRef.current)
   }
 
-  // Reset selected index when autocomplete info changes
-  useEffect(() => {
-    setAutocompleteSelectedIndex(0)
-    // Clear ready state and position when autocomplete is cleared
-    if (!autocompleteInfo) {
-      setAutocompleteReady(false)
-      setAutocompletePosition({ x: 0, y: 0 })
-    }
-    else if (autocompleteInfo.suggestions.length > 0) {
-      // Set ready when autocomplete info is available (position will be calculated asynchronously)
-      setAutocompleteReady(true)
-    }
-  }, [autocompleteInfo])
-
   // Update errors in canvas editor
   useEffect(() => {
     canvasEditorRef.current?.setErrors(errors)
   }, [errors])
-
-  // Hide error popup if the hovered error was removed from the list
-  useEffect(() => {
-    if (!hoveredError) return
-    const exists = errors.some(
-      e =>
-        e.line === hoveredError.line
-        && e.startColumn === hoveredError.startColumn
-        && e.endColumn === hoveredError.endColumn
-        && e.message === hoveredError.message,
-    )
-    if (!exists) {
-      setHoveredError(null)
-    }
-  }, [errors, hoveredError])
 
   useEffect(() => {
     // Initialize input handler only once
@@ -724,15 +663,6 @@ export const CodeEditor = ({
   }, [])
 
   useEffect(() => {
-    const handleResize = () => {
-      setViewportWidth(window.innerWidth)
-    }
-    window.addEventListener('resize', handleResize)
-    handleResize()
-    return () => window.removeEventListener('resize', handleResize)
-  }, [])
-
-  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -780,30 +710,126 @@ export const CodeEditor = ({
     }
   }, []) // Remove setInputState dependency since it's stable
 
+  const updateAutocompletePopupCanvas = useCallback(() => {
+    const id = autocompletePopupIdRef.current
+    const info = autocompleteInfoRef.current
+    const pos = autocompletePositionRef.current
+    const ready = autocompleteReadyRef.current
+    const selectedIndex = autocompleteSelectedIndexRef.current
+    const state = inputStateRef.current
+
+    const currentLine = state.lines[state.caret.line] || ''
+    const wordInfo = info
+      ? findCurrentWord(state.lines, state.caret.line, state.caret.column)
+      : null
+    const matchesCurrentWord = !!info
+      && wordInfo !== null
+      && wordInfo.startColumn === info.startColumn
+      && wordInfo.endColumn === info.endColumn
+      && wordInfo.word === info.word
+
+    const visible = isActive
+      && !!info
+      && info.suggestions.length > 0
+      && ready
+      && !state.selection
+      && wordInfo !== null
+      && currentLine.trim().length > 0
+      && matchesCurrentWord
+      && (pos.x !== 0 || pos.y !== 0)
+
+    if (!autocompletePopupDrawableRef.current) {
+      autocompletePopupDrawableRef.current = {
+        priority: 20,
+        wantsPointer: true,
+        draw: ({ context, width, height }) => {
+          const info = autocompleteInfoRef.current
+          const pos = autocompletePositionRef.current
+          const selectedIndex = autocompleteSelectedIndexRef.current
+          if (!info || info.suggestions.length === 0 || (pos.x === 0 && pos.y === 0)) return null
+
+          return drawAutocompletePopup({
+            context,
+            width,
+            height,
+            position: pos,
+            suggestions: info.suggestions,
+            selectedIndex,
+            theme: themeRef.current,
+            onHover: index => autocompleteOnHoverRef.current(index),
+            onSelect: index => autocompleteOnSelectRef.current(index),
+          })
+        },
+      }
+    }
+
+    setPopupCanvasDrawable(id, visible ? autocompletePopupDrawableRef.current : null)
+  }, [isActive])
+
+  updateAutocompletePopupCanvasRef.current = updateAutocompletePopupCanvas
+
+  const setAutocompleteIndex = useCallback((next: number) => {
+    autocompleteSelectedIndexRef.current = next
+    setAutocompleteSelectedIndex(prev => (prev === next ? prev : next))
+    updateAutocompletePopupCanvas()
+  }, [updateAutocompletePopupCanvas])
+
+  const applyAutocompleteSuggestion = useCallback((index: number) => {
+    const info = autocompleteInfoRef.current
+    if (!info) return
+
+    const selectedSuggestion = info.suggestions[index]
+    const line = inputStateRef.current.lines[inputStateRef.current.caret.line]
+    const newLine = line.substring(0, info.startColumn)
+      + selectedSuggestion
+      + line.substring(info.endColumn)
+
+    const newLines = [...inputStateRef.current.lines]
+    newLines[inputStateRef.current.caret.line] = newLine
+
+    const newState: InputState = {
+      ...inputStateRef.current,
+      lines: newLines,
+      caret: {
+        line: inputStateRef.current.caret.line,
+        column: info.startColumn + selectedSuggestion.length,
+        columnIntent: info.startColumn + selectedSuggestion.length,
+      },
+    }
+
+    if (inputHandlerRef.current) {
+      codeFileRef.current.history.flushDebouncedState(inputStateRef.current)
+      inputHandlerRef.current.saveBeforeStateToHistory(inputStateRef.current)
+      inputHandlerRef.current.saveAfterStateToHistory(newState)
+    }
+
+    setInputStateRef.current(newState)
+    canvasEditorRef.current?.hideAutocomplete()
+    setAutocompleteIndex(0)
+    autocompleteReadyRef.current = false
+    setAutocompleteReady(false)
+    updateAutocompletePopupCanvas()
+  }, [setAutocompleteIndex, updateAutocompletePopupCanvas])
+
+  autocompleteOnHoverRef.current = setAutocompleteIndex
+  autocompleteOnSelectRef.current = applyAutocompleteSuggestion
+
   // Store callbacks in refs to avoid recreating CanvasEditor
   const callbacksRef = useRef<CanvasEditorCallbacks>({
-    onFunctionCallChange: info => {
-      callKeyRef.current = getCallKey(info)
-      setPopupPositionKey(prev => {
-        const next = callKeyRef.current
-        return prev === next ? prev : next
-      })
-      setFunctionCallInfo(info)
-      if (!info) {
-        setPopupPositionKey(prev => prev === '' ? prev : '')
-      }
+    onAutocompleteChange: info => {
+      autocompleteInfoRef.current = info
+      setAutocompleteInfo(info)
+      setAutocompleteIndex(0)
+      updateAutocompletePopupCanvas()
     },
-    onPopupPositionChange: pos => {
-      setPopupPosition(pos)
-      setPopupPositionKey(prev => {
-        const next = callKeyRef.current
-        return prev === next ? prev : next
-      })
-    },
-    onAutocompleteChange: setAutocompleteInfo,
     onAutocompletePositionChange: pos => {
+      autocompletePositionRef.current = pos
       setAutocompletePosition(pos)
-      if (pos.x !== 0 || pos.y !== 0) setAutocompleteReady(true)
+      if (pos.x !== 0 || pos.y !== 0) {
+        autocompleteReadyRef.current = true
+        setAutocompleteReady(true)
+      }
+      updateAutocompletePopupCanvas()
     },
     onScrollChange: (sx, sy) => {
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
@@ -823,35 +849,25 @@ export const CodeEditor = ({
           ? m
           : prev
       ),
-    onErrorHover: setHoveredError,
-    onErrorPositionChange: setErrorPosition,
   })
 
   // Keep callbacks ref up to date
   useEffect(() => {
     callbacksRef.current = {
-      onFunctionCallChange: info => {
-        callKeyRef.current = getCallKey(info)
-        setPopupPositionKey(prev => {
-          const next = callKeyRef.current
-          return prev === next ? prev : next
-        })
-        setFunctionCallInfo(info)
-        if (!info) {
-          setPopupPositionKey(prev => prev === '' ? prev : '')
-        }
+      onAutocompleteChange: info => {
+        autocompleteInfoRef.current = info
+        setAutocompleteInfo(info)
+        setAutocompleteIndex(0)
+        updateAutocompletePopupCanvas()
       },
-      onPopupPositionChange: pos => {
-        setPopupPosition(pos)
-        setPopupPositionKey(prev => {
-          const next = callKeyRef.current
-          return prev === next ? prev : next
-        })
-      },
-      onAutocompleteChange: setAutocompleteInfo,
       onAutocompletePositionChange: pos => {
+        autocompletePositionRef.current = pos
         setAutocompletePosition(pos)
-        if (pos.x !== 0 || pos.y !== 0) setAutocompleteReady(true)
+        if (pos.x !== 0 || pos.y !== 0) {
+          autocompleteReadyRef.current = true
+          setAutocompleteReady(true)
+        }
+        updateAutocompletePopupCanvas()
       },
       onScrollChange: (sx, sy) => {
         mouseHandlerRef.current?.setScrollOffset(sx, sy)
@@ -883,8 +899,6 @@ export const CodeEditor = ({
             ? m
             : prev
         ),
-      onErrorHover: setHoveredError,
-      onErrorPositionChange: setErrorPosition,
     }
   })
 
@@ -917,6 +931,9 @@ export const CodeEditor = ({
     // Set function definitions for autocomplete
     canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
 
+    // Signature popup is now rendered imperatively by CanvasEditor
+    canvasEditorRef.current.setSignatureEnabled(!hideFunctionSignatures)
+
     // Set errors
     canvasEditorRef.current.setErrors(errors)
 
@@ -940,6 +957,7 @@ export const CodeEditor = ({
     }
 
     return () => {
+      setPopupCanvasDrawable(autocompletePopupIdRef.current, null)
       canvasEditorRef.current?.destroy()
     }
   }, [wordWrap, gutter])
@@ -1032,6 +1050,14 @@ export const CodeEditor = ({
       canvasEditorRef.current?.setTokenizer(tokenizer)
     }
   }, [theme, tokenizer])
+
+  useEffect(() => {
+    canvasEditorRef.current?.setSignatureEnabled(!hideFunctionSignatures)
+  }, [hideFunctionSignatures])
+
+  useEffect(() => {
+    updateAutocompletePopupCanvas()
+  }, [isActive, updateAutocompletePopupCanvas])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1473,99 +1499,6 @@ export const CodeEditor = ({
           }
         }}
       />
-
-      {/* Autocomplete popup */}
-      {isActive
-        && autocompleteInfo
-        && autocompleteInfo.suggestions.length > 0
-        && autocompleteReady
-        && (() => {
-          // Hide popup if current line is empty or there's no word at cursor
-          const currentLine = inputState.lines[inputState.caret.line] || ''
-          const wordInfo = findCurrentWord(
-            inputState.lines,
-            inputState.caret.line,
-            inputState.caret.column,
-          )
-          // Verify autocompleteInfo matches current word position
-          const matchesCurrentWord = wordInfo !== null
-            && wordInfo.startColumn === autocompleteInfo.startColumn
-            && wordInfo.endColumn === autocompleteInfo.endColumn
-            && wordInfo.word === autocompleteInfo.word
-          return !inputState.selection && wordInfo !== null && currentLine.trim().length > 0 && matchesCurrentWord
-        })() && (
-        <AutocompletePopup
-          suggestions={autocompleteInfo.suggestions}
-          selectedIndex={autocompleteSelectedIndex}
-          position={autocompletePosition}
-          visible={true}
-          theme={theme ?? defaultTheme}
-          onHover={index => setAutocompleteSelectedIndex(index)}
-          onSelect={index => {
-            const selectedSuggestion = autocompleteInfo.suggestions[index]
-            const line = inputStateRef.current.lines[inputStateRef.current.caret.line]
-            const newLine = line.substring(0, autocompleteInfo.startColumn)
-              + selectedSuggestion
-              + line.substring(autocompleteInfo.endColumn)
-
-            const newLines = [...inputStateRef.current.lines]
-            newLines[inputStateRef.current.caret.line] = newLine
-
-            const newState: InputState = {
-              ...inputStateRef.current,
-              lines: newLines,
-              caret: {
-                line: inputStateRef.current.caret.line,
-                column: autocompleteInfo.startColumn + selectedSuggestion.length,
-                columnIntent: autocompleteInfo.startColumn + selectedSuggestion.length,
-              },
-            }
-
-            // Save to history before applying the change
-            if (inputHandlerRef.current) {
-              // Flush any pending debounced state
-              codeFileRef.current.history.flushDebouncedState(inputStateRef.current)
-              // Save before state
-              inputHandlerRef.current.saveBeforeStateToHistory(inputStateRef.current)
-              // Save after state
-              inputHandlerRef.current.saveAfterStateToHistory(newState)
-            }
-
-            setInputState(newState)
-            canvasEditorRef.current?.hideAutocomplete()
-            setAutocompleteSelectedIndex(0)
-            setAutocompleteReady(false)
-          }}
-        />
-      )}
-
-      {/* Function signature popup */}
-      {!hideFunctionSignatures
-        && isActive
-        && functionCallInfo
-        && functionDefinitions[functionCallInfo.functionName]
-        && popupPositionKey === getCallKey(functionCallInfo)
-        && window.innerWidth >= 600 && (
-        <FunctionSignaturePopup
-          signature={functionDefinitions[functionCallInfo.functionName]}
-          currentArgumentIndex={functionCallInfo.currentArgumentIndex}
-          currentParameterName={functionCallInfo.currentParameterName}
-          position={popupPosition}
-          visible={!inputState.selection || isSelectionEmpty(inputState.selection)}
-          theme={theme ?? defaultTheme}
-          tokenizer={tokenizer}
-        />
-      )}
-
-      {/* Error popup */}
-      {isActive && hoveredError && (
-        <ErrorPopup
-          error={hoveredError}
-          position={errorPosition}
-          visible={!inputState.selection || isSelectionEmpty(inputState.selection)}
-          theme={theme ?? defaultTheme}
-        />
-      )}
     </div>
   )
 }

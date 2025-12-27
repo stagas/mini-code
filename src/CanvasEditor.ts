@@ -4,14 +4,22 @@ import {
   findCurrentWord,
   getAutocompleteSuggestions,
 } from './autocomplete.ts'
-import type { EditorError } from './ErrorPopup.tsx'
+import type { EditorError } from './editor-error.ts'
 import {
   calculatePopupPosition,
   findFunctionCallContext,
   type FunctionCallInfo,
 } from './function-signature.ts'
+import type { FunctionSignature } from './function-signature.ts'
 import type { InputState } from './input.ts'
 import { drawTokensWithCustomLigatures, extractTokensForSegment } from './mono-text.ts'
+import { type PopupCanvasDrawable, setPopupCanvasDrawable } from './popup-canvas.ts'
+import {
+  drawErrorPopup,
+  drawFunctionSignaturePopup,
+  type ErrorPopupCache,
+  type FunctionSignaturePopupCache,
+} from './popup-drawables.ts'
 import {
   defaultTheme,
   defaultTokenizer,
@@ -337,7 +345,7 @@ export class CanvasEditor {
     y: number
   } | null = null
   private autocompleteInputSource: 'keyboard' | 'mouse' = 'keyboard'
-  private functionDefinitions: Record<string, any> = {}
+  private functionDefinitions: Record<string, FunctionSignature> = {}
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
   private scrollX = 0
@@ -365,6 +373,60 @@ export class CanvasEditor {
   private errors: EditorError[] = []
   private hoveredError: EditorError | null = null
   private isHoveringGutter: boolean = false
+  private signaturePopupId = `sig_${Math.random().toString(36).slice(2)}`
+  private signaturePopupCache: FunctionSignaturePopupCache = {
+    exampleLigatureCache: {},
+    lastDimensions: null,
+  }
+  private signaturePopupState: {
+    signature: FunctionSignature
+    callInfo: FunctionCallInfo
+    position: { x: number; y: number }
+  } | null = null
+  private signaturePopupDrawable: PopupCanvasDrawable = {
+    priority: 10,
+    wantsPointer: false,
+    draw: ({ context, width, height }) => {
+      const s = this.signaturePopupState
+      if (!s) return null
+      if (width < 600) return null
+      drawFunctionSignaturePopup({
+        context,
+        width,
+        height,
+        position: s.position,
+        signature: s.signature,
+        currentArgumentIndex: s.callInfo.currentArgumentIndex,
+        currentParameterName: s.callInfo.currentParameterName,
+        theme: this.options.theme,
+        tokenizer: this.options.tokenizer,
+        cache: this.signaturePopupCache,
+        onDimensionsChange: (w, h) => this.setPopupDimensions(w, h),
+      })
+      return null
+    },
+  }
+  private errorPopupId = `err_${Math.random().toString(36).slice(2)}`
+  private errorPopupCache: ErrorPopupCache = { lastDimensions: null }
+  private errorPopupState: { error: EditorError; position: { x: number; y: number } } | null = null
+  private errorPopupDrawable: PopupCanvasDrawable = {
+    priority: 30,
+    wantsPointer: false,
+    draw: ({ context, width, height }) => {
+      const s = this.errorPopupState
+      if (!s) return null
+      drawErrorPopup({
+        context,
+        width,
+        height,
+        position: s.position,
+        error: s.error,
+        theme: this.options.theme,
+        cache: this.errorPopupCache,
+      })
+      return null
+    },
+  }
   private autoScrollRaf: number | null = null
   private autoScrollDirection: { x: number; y: number } | null = null
   private autoScrollLastTime: number | null = null
@@ -488,6 +550,8 @@ export class CanvasEditor {
       // Don't clear state when deactivating - just hide via rendering
       // This allows popups to reappear when reactivating without recalculation
       this.stopCaretBlink()
+      this.clearSignaturePopupCanvas()
+      this.clearErrorPopupCanvas()
     }
     else {
       this.startCaretBlink()
@@ -1797,6 +1861,8 @@ export class CanvasEditor {
     this.stopMomentumScroll()
     this.stopCaretBlink()
     this.stopAnimationLoop()
+    this.clearSignaturePopupCanvas()
+    this.clearErrorPopupCanvas()
   }
 
   public setScroll(x: number | null, y: number | null) {
@@ -3783,7 +3849,10 @@ export class CanvasEditor {
   }
 
   private updateFunctionSignature() {
-    if (!this.isActive || !this.signatureEnabled) return
+    if (!this.isActive || !this.signatureEnabled) {
+      this.clearSignaturePopupCanvas()
+      return
+    }
     // If the user recently hid the signature popup explicitly (e.g. pressed Escape),
     // and the caret/text haven't changed since, keep it suppressed.
     if (this.suppressSignatureUntil) {
@@ -3793,6 +3862,7 @@ export class CanvasEditor {
       const sameText = currentText === s.text
       if (sameCaret && sameText) {
         // Still suppressed — don't compute or reopen the popup.
+        this.clearSignaturePopupCanvas()
         return
       }
       // Caret or text changed — clear suppression and continue.
@@ -3913,11 +3983,27 @@ export class CanvasEditor {
         if (positionChanged) {
           this.callbacks.onPopupPositionChange?.(newPopupPosition)
         }
+
+        const signature = this.functionDefinitions[callInfo.functionName]
+        const selection = this.inputState.selection
+        const selectionEmpty = !selection
+          || (selection.start.line === selection.end.line && selection.start.column === selection.end.column)
+        const visible = selectionEmpty && !!signature
+        if (visible) {
+          this.signaturePopupState = { signature, callInfo, position: newPopupPosition }
+          setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+        }
+        else {
+          this.clearSignaturePopupCanvas()
+        }
       }
     }
-    else if (this.lastPopupPosition !== null) {
-      // Clear popup position when there's no call info
-      this.lastPopupPosition = null
+    else {
+      if (this.lastPopupPosition !== null) {
+        // Clear popup position when there's no call info
+        this.lastPopupPosition = null
+      }
+      this.clearSignaturePopupCanvas()
     }
   }
 
@@ -4054,6 +4140,7 @@ export class CanvasEditor {
       if (!enabled) {
         this.lastFunctionCallInfo = null
         this.callbacks.onFunctionCallChange?.(null)
+        this.clearSignaturePopupCanvas()
       }
       else {
         this.updateFunctionSignature()
@@ -4066,6 +4153,7 @@ export class CanvasEditor {
       this.lastFunctionCallInfo = null
       this.callbacks.onFunctionCallChange?.(null)
     }
+    this.clearSignaturePopupCanvas()
     // Suppress immediate reopening of the popup until the caret or text changes.
     // Store current caret position and text snapshot.
     try {
@@ -4082,7 +4170,7 @@ export class CanvasEditor {
   }
 
   public setFunctionDefinitions(definitions: Record<string, any>) {
-    this.functionDefinitions = definitions
+    this.functionDefinitions = definitions as Record<string, FunctionSignature>
   }
 
   public hideAutocomplete() {
@@ -4390,12 +4478,15 @@ export class CanvasEditor {
     this.options.theme = theme
     this.highlightCache = null
     this.maybeDraw()
+    if (this.signaturePopupState) setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+    if (this.errorPopupState) setPopupCanvasDrawable(this.errorPopupId, this.errorPopupDrawable)
   }
 
   public setTokenizer(tokenizer: Tokenizer) {
     this.options.tokenizer = tokenizer
     this.highlightCache = null
     this.maybeDraw()
+    if (this.signaturePopupState) setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
   }
 
   public setErrors(errors: EditorError[]) {
@@ -4631,12 +4722,34 @@ export class CanvasEditor {
           x: viewportX,
           y: viewportY,
         })
+
+        const selection = this.inputState.selection
+        const selectionEmpty = !selection
+          || (selection.start.line === selection.end.line && selection.start.column === selection.end.column)
+        if (this.isActive && selectionEmpty) {
+          this.errorPopupState = { error, position: { x: viewportX, y: viewportY } }
+          setPopupCanvasDrawable(this.errorPopupId, this.errorPopupDrawable)
+        }
+        else {
+          this.clearErrorPopupCanvas()
+        }
       }
     }
 
     if (!error) {
       this.isHoveringGutter = false
+      this.clearErrorPopupCanvas()
     }
+  }
+
+  private clearSignaturePopupCanvas() {
+    this.signaturePopupState = null
+    setPopupCanvasDrawable(this.signaturePopupId, null)
+  }
+
+  private clearErrorPopupCanvas() {
+    this.errorPopupState = null
+    setPopupCanvasDrawable(this.errorPopupId, null)
   }
 
   private drawErrorSquiggles(
