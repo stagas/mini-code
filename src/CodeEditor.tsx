@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import { useLayoutEffect } from 'react'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
@@ -241,7 +242,7 @@ export const CodeEditor = ({
   widgetsRef.current = widgets
 
   // Subscribe to CodeFile changes and initialize state when external codeFile changes
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!externalCodeFile) return
 
     let rafId: number | null = null
