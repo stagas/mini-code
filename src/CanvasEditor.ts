@@ -550,8 +550,8 @@ export class CanvasEditor {
     }
     else {
       this.startCaretBlink()
-      this.updateAutocomplete()
-      this.updateFunctionSignature()
+      // this.updateAutocomplete()
+      // this.updateFunctionSignature()
     }
   }
 
@@ -4464,19 +4464,19 @@ export class CanvasEditor {
 
   public setErrors(errors: EditorError[]) {
     // Track if we were at the bottom before updating errors
-    const ctx = this.canvas.getContext('2d')
-    let wasAtBottom = false
-    if (ctx && this.isActive) {
-      this.setFont(ctx)
-      const oldContentSize = this.options.wordWrap
-        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
-        : this.getContentSize(ctx)
-      const dpr = window.devicePixelRatio || 1
-      const headerHeight = this.getHeaderHeight()
-      const viewportHeight = (this.canvas.height / dpr) - headerHeight
-      const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
-      wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
-    }
+    // const ctx = this.canvas.getContext('2d')
+    // let wasAtBottom = false
+    // if (ctx && this.isActive) {
+    //   this.setFont(ctx)
+    //   const oldContentSize = this.options.wordWrap
+    //     ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+    //     : this.getContentSize(ctx)
+    //   const dpr = window.devicePixelRatio || 1
+    //   const headerHeight = this.getHeaderHeight()
+    //   const viewportHeight = (this.canvas.height / dpr) - headerHeight
+    //   const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
+    //   wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
+    // }
 
     this.errors = errors
 

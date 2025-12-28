@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile } from './CodeFile.ts'
 import { type EditorError } from './editor-error.ts'
 import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignature } from './function-signature.ts'
-import { History } from './history.ts'
 import {
   getSelectedText,
   InputHandler,
@@ -243,7 +241,7 @@ export const CodeEditor = ({
   widgetsRef.current = widgets
 
   // Subscribe to CodeFile changes and initialize state when external codeFile changes
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!externalCodeFile) return
 
     let rafId: number | null = null
