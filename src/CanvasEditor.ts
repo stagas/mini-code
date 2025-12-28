@@ -1737,18 +1737,6 @@ export class CanvasEditor {
 
     // Track if we were at the bottom before update (must check before invalidating cache)
     const ctx = this.canvas.getContext('2d')
-    let wasAtBottom = false
-    if (ctx && linesChanged && this.isActive) {
-      this.setFont(ctx)
-      const oldContentSize = this.options.wordWrap
-        ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
-        : this.getContentSize(ctx)
-      const dpr = window.devicePixelRatio || 1
-      const headerHeight = this.getHeaderHeight()
-      const viewportHeight = (this.canvas.height / dpr) - headerHeight
-      const maxScrollY = Math.max(0, oldContentSize.height - viewportHeight)
-      wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
-    }
 
     if (linesChanged) {
       this.wrappedLinesCache = null
@@ -1773,7 +1761,7 @@ export class CanvasEditor {
     }
     if (this.isActive && (ensureCaretVisible || linesChanged)) {
       queueMicrotask(() => {
-        this.ensureCaretVisible(wasAtBottom)
+        this.ensureCaretVisible()
       })
     }
     this.maybeDraw()
@@ -2442,7 +2430,7 @@ export class CanvasEditor {
     }
   }
 
-  private ensureCaretVisible(wasAtBottom = false) {
+  private ensureCaretVisible() {
     if (this.isWidgetPointerDown) return
 
     const ctx = this.canvas.getContext('2d')
@@ -2536,21 +2524,11 @@ export class CanvasEditor {
     const margin = 4
 
     // Check if caret is already fully visible
-    const caretVisibleX = caretX >= this.scrollX + margin && caretX <= this.scrollX + viewportWidth - margin
+    // When gutter is enabled, the effective viewport for text starts after the gutter
+    const effectiveViewportLeft = this.scrollX
+      + (this.options.gutter ? this.padding + this.getGutterWidth() : this.padding)
+    const caretVisibleX = caretX >= effectiveViewportLeft + margin && caretX <= this.scrollX + viewportWidth - margin
     const caretVisibleY = caretTop >= this.scrollY + margin && caretBottom <= this.scrollY + viewportHeight - margin
-
-    // If we were at the bottom and caret is on the last line, maintain bottom scroll
-    const isLastLine = this.inputState.caret.line === this.inputState.lines.length - 1
-    if (wasAtBottom && isLastLine) {
-      const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
-      if (this.scrollY < maxScrollY) {
-        this.scrollY = maxScrollY
-        queueMicrotask(() => {
-          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
-        })
-      }
-      return
-    }
 
     // If caret is already fully visible, don't change scroll position
     if (caretVisibleX && caretVisibleY) {
@@ -2562,8 +2540,10 @@ export class CanvasEditor {
 
     // Horizontal scrolling
     if (!caretVisibleX) {
-      if (caretX < this.scrollX + margin) {
-        nextScrollX = Math.max(0, caretX - margin)
+      if (caretX < effectiveViewportLeft + margin) {
+        // Scroll left to make caret visible, accounting for gutter
+        nextScrollX = Math.max(0,
+          caretX - (this.options.gutter ? this.padding + this.getGutterWidth() + margin : margin))
       }
       else if (caretX > this.scrollX + viewportWidth - margin) {
         nextScrollX = caretX - (viewportWidth - margin)

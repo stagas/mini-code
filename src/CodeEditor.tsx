@@ -3,7 +3,7 @@ import { useLayoutEffect } from 'react'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
-import { CodeFile } from './CodeFile.ts'
+import { CodeFile, type CodeFileState } from './CodeFile.ts'
 import { type EditorError } from './editor-error.ts'
 import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignature } from './function-signature.ts'
 import {
@@ -136,6 +136,7 @@ export const CodeEditor = ({
   const skipEnsureCaretVisibleRef = useRef(false)
   const lastCanvasUpdateValueRef = useRef<string | null>(null)
   const isUserInputRef = useRef(false)
+  const pendingExternalStateRef = useRef<CodeFileState | null>(null)
 
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
@@ -247,54 +248,82 @@ export const CodeEditor = ({
 
     let rafId: number | null = null
 
+    const applyExternalState = (state: CodeFileState) => {
+      const currentState = inputStateRef.current
+      const nextState = state.inputState
+
+      const caretChanged = currentState.caret.line !== nextState.caret.line
+        || currentState.caret.column !== nextState.caret.column
+        || currentState.caret.columnIntent !== nextState.caret.columnIntent
+
+      const selectionChanged = (currentState.selection === null) !== (nextState.selection === null)
+        || (currentState.selection
+          && nextState.selection
+          && (currentState.selection.start.line !== nextState.selection.start.line
+            || currentState.selection.start.column !== nextState.selection.start.column
+            || currentState.selection.end.line !== nextState.selection.end.line
+            || currentState.selection.end.column !== nextState.selection.end.column))
+
+      const linesChanged = currentState.lines !== nextState.lines
+
+      if (linesChanged || caretChanged || selectionChanged) {
+        skipEnsureCaretVisibleRef.current = true
+        setInputStateInternal(nextState)
+        inputStateRef.current = nextState
+        lastTextRef.current = state.value
+        const canvasEditor = canvasEditorRef.current
+        if (canvasEditor) {
+          canvasEditor.updateWidgets(widgetsRef.current)
+          canvasEditor.updateState(nextState, false)
+          lastCanvasUpdateValueRef.current = state.value
+        }
+      }
+
+      if (state.scrollX !== lastScrollRef.current.x || state.scrollY !== lastScrollRef.current.y) {
+        lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
+      }
+    }
+
+    const scheduleFlush = () => {
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        const pending = pendingExternalStateRef.current
+        if (!pending) return
+
+        // If the canvas editor isn't initialized yet (or was recreated), retry next frame.
+        if (!canvasEditorRef.current) {
+          scheduleFlush()
+          return
+        }
+
+        pendingExternalStateRef.current = null
+        applyExternalState(pending)
+      })
+    }
+
     // Initialize state from external codeFile when it changes
     const state = externalCodeFile.getState()
-    setInputStateInternal(state.inputState)
-    inputStateRef.current = state.inputState
-    lastTextRef.current = state.value
-    lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
+    pendingExternalStateRef.current = state
 
-    // Update canvas editor synchronously to prevent flicker
-    // Mark that we've updated so the useEffect doesn't update again
-    lastCanvasUpdateValueRef.current = state.value
-    skipEnsureCaretVisibleRef.current = true
-    // Update widgets without drawing, then updateState will draw once
-    canvasEditorRef.current?.setWidgetsWithoutDraw(widgetsRef.current)
-    // Update canvas editor directly without ensuring caret visibility
-    canvasEditorRef.current?.updateState(state.inputState, false)
-    // Set scroll after updating state so content size is correct (synchronously, no delay)
-    canvasEditorRef.current?.setScrollWithoutDraw(state.scrollX, state.scrollY)
+    // Update canvas editor synchronously if possible; otherwise flush on the next frame.
+    if (canvasEditorRef.current) {
+      applyExternalState(state)
+      pendingExternalStateRef.current = null
+    }
+    else {
+      scheduleFlush()
+    }
 
     // Subscribe to external CodeFile changes
     const unsubscribe = externalCodeFile.subscribe(() => {
-      const state = externalCodeFile.getState()
-      const newValue = state.value
-      const currentValue = lastTextRef.current
-
-      // Only update if the value actually changed
-      if (newValue !== currentValue) {
-        skipEnsureCaretVisibleRef.current = true
-        lastCanvasUpdateValueRef.current = newValue
-        setInputStateInternal(state.inputState)
-        inputStateRef.current = state.inputState
-        lastTextRef.current = newValue
-        // Update widgets without drawing, then updateState will draw once
-        canvasEditorRef.current?.updateWidgets(widgetsRef.current)
-        // Update canvas editor directly without ensuring caret visibility
-        canvasEditorRef.current?.updateState(state.inputState, false)
-      }
-
-      // Update scroll position if it changed from what we last set
-      if (state.scrollX !== lastScrollRef.current.x || state.scrollY !== lastScrollRef.current.y) {
-        lastScrollRef.current = { x: state.scrollX, y: state.scrollY }
-        // requestAnimationFrame(() => {
-        //   canvasEditorRef.current?.setScroll(state.scrollX, state.scrollY)
-        // })
-      }
+      pendingExternalStateRef.current = externalCodeFile.getState()
+      scheduleFlush()
     })
 
     return () => {
       if (rafId !== null) cancelAnimationFrame(rafId)
+      pendingExternalStateRef.current = null
       unsubscribe()
     }
   }, [externalCodeFile])
