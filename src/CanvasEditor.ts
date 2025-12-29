@@ -365,6 +365,8 @@ export class CanvasEditor {
     viewportHeight: 0,
     contentWidth: 0,
     contentHeight: 0,
+    scrollX: 0,
+    scrollY: 0,
   }
   private hoveredScrollbar: 'vertical' | 'horizontal' | null = null
   private lastDpr = window.devicePixelRatio || 1
@@ -853,6 +855,21 @@ export class CanvasEditor {
     ctx: CanvasRenderingContext2D,
     wrappedLines: WrappedLine[],
   ): { width: number; height: number } {
+    // Calculate widget layout for content size
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    return this.getContentSizeWithWrappingUsingLayout(ctx, wrappedLines, widgetLayout)
+  }
+
+  private getContentSizeWithWrappingUsingLayout(
+    ctx: CanvasRenderingContext2D,
+    wrappedLines: WrappedLine[],
+    widgetLayout: {
+      widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>
+      inlineWidgets: Map<number, { widget: EditorWidget; column: number }[]>
+      overlayWidgets: EditorWidget[]
+      yOffsets: Map<number, number>
+    },
+  ): { width: number; height: number } {
     if (!this.options.wordWrap) {
       // Use original method when not wrapping
       return this.getContentSize(ctx)
@@ -874,7 +891,6 @@ export class CanvasEditor {
     let height = this.padding + wrappedLines.length * this.lineHeight + this.padding
 
     // Add extra height for widgets
-    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
     const totalOffset = widgetLayout.yOffsets.get(wrappedLines.length) || 0
     height += totalOffset
 
@@ -2415,8 +2431,11 @@ export class CanvasEditor {
       || this.scrollMetrics.viewportHeight !== viewportHeight
       || this.scrollMetrics.contentWidth !== contentWidth
       || this.scrollMetrics.contentHeight !== contentHeight
+      || this.scrollMetrics.scrollX !== this.scrollX
+      || this.scrollMetrics.scrollY !== this.scrollY
 
-    this.scrollMetrics = { viewportWidth, viewportHeight, contentWidth, contentHeight }
+    this.scrollMetrics = { viewportWidth, viewportHeight, contentWidth, contentHeight, scrollX: this.scrollX,
+      scrollY: this.scrollY }
 
     if (changed) {
       this.callbacks.onScrollMetricsChange?.({
@@ -3167,6 +3186,9 @@ export class CanvasEditor {
     const wrappedLines = this.pendingWrappedLines ?? this.getWrappedLines(ctx)
     this.pendingWrappedLines = null
 
+    // Calculate widget layout once for all operations (content size and drawing)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+
     // Cache syntax highlighting to avoid re-processing the same code
     const code = this.inputState.lines.join('\n')
     let highlightedCode: HighlightedLine[]
@@ -3191,7 +3213,7 @@ export class CanvasEditor {
     }
 
     // Publish metrics for consumers (use content height for viewport)
-    const content = this.getContentSizeWithWrapping(ctx, wrappedLines)
+    const content = this.getContentSizeWithWrappingUsingLayout(ctx, wrappedLines, widgetLayout)
     this.publishScrollMetrics(ctx, width, contentHeight, content.width, content.height)
 
     // Clamp scroll position to content bounds before drawing (use content height)
@@ -3201,13 +3223,12 @@ export class CanvasEditor {
     const clampedScrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
 
     if (clampedScrollX !== this.scrollX || clampedScrollY !== this.scrollY) {
-      // this.scrollX = clampedScrollX
-      // this.scrollY = clampedScrollY
-      // this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      this.scrollX = clampedScrollX
+      this.scrollY = clampedScrollY
+      this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+      // Re-publish metrics with updated scroll position
+      this.publishScrollMetrics(ctx, width, contentHeight, content.width, content.height)
     }
-
-    // Calculate widget layout once for all drawing operations
-    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
     this.widgetPositions.clear()
 
     // Apply scroll offset and header offset for content rendering
@@ -4452,7 +4473,6 @@ export class CanvasEditor {
     // Simply set widgets directly - no matching, debouncing, or delays
     this.options.widgets = widgets
     this.maybeDraw()
-    console.log('update widgets')
   }
 
   public getWidgets(): Array<
