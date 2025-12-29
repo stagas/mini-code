@@ -3314,13 +3314,51 @@ export class CanvasEditor {
       // Handle 'above' widgets
       if (widgets?.above && widgets.above.length > 0) {
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
+
+        // Create a map of widget widths calculated from sorted positions
+        const widgetWidths = new Map<EditorWidget, number>()
+
+        // Sort widgets by column position for width calculation
+        const sortedWidgets = [...widgets.above].sort((a, b) => (a.column - 1) - (b.column - 1))
+
+        for (let i = 0; i < sortedWidgets.length; i++) {
+          const widget = sortedWidgets[i]
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+
+          // Calculate natural width from widget length
+          const naturalWidgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+
+          // If there's a next widget, reduce width only if it would overlap
+          let widgetWidth = naturalWidgetWidth
+          if (i < sortedWidgets.length - 1) {
+            const nextWidget = sortedWidgets[i + 1]
+            const nextWidgetColumn = nextWidget.column - 1
+            const nextColumnInWrappedLine = nextWidgetColumn - wrappedLine.startColumn
+            const textBeforeNextWidget = wrappedLine.text.substring(0, Math.max(0, nextColumnInWrappedLine))
+            const nextWidgetX = textPadding + ctx.measureText(textBeforeNextWidget).width
+            const margin = ctx.measureText('X').width // One character width margin between widgets
+
+            // Only reduce width if the next widget would overlap with the natural width
+            if (widgetX + naturalWidgetWidth + margin > nextWidgetX) {
+              widgetWidth = Math.max(0, nextWidgetX - widgetX - margin)
+            }
+          }
+
+          widgetWidths.set(widget, widgetWidth)
+        }
+
+        // Draw widgets in their original order
         for (const widget of widgets.above) {
           const widgetColumn = widget.column - 1
           const adjustment = this.widgetAdjustments.get(widget)
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
-          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          const widgetWidth = widgetWidths.get(widget)!
+
           const baseHeight = this.getWidgetHeight(widget)
           const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
           const widgetY = adjustment
@@ -4414,9 +4452,12 @@ export class CanvasEditor {
     // Simply set widgets directly - no matching, debouncing, or delays
     this.options.widgets = widgets
     this.maybeDraw()
+    console.log('update widgets')
   }
 
-  public getWidgets(): Array<{ line: number; column: number; type: string; length: number; height?: number }> {
+  public getWidgets(): Array<
+    { line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }
+  > {
     if (!this.options.widgets) return []
     return this.options.widgets.map(w => ({
       line: w.line,

@@ -9,7 +9,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "jsxImportSource": "react",
+    "jsxImportSource": "preact",
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "strict": true

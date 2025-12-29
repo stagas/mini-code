@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import { useLayoutEffect } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
@@ -29,7 +28,7 @@ interface CodeEditorProps {
   errors?: EditorError[]
   widgets?: EditorWidget[]
   header?: EditorHeader
-  canvasRef?: React.RefObject<HTMLCanvasElement>
+  canvasRef?: preact.RefObject<HTMLCanvasElement>
   autoHeight?: boolean
   keyOverride?: KeyOverrideFunction
   hideFunctionSignatures?: boolean
@@ -329,22 +328,22 @@ export const CodeEditor = ({
   }, [externalCodeFile])
 
   // Handle clipboard events
-  const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handleCopy = (e: preact.TargetedClipboardEvent<HTMLTextAreaElement>) => {
     // Let the browser handle the copy operation naturally
     // The textarea already contains the selected text
   }
 
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = (e: preact.TargetedClipboardEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
     inputHandlerRef.current?.handlePasteEvent(e, inputStateRef.current)
   }
 
-  const handleCut = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handleCut = (e: preact.TargetedClipboardEvent<HTMLTextAreaElement>) => {
     e.preventDefault()
     inputHandlerRef.current?.handleCut(inputStateRef.current)
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: preact.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
     // Allow browser default for zoom shortcuts
     if (
       (e.ctrlKey || e.metaKey)
@@ -1492,7 +1491,7 @@ export const CodeEditor = ({
       <canvas ref={canvasRef} onContextMenu={e => e.preventDefault()} className="absolute inset-0 outline-none" />
       <textarea
         ref={textareaRef}
-        spellCheck={false}
+        spellcheck={false}
         autoCorrect="off"
         tabIndex={0}
         style={{

@@ -56,7 +56,7 @@ export interface MovementCallbacks {
 }
 
 export type KeyOverrideFunction = (
-  event: React.KeyboardEvent<HTMLTextAreaElement>,
+  event: preact.TargetedKeyboardEvent<HTMLTextAreaElement>,
   currentState: InputState,
 ) => boolean
 
@@ -103,7 +103,7 @@ export class InputHandler {
   private history: History
   private movementCallbacks: MovementCallbacks
   private keyOverride: KeyOverrideFunction | null = null
-  private getWidgets: (() => Array<{ line: number; column: number; type: string; length: number; height?: number }>) | null = null
+  private getWidgets: (() => Array<{ line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }>) | null = null
 
   constructor(
     onStateChange: (state: InputState) => void,
@@ -127,11 +127,11 @@ export class InputHandler {
     this.history = history
   }
 
-  setGetWidgets(fn: (() => Array<{ line: number; column: number; type: string; length: number; height?: number }>) | null) {
+  setGetWidgets(fn: (() => Array<{ line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }>) | null) {
     this.getWidgets = fn
   }
 
-  handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
+  handleKeyDown(event: preact.TargetedKeyboardEvent<HTMLTextAreaElement>, currentState: InputState) {
     // Call key override function if provided - if it returns false, skip default handling
     if (this.keyOverride && !this.keyOverride(event, currentState)) {
       return
@@ -1446,7 +1446,7 @@ export class InputHandler {
     })
   }
 
-  handlePasteEvent(event: React.ClipboardEvent<HTMLTextAreaElement>, currentState: InputState) {
+  handlePasteEvent(event: preact.TargetedClipboardEvent<HTMLTextAreaElement>, currentState: InputState) {
     event.preventDefault()
 
     const text = event.clipboardData?.getData('text/plain')
