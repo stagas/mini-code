@@ -240,7 +240,7 @@ export interface EditorWidget {
   height?: number
   /** Called to render the widget */
   render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, viewX: number,
-    viewWidth: number): void
+    viewWidth: number, viewY: number): void
   /** Called when widget is clicked (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
   pointerDown?(x: number, y: number, offsetX: number, offsetY: number): void
   /** Called when pointer moves (x, y are canvas coordinates, offsetX, offsetY are relative to widget) */
@@ -3307,6 +3307,37 @@ export class CanvasEditor {
     const visibleStartY = this.scrollY - headerHeight
     const visibleEndY = this.scrollY + contentHeight
 
+    const firstVisualLineByLogicalLine = new Map<number, number>()
+    for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+      const logicalLine = wrappedLines[visualIndex]?.logicalLine
+      if (logicalLine === undefined) continue
+      if (!firstVisualLineByLogicalLine.has(logicalLine)) {
+        firstVisualLineByLogicalLine.set(logicalLine, visualIndex)
+      }
+    }
+
+    const hasAboveWidgetsByLogicalLine = new Set<number>()
+    for (const [visualIndex, ws] of widgetLayout.widgetsByVisualLine.entries()) {
+      if (!ws.above || ws.above.length === 0) continue
+      const logicalLine = wrappedLines[visualIndex]?.logicalLine
+      if (logicalLine === undefined) continue
+      hasAboveWidgetsByLogicalLine.add(logicalLine)
+    }
+
+    const viewYByLogicalLine = new Map<number, number>()
+    for (const [logicalLine, firstVisualLine] of firstVisualLineByLogicalLine.entries()) {
+      let startVisualLine = firstVisualLine
+      if (hasAboveWidgetsByLogicalLine.has(logicalLine)) {
+        let l = logicalLine
+        while (l > 0 && (this.inputState.lines[l - 1] || '').trim().length === 0) {
+          l--
+        }
+        startVisualLine = firstVisualLineByLogicalLine.get(l) ?? startVisualLine
+      }
+      const yOffset = widgetLayout.yOffsets.get(startVisualLine) || 0
+      viewYByLogicalLine.set(logicalLine, this.padding + startVisualLine * this.lineHeight + yOffset - 1.5)
+    }
+
     // Draw overlay widgets behind text (no pointer events, truly behind)
     for (const widget of widgetLayout.overlayWidgets) {
       // Find the visual line for this widget (convert from 1-based to 0-based)
@@ -3358,7 +3389,8 @@ export class CanvasEditor {
           const showVBar = content.height > height + 1
           const viewX = this.scrollX + textPadding
           const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth)
+          const viewY = viewYByLogicalLine.get(widget.line - 1) ?? widgetY
+          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth, viewY)
         }
       }
     }
@@ -3376,6 +3408,9 @@ export class CanvasEditor {
     const viewX = this.scrollX + textPadding
     const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
 
+    const widgetRenderInfo = new Map<EditorWidget,
+      { x: number; y: number; width: number; height: number; viewY: number }>()
+
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
       const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
       let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
@@ -3384,6 +3419,7 @@ export class CanvasEditor {
 
       // Handle 'above' widgets
       if (widgets?.above && widgets.above.length > 0) {
+        const lineViewY = viewYByLogicalLine.get(wrappedLine.logicalLine) ?? y
         // In wordWrap mode, non-first wrapped segments need extra lineHeight gap for consistent spacing
         let gapAbove = 0
         if (this.options.wordWrap && visualIndex > 0) {
@@ -3395,14 +3431,13 @@ export class CanvasEditor {
         }
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
 
-        // Create a map of widget widths calculated from sorted positions
+        // Create a map of widget widths calculated from the widget arrival order.
+        // This keeps behavior consistent regardless of wrapping.
         const widgetWidths = new Map<EditorWidget, number>()
+        const orderedWidgets = [...widgets.above]
 
-        // Sort widgets by column position for width calculation
-        const sortedWidgets = [...widgets.above].sort((a, b) => (a.column - 1) - (b.column - 1))
-
-        for (let i = 0; i < sortedWidgets.length; i++) {
-          const widget = sortedWidgets[i]
+        for (let i = 0; i < orderedWidgets.length; i++) {
+          const widget = orderedWidgets[i]
           const widgetColumn = widget.column - 1
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
@@ -3413,8 +3448,8 @@ export class CanvasEditor {
 
           // If there's a next widget, reduce width only if it would overlap
           let widgetWidth = naturalWidgetWidth
-          if (i < sortedWidgets.length - 1) {
-            const nextWidget = sortedWidgets[i + 1]
+          if (i < orderedWidgets.length - 1) {
+            const nextWidget = orderedWidgets[i + 1]
             const nextWidgetColumn = nextWidget.column - 1
             const nextColumnInWrappedLine = nextWidgetColumn - wrappedLine.startColumn
             const textBeforeNextWidget = wrappedLine.text.substring(0, Math.max(0, nextColumnInWrappedLine))
@@ -3430,14 +3465,14 @@ export class CanvasEditor {
           widgetWidths.set(widget, widgetWidth)
         }
 
-        // Draw widgets in their original order
+        // Draw widgets in their original order (only those on this segment)
         for (const widget of widgets.above) {
           const widgetColumn = widget.column - 1
           const adjustment = this.widgetAdjustments.get(widget)
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
-          const widgetWidth = widgetWidths.get(widget)!
+          const widgetWidth = widgetWidths.get(widget) ?? ctx.measureText('X'.repeat(widget.length)).width
 
           const baseHeight = this.getWidgetHeight(widget)
           let widgetY = y
@@ -3460,9 +3495,8 @@ export class CanvasEditor {
             width: widgetWidth,
             height: widgetHeight,
           })
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
+          widgetRenderInfo.set(widget, { x: widgetX, y: widgetY, width: widgetWidth, height: widgetHeight,
+            viewY: lineViewY })
         }
         y += maxAboveHeight
       }
@@ -3470,6 +3504,7 @@ export class CanvasEditor {
       // Handle inline widgets
       const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
       if (inlineWidgetsForLine.length > 0) {
+        const lineViewY = viewYByLogicalLine.get(wrappedLine.logicalLine) ?? y
         const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
         if (logicalHighlighted) {
           const segmentTokens = extractTokensForSegment(
@@ -3516,9 +3551,8 @@ export class CanvasEditor {
               width: widgetWidth,
               height: widgetHeight,
             })
-            if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-              widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-            }
+            widgetRenderInfo.set(widget, { x: widgetX, y: widgetY, width: widgetWidth, height: widgetHeight,
+              viewY: lineViewY })
             currentX += widgetWidth
           }
         }
@@ -3543,9 +3577,8 @@ export class CanvasEditor {
               width: widgetWidth,
               height: widgetHeight,
             })
-            if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-              widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-            }
+            widgetRenderInfo.set(widget, { x: widgetX, y: widgetY, width: widgetWidth, height: widgetHeight,
+              viewY: lineViewY })
             currentX += widgetWidth
           }
         }
@@ -3553,6 +3586,7 @@ export class CanvasEditor {
 
       // Handle 'below' widgets
       if (widgets?.below && widgets.below.length > 0) {
+        const lineViewY = viewYByLogicalLine.get(wrappedLine.logicalLine) ?? y
         const widgetY = y + this.lineHeight
         for (const widget of widgets.below) {
           const widgetColumn = widget.column - 1
@@ -3567,12 +3601,22 @@ export class CanvasEditor {
             width: widgetWidth,
             height: widgetHeight,
           })
-          if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
-          }
+          widgetRenderInfo.set(widget, { x: widgetX, y: widgetY, width: widgetWidth, height: widgetHeight,
+            viewY: lineViewY })
         }
       }
     })
+
+    // Render widgets in arrival order, regardless of which wrapped segment they fall in.
+    if (this.options.widgets) {
+      for (const widget of this.options.widgets) {
+        if (widget.type === 'overlay') continue
+        const info = widgetRenderInfo.get(widget)
+        if (!info) continue
+        if (info.y + info.height < visibleStartY || info.y > visibleEndY) continue
+        widget.render(ctx, info.x, info.y, info.width, info.height, viewX, viewWidth, info.viewY)
+      }
+    }
 
     // Pass 2: Draw all lines with text and syntax highlighting
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
