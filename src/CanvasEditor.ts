@@ -356,6 +356,8 @@ export class CanvasEditor {
   private autocompleteDebounceTimer: number | null = null
   private wheelScrollDebounceTimer: number | null = null
   private isWheelScrolling: boolean = false
+  private dominantAxisTimer: number | null = null
+  private currentDominantAxis: 'horizontal' | 'vertical' | null = null
   private lastCaretContentX: number | null = null
   private lastCaretContentY: number | null = null
   private signatureEnabled = true
@@ -1823,6 +1825,11 @@ export class CanvasEditor {
       clearTimeout(this.wheelScrollDebounceTimer)
       this.wheelScrollDebounceTimer = null
     }
+    if (this.dominantAxisTimer !== null) {
+      clearTimeout(this.dominantAxisTimer)
+      this.dominantAxisTimer = null
+    }
+    this.currentDominantAxis = null
     if (this.touchStartHandler) {
       this.canvas.removeEventListener('touchstart', this.touchStartHandler as EventListener)
       this.touchStartHandler = null
@@ -2065,6 +2072,44 @@ export class CanvasEditor {
       const effectiveDeltaX = e.deltaX || (e.shiftKey ? e.deltaY : 0)
       const effectiveDeltaY = e.shiftKey ? 0 : e.deltaY
 
+      // Determine dominant scroll axis with debounced switching
+      const absX = Math.abs(effectiveDeltaX)
+      const absY = Math.abs(effectiveDeltaY)
+      const newDominantAxis = absX > absY ? 'horizontal' : 'vertical'
+
+      // Initialize dominant axis on first scroll
+      if (this.currentDominantAxis === null) {
+        this.currentDominantAxis = newDominantAxis
+      }
+
+      // Handle axis switching with debounce
+      const axisChanged = newDominantAxis !== this.currentDominantAxis
+
+      if (axisChanged) {
+        // Clear existing timer
+        if (this.dominantAxisTimer !== null) {
+          clearTimeout(this.dominantAxisTimer)
+          this.dominantAxisTimer = null
+        }
+
+        // Start debounce timer to change axis
+        this.dominantAxisTimer = window.setTimeout(() => {
+          this.currentDominantAxis = newDominantAxis
+          this.dominantAxisTimer = null
+        }, 15)
+      }
+      else {
+        // Same axis, clear any pending timer
+        if (this.dominantAxisTimer !== null) {
+          clearTimeout(this.dominantAxisTimer)
+          this.dominantAxisTimer = null
+        }
+      }
+
+      // Apply only current dominant axis
+      const finalDeltaX = this.currentDominantAxis === 'horizontal' ? effectiveDeltaX : 0
+      const finalDeltaY = this.currentDominantAxis === 'vertical' ? effectiveDeltaY : 0
+
       const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
       const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
@@ -2074,35 +2119,33 @@ export class CanvasEditor {
       }
 
       // Determine dominant intent and only prevent default if that axis can scroll
-      const absX = Math.abs(e.deltaX)
-      const absY = Math.abs(e.deltaY)
-      const horizontalIntent = (e.shiftKey && absY > 0 && absX === 0) || absX > absY
+      const horizontalIntent = this.currentDominantAxis === 'horizontal'
       // Treat very small remaining scroll room as non-scrollable to avoid trapping the page
       const epsilon = 1
-      const canScrollHorizontally = effectiveDeltaX !== 0 && maxScrollX > epsilon
-      const canScrollVertically = effectiveDeltaY !== 0 && maxScrollY > epsilon
+      const canScrollHorizontally = finalDeltaX !== 0 && maxScrollX > epsilon
+      const canScrollVertically = finalDeltaY !== 0 && maxScrollY > epsilon
 
       // Check if we can actually scroll in the direction we're trying to scroll
       const canScrollXInDirection = canScrollHorizontally
-        && ((effectiveDeltaX > 0 && this.scrollX < maxScrollX)
-          || (effectiveDeltaX < 0 && this.scrollX > 0))
+        && ((finalDeltaX > 0 && this.scrollX < maxScrollX)
+          || (finalDeltaX < 0 && this.scrollX > 0))
       const canScrollYInDirection = canScrollVertically
-        && ((effectiveDeltaY > 0 && this.scrollY < maxScrollY)
-          || (effectiveDeltaY < 0 && this.scrollY > 0))
+        && ((finalDeltaY > 0 && this.scrollY < maxScrollY)
+          || (finalDeltaY < 0 && this.scrollY > 0))
 
       // Check if there's more scroll available in the y direction
       // For vertical scrolling, check if we can scroll in that direction
       // For horizontal scrolling, check if there's any vertical scroll room
       const hasMoreScrollY = maxScrollY > epsilon
-        && (effectiveDeltaY !== 0
+        && (finalDeltaY !== 0
           ? canScrollYInDirection
           : (this.scrollY < maxScrollY || this.scrollY > 0))
 
       // Check if we're at the end of vertical scroll
       const isAtEndY = maxScrollY > epsilon
-        && ((effectiveDeltaY > 0 && this.scrollY >= maxScrollY)
-          || (effectiveDeltaY < 0 && this.scrollY <= 0)
-          || (effectiveDeltaY === 0 && this.scrollY >= maxScrollY))
+        && ((finalDeltaY > 0 && this.scrollY >= maxScrollY)
+          || (finalDeltaY < 0 && this.scrollY <= 0)
+          || (finalDeltaY === 0 && this.scrollY >= maxScrollY))
 
       // Clear existing debounce timer
       if (this.wheelScrollDebounceTimer !== null) {
@@ -2141,8 +2184,8 @@ export class CanvasEditor {
 
       e.preventDefault()
 
-      const nextScrollX = Math.min(Math.max(this.scrollX + effectiveDeltaX, 0), maxScrollX)
-      const nextScrollY = Math.min(Math.max(this.scrollY + effectiveDeltaY, 0), maxScrollY)
+      const nextScrollX = Math.min(Math.max(this.scrollX + finalDeltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.scrollY + finalDeltaY, 0), maxScrollY)
 
       if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
         this.scrollX = nextScrollX
