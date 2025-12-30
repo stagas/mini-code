@@ -439,7 +439,7 @@ export class CanvasEditor {
   private widgetPositions: Map<EditorWidget, { x: number; y: number; width: number; height: number }> = new Map()
   private activeWidgetPosition: { x: number; y: number; width: number; height: number } | null = null
   private widgetUpdateTimeout: number | null = null
-  private widgetAdjustments: Map<EditorWidget, { firstEmptyLineAbove: number; adjustedHeight: number }> = new Map()
+  private widgetAdjustments: Map<EditorWidget, { startVisualLine: number; anchorVisualLine: number }> = new Map()
   private pendingWidgets: EditorWidget[] | null = null
   private currentCodeFileRef: unknown = null
   private justRestoredFromHistory: boolean = false
@@ -3026,6 +3026,11 @@ export class CanvasEditor {
       logicalToVisual.set(line.logicalLine, visualLines)
     })
 
+    const hasEmptyLogicalLineAbove = (logicalLine: number): boolean =>
+      logicalLine > 0 && (this.inputState.lines[logicalLine - 1] || '').trim().length === 0
+
+    const wrapAboveAnchors = new Map<EditorWidget, number>()
+
     // Organize widgets by their target visual line
     for (const widget of this.options.widgets) {
       // Convert from 1-based line number to 0-based
@@ -3063,9 +3068,15 @@ export class CanvasEditor {
         inlineWidgets.set(targetVisualLine, widgets)
       }
       else {
+        if (widget.type === 'above' && this.options.wordWrap && !hasEmptyLogicalLineAbove(logicalLine)) {
+          continue
+        }
         const widgets = widgetsByVisualLine.get(targetVisualLine) || { above: [], below: [] }
         if (widget.type === 'above') {
           widgets.above.push(widget)
+          if (this.options.wordWrap) {
+            wrapAboveAnchors.set(widget, targetVisualLine)
+          }
         }
         else {
           widgets.below.push(widget)
@@ -3074,52 +3085,83 @@ export class CanvasEditor {
       }
     }
 
-    // Process 'above' widgets to expand upward to fill empty lines
-    // Only keep 'above' widgets that have at least one empty line above them.
-    const widgetAdjustments = new Map<EditorWidget, { firstEmptyLineAbove: number; adjustedHeight: number }>()
-    for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
-      const widgets = widgetsByVisualLine.get(visualIndex)
-      if (!widgets?.above || widgets.above.length === 0) continue
+    const widgetAdjustments = new Map<EditorWidget, { startVisualLine: number; anchorVisualLine: number }>()
+    if (this.options.wordWrap) {
+      // In wordWrap mode, only the first wrapped segment of a logical line expands into empty logical lines above.
+      // Other wrapped segments rely on gapAbove to maintain consistent spacing.
+      const firstEmptyVisualLineAbove = (logicalLine: number): number | null => {
+        if (!hasEmptyLogicalLineAbove(logicalLine)) return null
 
-      for (const widget of widgets.above) {
-        // Find how many consecutive empty lines are above this widget
-        // Empty lines are those where the original line text (after trim) has length 0
         let emptyLinesAbove = 0
-        let firstEmptyLineAbove = visualIndex
-        for (let i = visualIndex - 1; i >= 0; i--) {
-          const wrappedLine = wrappedLines[i]
-          const originalLine = this.inputState.lines[wrappedLine.logicalLine] || ''
+        for (let i = logicalLine - 1; i >= 0; i--) {
+          const originalLine = this.inputState.lines[i] || ''
           if (originalLine.trim().length === 0) {
             emptyLinesAbove++
-            firstEmptyLineAbove = i
           }
           else {
             break
           }
         }
+        const firstEmptyLogicalLine = logicalLine - emptyLinesAbove
+        return logicalToVisual.get(firstEmptyLogicalLine)?.[0] ?? null
+      }
 
-        // Only create an adjustment if there is at least one empty line above.
-        if (emptyLinesAbove > 0) {
-          const baseHeight = this.getWidgetHeight(widget)
-          const additionalHeight = emptyLinesAbove * this.lineHeight
-          const adjustedHeight = baseHeight + additionalHeight
+      for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+        const ws = widgetsByVisualLine.get(visualIndex)
+        if (!ws?.above || ws.above.length === 0) continue
 
-          // Store adjustment (widget stays on original line, but expands upward)
-          widgetAdjustments.set(widget, { firstEmptyLineAbove, adjustedHeight })
+        const logicalLine = wrappedLines[visualIndex].logicalLine
+        const firstVisualLine = logicalToVisual.get(logicalLine)?.[0]
+
+        // Only apply widgetAdjustments to widgets on the first wrapped segment
+        if (firstVisualLine !== visualIndex) continue
+
+        const startVisualLine = firstEmptyVisualLineAbove(logicalLine)
+        if (startVisualLine === null) continue
+
+        for (const widget of ws.above) {
+          widgetAdjustments.set(widget, { startVisualLine, anchorVisualLine: visualIndex })
         }
-        // If there are no empty lines above, we intentionally do NOT add an adjustment.
-        // Later we'll filter out such 'above' widgets so they won't be rendered or affect spacing.
       }
     }
+    if (!this.options.wordWrap) {
+      // In non-wrapped mode, keep the original behavior: above widgets expand upward into consecutive
+      // empty logical lines above the defining line.
+      for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+        const widgets = widgetsByVisualLine.get(visualIndex)
+        if (!widgets?.above || widgets.above.length === 0) continue
 
-    // Filter out 'above' widgets that had no empty lines above (we only want to render above widgets
-    // that expand into empty lines). This prevents non-expanded 'above' widgets from affecting layout.
-    for (const [visualIndex, ws] of widgetsByVisualLine.entries()) {
-      if (ws.above && ws.above.length > 0) {
-        const filteredAbove = ws.above.filter(w => widgetAdjustments.has(w))
-        if (filteredAbove.length !== ws.above.length) {
-          ws.above = filteredAbove
-          widgetsByVisualLine.set(visualIndex, ws)
+        for (const widget of widgets.above) {
+          const logicalLine = widget.line - 1
+          if (!hasEmptyLogicalLineAbove(logicalLine)) continue
+
+          let emptyLinesAbove = 0
+          for (let i = logicalLine - 1; i >= 0; i--) {
+            const originalLine = this.inputState.lines[i] || ''
+            if (originalLine.trim().length === 0) {
+              emptyLinesAbove++
+            }
+            else {
+              break
+            }
+          }
+          const firstEmptyLogicalLine = logicalLine - emptyLinesAbove
+          const startVisualLine = logicalToVisual.get(firstEmptyLogicalLine)?.[0] ?? (visualIndex - 1)
+          if (startVisualLine >= 0) {
+            widgetAdjustments.set(widget, { startVisualLine, anchorVisualLine: visualIndex })
+          }
+        }
+      }
+
+      // Filter out 'above' widgets that had no empty lines above (we only want to render above widgets
+      // that expand into empty lines). This prevents non-expanded 'above' widgets from affecting layout.
+      for (const [visualIndex, ws] of widgetsByVisualLine.entries()) {
+        if (ws.above && ws.above.length > 0) {
+          const filteredAbove = ws.above.filter(w => widgetAdjustments.has(w))
+          if (filteredAbove.length !== ws.above.length) {
+            ws.above = filteredAbove
+            widgetsByVisualLine.set(visualIndex, ws)
+          }
         }
       }
     }
@@ -3128,10 +3170,18 @@ export class CanvasEditor {
     // yOffset[N] represents the cumulative vertical space added by all widgets before line N
     let cumulativeOffset = 0
     for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+      const widgets = widgetsByVisualLine.get(visualIndex)
+      if (this.options.wordWrap && widgets?.above && widgets.above.length > 0) {
+        const logicalLine = wrappedLines[visualIndex].logicalLine
+        const firstVisualLine = logicalToVisual.get(logicalLine)?.[0] ?? visualIndex
+        if (visualIndex !== firstVisualLine) {
+          cumulativeOffset += this.lineHeight
+        }
+      }
+
       // Set offset for this line (before adding this line's widgets)
       yOffsets.set(visualIndex, cumulativeOffset)
 
-      const widgets = widgetsByVisualLine.get(visualIndex)
       if (widgets) {
         // Add max height of 'above' widgets for this line (they are in the same row)
         // Use base height (not adjusted) so line spacing isn't affected by upward expansion
@@ -3334,6 +3384,15 @@ export class CanvasEditor {
 
       // Handle 'above' widgets
       if (widgets?.above && widgets.above.length > 0) {
+        // In wordWrap mode, non-first wrapped segments need extra lineHeight gap for consistent spacing
+        let gapAbove = 0
+        if (this.options.wordWrap && visualIndex > 0) {
+          const prevWrappedLine = wrappedLines[visualIndex - 1]
+          // Check if this is a continuation of the same logical line (not the first segment)
+          if (prevWrappedLine && prevWrappedLine.logicalLine === wrappedLine.logicalLine) {
+            gapAbove = this.lineHeight
+          }
+        }
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
 
         // Create a map of widget widths calculated from sorted positions
@@ -3381,11 +3440,20 @@ export class CanvasEditor {
           const widgetWidth = widgetWidths.get(widget)!
 
           const baseHeight = this.getWidgetHeight(widget)
-          const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
-          const widgetY = adjustment
-            ? this.padding + adjustment.firstEmptyLineAbove * this.lineHeight
-              + (widgetLayout.yOffsets.get(adjustment.firstEmptyLineAbove) || 0) - 1.5
-            : y
+          let widgetY = y
+          let widgetHeight = baseHeight
+          if (adjustment) {
+            const startOffset = widgetLayout.yOffsets.get(adjustment.startVisualLine) || 0
+            widgetY = this.padding + adjustment.startVisualLine * this.lineHeight + startOffset - 1.5
+
+            const anchorOffset = widgetLayout.yOffsets.get(adjustment.anchorVisualLine) || 0
+            const anchorY = this.padding + adjustment.anchorVisualLine * this.lineHeight + anchorOffset - 1.5
+            widgetHeight = baseHeight + (anchorY - widgetY)
+          }
+          else if (gapAbove > 0) {
+            widgetY = y - gapAbove
+            widgetHeight = baseHeight + gapAbove
+          }
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
@@ -3393,7 +3461,7 @@ export class CanvasEditor {
             height: widgetHeight,
           })
           if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-            widget.render(ctx, widgetX, widgetY - 2.5, widgetWidth, widgetHeight, viewX, viewWidth)
+            widget.render(ctx, widgetX, widgetY, widgetWidth, widgetHeight, viewX, viewWidth)
           }
         }
         y += maxAboveHeight
@@ -4958,12 +5026,29 @@ export class CanvasEditor {
           const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
           const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
           const baseHeight = this.getWidgetHeight(widget)
-          const widgetHeight = adjustment ? adjustment.adjustedHeight : baseHeight
-          // Widget starts from first empty line above and extends down to the defining line
-          const widgetY = adjustment
-            ? this.padding + adjustment.firstEmptyLineAbove * this.lineHeight
-              + (widgetLayout.yOffsets.get(adjustment.firstEmptyLineAbove) || 0) - 1.5
-            : y
+          // In wordWrap mode, non-first wrapped segments need extra lineHeight gap for consistent spacing
+          let gapAbove = 0
+          if (this.options.wordWrap && visualIndex > 0) {
+            const prevWrappedLine = wrappedLines[visualIndex - 1]
+            // Check if this is a continuation of the same logical line (not the first segment)
+            if (prevWrappedLine && prevWrappedLine.logicalLine === wrappedLine.logicalLine) {
+              gapAbove = this.lineHeight
+            }
+          }
+          let widgetY = y
+          let widgetHeight = baseHeight
+          if (adjustment) {
+            const startOffset = widgetLayout.yOffsets.get(adjustment.startVisualLine) || 0
+            widgetY = this.padding + adjustment.startVisualLine * this.lineHeight + startOffset - 1.5
+
+            const anchorOffset = widgetLayout.yOffsets.get(adjustment.anchorVisualLine) || 0
+            const anchorY = this.padding + adjustment.anchorVisualLine * this.lineHeight + anchorOffset - 1.5
+            widgetHeight = baseHeight + (anchorY - widgetY)
+          }
+          else if (gapAbove > 0) {
+            widgetY = y - gapAbove
+            widgetHeight = baseHeight + gapAbove
+          }
           this.widgetPositions.set(widget, {
             x: widgetX,
             y: widgetY,
