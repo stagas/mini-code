@@ -3558,8 +3558,8 @@ export class CanvasEditor {
             width: widgetWidth,
             height: widgetHeight,
           })
-          widgetRenderInfo.set(widget, { x: widgetX, y: widgetY, width: widgetWidth, height: widgetHeight,
-            viewY: lineViewY })
+          widgetRenderInfo.set(widget, { x: widgetX, y: widgetY - 2.5, width: widgetWidth, height: widgetHeight,
+            viewY: lineViewY - 2.5 })
         }
         y += maxAboveHeight
       }
