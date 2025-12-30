@@ -163,24 +163,27 @@ export const findCurrentWord = (
   // Don't autocomplete if cursor is inside a string
   if (isInsideString(line, cursorColumn)) return null
 
-  // Identifier segment characters (per segment): letters, numbers, $, _
-  // Dot is treated as a segment delimiter for the current word
+  // Identifier segment characters: letters, numbers, $, _
   const isSegmentChar = (char: string) => /[a-zA-Z0-9$_]/.test(char)
 
-  // Find start of word segment (scan backwards until a non-segment char OR a dot)
+  // Find start of the "word" (supports dotted chains like `foo.bar`).
+  // Include '.' only when it is part of an identifier chain (i.e. preceded by an identifier char),
+  // so optional chaining `?.` doesn't produce words starting with '.'.
   let startColumn = cursorColumn
   while (startColumn > 0) {
     const prevChar = line[startColumn - 1]
-    if (prevChar === '.') {
-      // Include the dot in the word if it's immediately before the current segment
+    if (isSegmentChar(prevChar)) {
       startColumn--
-      break
+      continue
     }
-    if (!isSegmentChar(prevChar)) break
-    startColumn--
+    if (prevChar === '.' && isSegmentChar(line[startColumn - 2])) {
+      startColumn--
+      continue
+    }
+    break
   }
 
-  // Find end of word segment (scan forwards until a non-segment char OR a dot)
+  // Find end of current segment (scan forwards until a non-segment char OR a dot)
   let endColumn = cursorColumn
   while (endColumn < line.length) {
     const ch = line[endColumn]
@@ -225,33 +228,26 @@ export const getAutocompleteSuggestions = (
 ): string[] => {
   if (!currentWord) return []
 
-  // Handle dot-prefixed matching: if current word starts with '.', match suggestions that start with '.'
-  const startsWithDot = currentWord.startsWith('.')
-  const wordWithoutDot = startsWithDot ? currentWord.slice(1) : currentWord
-  const prefixLower = wordWithoutDot.toLowerCase()
+  const prefixLower = currentWord.toLowerCase()
 
   const matches = new Set<string>()
 
   const matchesPrefix = (suggestion: string): boolean => {
     if (suggestion === currentWord) return false
-
-    if (startsWithDot) {
-      if (!suggestion.startsWith('.')) return false
-      return suggestion.slice(1).toLowerCase().startsWith(prefixLower)
-    }
-
     return suggestion.toLowerCase().startsWith(prefixLower)
   }
 
-  if (!startsWithDot) {
-    forEachIdentifier(lines, id => {
-      if (matchesPrefix(id)) matches.add(id)
-    })
-  }
+  forEachIdentifier(lines, id => {
+    if (matchesPrefix(id)) matches.add(id)
+  })
 
   for (const [funcName, funcDef] of Object.entries(functionDefinitions)) {
     if (funcDef.deprecated) continue
     if (matchesPrefix(funcName)) matches.add(funcName)
+  }
+
+  for (const kw of KEYWORDS) {
+    if (matchesPrefix(kw)) matches.add(kw)
   }
 
   const withoutSelf = Array.from(matches)
