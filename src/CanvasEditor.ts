@@ -3420,6 +3420,7 @@ export class CanvasEditor {
       // Handle 'above' widgets
       if (widgets?.above && widgets.above.length > 0) {
         const lineViewY = viewYByLogicalLine.get(wrappedLine.logicalLine) ?? y
+        const inlineWidgetsForAbove = widgetLayout.inlineWidgets.get(visualIndex) || []
         // In wordWrap mode, non-first wrapped segments need extra lineHeight gap for consistent spacing
         let gapAbove = 0
         if (this.options.wordWrap && visualIndex > 0) {
@@ -3431,29 +3432,42 @@ export class CanvasEditor {
         }
         const maxAboveHeight = Math.max(...widgets.above.map(w => this.getWidgetHeight(w)))
 
-        // Create a map of widget widths calculated from the widget arrival order.
-        // This keeps behavior consistent regardless of wrapping.
+        // Create a map of widget widths calculated from column order.
+        // Rendering order is handled separately (arrival order), but geometry must be column-based
+        // so "reduce width if there is a widget after" remains correct even if widgets arrive out of order.
         const widgetWidths = new Map<EditorWidget, number>()
-        const orderedWidgets = [...widgets.above]
+        const widgetsForWidth = [...widgets.above].sort((a, b) => (a.column - 1) - (b.column - 1))
 
-        for (let i = 0; i < orderedWidgets.length; i++) {
-          const widget = orderedWidgets[i]
+        for (let i = 0; i < widgetsForWidth.length; i++) {
+          const widget = widgetsForWidth[i]
           const widgetColumn = widget.column - 1
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
-          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          let widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+            const colInWrapped = column - wrappedLine.startColumn
+            if (colInWrapped <= columnInWrappedLine) {
+              widgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+            }
+          }
 
           // Calculate natural width from widget length
           const naturalWidgetWidth = ctx.measureText('X'.repeat(widget.length)).width
 
           // If there's a next widget, reduce width only if it would overlap
           let widgetWidth = naturalWidgetWidth
-          if (i < orderedWidgets.length - 1) {
-            const nextWidget = orderedWidgets[i + 1]
+          if (i < widgetsForWidth.length - 1) {
+            const nextWidget = widgetsForWidth[i + 1]
             const nextWidgetColumn = nextWidget.column - 1
             const nextColumnInWrappedLine = nextWidgetColumn - wrappedLine.startColumn
             const textBeforeNextWidget = wrappedLine.text.substring(0, Math.max(0, nextColumnInWrappedLine))
-            const nextWidgetX = textPadding + ctx.measureText(textBeforeNextWidget).width
+            let nextWidgetX = textPadding + ctx.measureText(textBeforeNextWidget).width
+            for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+              const colInWrapped = column - wrappedLine.startColumn
+              if (colInWrapped <= nextColumnInWrappedLine) {
+                nextWidgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+              }
+            }
             const margin = ctx.measureText('X').width // One character width margin between widgets
 
             // Only reduce width if the next widget would overlap with the natural width
@@ -3471,7 +3485,13 @@ export class CanvasEditor {
           const adjustment = this.widgetAdjustments.get(widget)
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
-          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          let widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+            const colInWrapped = column - wrappedLine.startColumn
+            if (colInWrapped <= columnInWrappedLine) {
+              widgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+            }
+          }
           const widgetWidth = widgetWidths.get(widget) ?? ctx.measureText('X'.repeat(widget.length)).width
 
           const baseHeight = this.getWidgetHeight(widget)
@@ -5061,14 +5081,58 @@ export class CanvasEditor {
 
       const widgets = widgetLayout.widgetsByVisualLine.get(visualIndex)
       if (widgets?.above && widgets.above.length > 0) {
+        const inlineWidgetsForAbove = widgetLayout.inlineWidgets.get(visualIndex) || []
+        const widgetWidths = new Map<EditorWidget, number>()
+        const widgetsForWidth = [...widgets.above].sort((a, b) => (a.column - 1) - (b.column - 1))
+        for (let i = 0; i < widgetsForWidth.length; i++) {
+          const widget = widgetsForWidth[i]
+          const widgetColumn = widget.column - 1
+          const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
+          const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
+          let widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+            const colInWrapped = column - wrappedLine.startColumn
+            if (colInWrapped <= columnInWrappedLine) {
+              widgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+            }
+          }
+
+          const naturalWidgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          let widgetWidth = naturalWidgetWidth
+          if (i < widgetsForWidth.length - 1) {
+            const nextWidget = widgetsForWidth[i + 1]
+            const nextWidgetColumn = nextWidget.column - 1
+            const nextColumnInWrappedLine = nextWidgetColumn - wrappedLine.startColumn
+            const textBeforeNextWidget = wrappedLine.text.substring(0, Math.max(0, nextColumnInWrappedLine))
+            let nextWidgetX = textPadding + ctx.measureText(textBeforeNextWidget).width
+            for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+              const colInWrapped = column - wrappedLine.startColumn
+              if (colInWrapped <= nextColumnInWrappedLine) {
+                nextWidgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+              }
+            }
+            const margin = ctx.measureText('X').width
+            if (widgetX + naturalWidgetWidth + margin > nextWidgetX) {
+              widgetWidth = Math.max(0, nextWidgetX - widgetX - margin)
+            }
+          }
+          widgetWidths.set(widget, widgetWidth)
+        }
+
         for (const widget of widgets.above) {
           const widgetColumn = widget.column - 1
           const adjustment = this.widgetAdjustments.get(widget)
           // Widget stays on its original line for horizontal positioning
           const columnInWrappedLine = widgetColumn - wrappedLine.startColumn
           const textBeforeWidget = wrappedLine.text.substring(0, Math.max(0, columnInWrappedLine))
-          const widgetX = textPadding + ctx.measureText(textBeforeWidget).width
-          const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+          let widgetX = textPadding + ctx.measureText(textBeforeWidget).width
+          for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+            const colInWrapped = column - wrappedLine.startColumn
+            if (colInWrapped <= columnInWrappedLine) {
+              widgetX += ctx.measureText('X'.repeat(inlineWidget.length)).width
+            }
+          }
+          const widgetWidth = widgetWidths.get(widget) ?? ctx.measureText('X'.repeat(widget.length)).width
           const baseHeight = this.getWidgetHeight(widget)
           // In wordWrap mode, non-first wrapped segments need extra lineHeight gap for consistent spacing
           let gapAbove = 0
