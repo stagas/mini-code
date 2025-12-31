@@ -4047,7 +4047,7 @@ export class CanvasEditor {
       )
 
       const id = `${wrappedLine.logicalLine}:${wrappedLine.startColumn}:${wrappedLine.endColumn}`
-      const entry = this.offscreenLineCache.get(id, wrappedLine.logicalLine, width, this.lineHeight + 6)
+      const entry = this.offscreenLineCache.get(id, wrappedLine.logicalLine, width, this.lineHeight + 12)
 
       if (entry) {
         const needsRender = entry.key !== key
@@ -4062,7 +4062,7 @@ export class CanvasEditor {
             return this.drawWrappedLineText(
               entry.ctx,
               wrappedLine,
-              0,
+              6,
               theme,
               textPadding,
               segmentTokens,
@@ -4085,7 +4085,7 @@ export class CanvasEditor {
           entry.canvas.width,
           entry.canvas.height,
           0,
-          y,
+          y - 6,
           entry.cssWidth,
           entry.cssHeight,
         )
