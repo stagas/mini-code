@@ -2583,13 +2583,21 @@ export class CanvasEditor {
     }
 
     // Margins so caret isn't flush to edge
-    const margin = 4
+    const margin = 50
+
+    // Check if vertical scrollbar is visible (same logic as in render)
+    const showVBar = contentSize.height > viewportHeight + 1
+    const scrollbarWidth = showVBar ? this.scrollbarWidth : 0
+
+    // Effective viewport width accounting for scrollbar
+    const effectiveViewportWidth = viewportWidth - scrollbarWidth
 
     // Check if caret is already fully visible
     // When gutter is enabled, the effective viewport for text starts after the gutter
     const effectiveViewportLeft = this.scrollX
       + (this.options.gutter ? this.padding + this.getGutterWidth() : this.padding)
-    const caretVisibleX = caretX >= effectiveViewportLeft + margin && caretX <= this.scrollX + viewportWidth - margin
+    const caretVisibleX = caretX >= effectiveViewportLeft + margin
+      && caretX <= this.scrollX + effectiveViewportWidth - margin
     const caretVisibleY = caretTop >= this.scrollY + margin && caretBottom <= this.scrollY + viewportHeight - margin
 
     // If caret is already fully visible, don't change scroll position
@@ -2607,8 +2615,8 @@ export class CanvasEditor {
         nextScrollX = Math.max(0,
           caretX - (this.options.gutter ? this.padding + this.getGutterWidth() + margin : margin))
       }
-      else if (caretX > this.scrollX + viewportWidth - margin) {
-        nextScrollX = caretX - (viewportWidth - margin)
+      else if (caretX > this.scrollX + effectiveViewportWidth - margin) {
+        nextScrollX = caretX - (effectiveViewportWidth - margin)
       }
     }
 
@@ -2623,7 +2631,7 @@ export class CanvasEditor {
     }
 
     // Clamp to content size
-    const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
+    const maxScrollX = Math.max(0, contentSize.width - effectiveViewportWidth)
     const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
     nextScrollX = Math.min(Math.max(nextScrollX, 0), maxScrollX)
@@ -3449,7 +3457,7 @@ export class CanvasEditor {
     // Pass 1: Calculate positions and render all widgets
     const showVBar = content.height > height + 1
     const viewX = this.scrollX + textPadding
-    const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+    const viewWidth = Math.max(0, width - textPadding - this.padding / 2 - (showVBar ? this.scrollbarWidth : 0))
 
     const widgetRenderInfo = new Map<EditorWidget,
       { x: number; y: number; width: number; height: number; viewY: number }>()
@@ -3953,7 +3961,7 @@ export class CanvasEditor {
     if (this.options.header) {
       const showVBar = content.height > contentHeight + 1
       const viewX = textPadding
-      const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+      const viewWidth = Math.max(0, width - textPadding - this.padding / 2 - (showVBar ? this.scrollbarWidth : 0))
       this.options.header.render(ctx, 0, 0, width, headerHeight, viewX, viewWidth)
     }
   }
