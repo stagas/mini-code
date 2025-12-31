@@ -2093,10 +2093,10 @@ export class CanvasEditor {
         }
 
         // Start debounce timer to change axis
-        this.dominantAxisTimer = window.setTimeout(() => {
-          this.currentDominantAxis = newDominantAxis
-          this.dominantAxisTimer = null
-        }, 15)
+        // this.dominantAxisTimer = window.setTimeout(() => {
+        this.currentDominantAxis = newDominantAxis
+        this.dominantAxisTimer = null
+        // }, 0)
       }
       else {
         // Same axis, clear any pending timer
