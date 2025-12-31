@@ -6,6 +6,7 @@ export interface CodeFileState {
   inputState: InputState
   scrollX: number
   scrollY: number
+  rev: number
 }
 
 export class CodeFile {
@@ -13,6 +14,7 @@ export class CodeFile {
   private _inputState: InputState
   private _scrollX = 0
   private _scrollY = 0
+  private _rev = 0
   private _history: History
   private _listeners: Set<() => void> = new Set()
 
@@ -89,6 +91,7 @@ export class CodeFile {
   }
 
   private notifyListeners() {
+    this._rev++
     this._listeners.forEach(listener => listener())
   }
 
@@ -99,6 +102,7 @@ export class CodeFile {
       inputState: this._inputState,
       scrollX: this._scrollX,
       scrollY: this._scrollY,
+      rev: this._rev,
     }
   }
 

@@ -136,6 +136,7 @@ export const CodeEditor = ({
   const lastCanvasUpdateValueRef = useRef<string | null>(null)
   const isUserInputRef = useRef(false)
   const pendingExternalStateRef = useRef<CodeFileState | null>(null)
+  const lastAppliedExternalRevRef = useRef(-1)
 
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
@@ -245,9 +246,12 @@ export const CodeEditor = ({
   useLayoutEffect(() => {
     if (!externalCodeFile) return
 
-    let rafId: number | null = null
+    lastAppliedExternalRevRef.current = -1
 
     const applyExternalState = (state: CodeFileState) => {
+      if (state.rev <= lastAppliedExternalRevRef.current) return
+      lastAppliedExternalRevRef.current = state.rev
+
       const currentState = inputStateRef.current
       const nextState = state.inputState
 
@@ -283,16 +287,21 @@ export const CodeEditor = ({
       }
     }
 
-    const scheduleFlush = () => {
-      if (rafId !== null) return
-      rafId = requestAnimationFrame(() => {
-        rafId = null
+    let cancelled = false
+    let flushQueued = false
+    const queueFlush = () => {
+      if (flushQueued) return
+      flushQueued = true
+      queueMicrotask(() => {
+        flushQueued = false
+        if (cancelled) return
+
         const pending = pendingExternalStateRef.current
         if (!pending) return
 
-        // If the canvas editor isn't initialized yet (or was recreated), retry next frame.
+        // If the canvas editor isn't initialized yet (or was recreated), retry after layout effects.
         if (!canvasEditorRef.current) {
-          scheduleFlush()
+          queueFlush()
           return
         }
 
@@ -305,23 +314,30 @@ export const CodeEditor = ({
     const state = externalCodeFile.getState()
     pendingExternalStateRef.current = state
 
-    // Update canvas editor synchronously if possible; otherwise flush on the next frame.
+    // Update canvas editor synchronously if possible; otherwise flush after layout effects.
     if (canvasEditorRef.current) {
       applyExternalState(state)
       pendingExternalStateRef.current = null
     }
     else {
-      scheduleFlush()
+      queueFlush()
     }
 
     // Subscribe to external CodeFile changes
     const unsubscribe = externalCodeFile.subscribe(() => {
-      pendingExternalStateRef.current = externalCodeFile.getState()
-      scheduleFlush()
+      const next = externalCodeFile.getState()
+      if (canvasEditorRef.current) {
+        pendingExternalStateRef.current = null
+        applyExternalState(next)
+      }
+      else {
+        pendingExternalStateRef.current = next
+        queueFlush()
+      }
     })
 
     return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId)
+      cancelled = true
       pendingExternalStateRef.current = null
       unsubscribe()
     }
@@ -937,7 +953,7 @@ export const CodeEditor = ({
   })
 
   // Initialize canvas editor
-  useEffect(() => {
+  useLayoutEffect(() => {
     const canvas = canvasRef.current
     const container = containerRef.current
     if (!canvas || !container) return
