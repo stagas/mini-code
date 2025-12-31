@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preac
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
 import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
-import { CodeFile, type CodeFileState } from './CodeFile.ts'
+import { CodeFile, type CodeFileEvent, type CodeFileState } from './CodeFile.ts'
 import { type EditorError } from './editor-error.ts'
 import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignature } from './function-signature.ts'
 import {
@@ -36,6 +36,8 @@ interface CodeEditorProps {
   isAnimating?: boolean
   onBeforeDraw?: () => void
 }
+
+type WidgetPositions = Array<{ line: number; column: number; type: string; length: number; height?: number }>
 
 export const CodeEditor = ({
   codeFile: externalCodeFile,
@@ -137,10 +139,15 @@ export const CodeEditor = ({
   const isUserInputRef = useRef(false)
   const pendingExternalStateRef = useRef<CodeFileState | null>(null)
   const lastAppliedExternalRevRef = useRef(-1)
+  const sentValueQueueRef = useRef<string[]>([])
+  const isLegacyValueModeRef = useRef(false)
+  isLegacyValueModeRef.current = value !== undefined && !externalCodeFile
+  const codeFileWriteSourceRef = useRef({})
 
-  // Custom setter that updates canvas editor
-  const setInputState = useCallback(
-    (newState: InputState) => {
+  const applyState = useCallback((
+    newState: InputState,
+    opts?: { widgetPositions?: WidgetPositions | null; ensureCaretVisible?: boolean; writeToCodeFile?: boolean },
+  ) => {
       const oldState = inputStateRef.current
 
       // Check if state actually changed to prevent unnecessary updates
@@ -175,12 +182,20 @@ export const CodeEditor = ({
       setInputStateInternal(nextState)
       inputStateRef.current = nextState
 
-      // Always update CodeFile to trigger subscriptions
-      codeFileRef.current.inputState = nextState
+      if (opts?.writeToCodeFile !== false) {
+        codeFileRef.current.setState({ inputState: nextState }, codeFileWriteSourceRef.current)
+      }
 
       if (linesChanged) {
         lastTextRef.current = newText
         // Also call external setValue if provided (legacy mode)
+        if (isLegacyValueModeRef.current) {
+          const q = sentValueQueueRef.current
+          if (q[q.length - 1] !== newText) {
+            q.push(newText)
+            if (q.length > 200) q.splice(0, q.length - 200)
+          }
+        }
         setValue?.(newText)
       }
       else {
@@ -188,10 +203,32 @@ export const CodeEditor = ({
         lastTextRef.current = newText
       }
 
+      const canvasEditor = canvasEditorRef.current
+      if (canvasEditor) {
+        const widgetPositions = opts?.widgetPositions
+        if (widgetPositions) {
+          canvasEditor.setWidgetsWithoutDraw(widgetsRef.current)
+        }
+
+        const shouldEnsure = (opts?.ensureCaretVisible ?? true) && !skipEnsureCaretVisibleRef.current
+        canvasEditor.updateState(nextState, shouldEnsure, widgetPositions || undefined)
+        lastCanvasUpdateValueRef.current = newText
+        isUserInputRef.current = false
+        skipEnsureCaretVisibleRef.current = false
+      }
+
       // Keep the popup-canvas autocomplete overlay in sync on caret/selection changes
       updateAutocompletePopupCanvasRef.current()
     },
     [setValue],
+  )
+
+  // Custom setter that updates canvas editor
+  const setInputState = useCallback(
+    (newState: InputState) => {
+      applyState(newState)
+    },
+    [applyState],
   )
 
   // Keep ref in sync with latest callback
@@ -215,20 +252,38 @@ export const CodeEditor = ({
     // Don't automatically focus - let user control which editor has focus
   }, [inputState])
 
-  // Keep ref in sync with current state
-  useEffect(() => {
-    inputStateRef.current = inputState
-  }, [inputState])
+  // `inputStateRef` is updated synchronously in the edit pipeline (keyboard, mouse, CodeFile subscription).
 
   // Sync with external value changes (legacy mode)
   useEffect(() => {
     if (value !== undefined && !externalCodeFile) {
+      if (value === lastTextRef.current) {
+        sentValueQueueRef.current = []
+        return
+      }
+
+      const q = sentValueQueueRef.current
+      const idx = q.indexOf(value)
+      if (idx !== -1) {
+        // Parent is catching up to a value we already emitted; don't rewind local state.
+        sentValueQueueRef.current = q.slice(idx + 1)
+        return
+      }
+
       const lines = value.split('\n')
       const currentLines = inputStateRef.current.lines.join('\n')
       if (currentLines !== value) {
+        sentValueQueueRef.current = []
         lastTextRef.current = value
-        const newState = {
-          ...inputStateRef.current,
+        const current = inputStateRef.current
+        const line = Math.min(current.caret.line, Math.max(0, lines.length - 1))
+        const lineText = lines[line] || ''
+        const column = Math.min(current.caret.column, lineText.length)
+        const columnIntent = Math.min(current.caret.columnIntent, lineText.length)
+        const newState: InputState = {
+          ...current,
+          caret: { line, column, columnIntent },
+          selection: null,
           lines,
         }
         setInputStateInternal(newState)
@@ -267,7 +322,7 @@ export const CodeEditor = ({
             || currentState.selection.end.line !== nextState.selection.end.line
             || currentState.selection.end.column !== nextState.selection.end.column))
 
-      const linesChanged = currentState.lines !== nextState.lines
+      const linesChanged = lastTextRef.current !== state.value
 
       if (linesChanged || caretChanged || selectionChanged) {
         skipEnsureCaretVisibleRef.current = true
@@ -324,7 +379,8 @@ export const CodeEditor = ({
     }
 
     // Subscribe to external CodeFile changes
-    const unsubscribe = externalCodeFile.subscribe(() => {
+    const unsubscribe = externalCodeFile.subscribe((e: CodeFileEvent) => {
+      if (e.source === codeFileWriteSourceRef.current) return
       const next = externalCodeFile.getState()
       if (canvasEditorRef.current) {
         pendingExternalStateRef.current = null
@@ -481,25 +537,17 @@ export const CodeEditor = ({
             }
             : null
 
-          // Set widgets first so they exist for restoration
-          if (canvasEditorRef.current) {
-            canvasEditorRef.current.setWidgetsWithoutDraw(widgets)
-          }
-
-          // Directly update canvas editor with widget data from history
-          canvasEditorRef.current?.updateState(inputStateRef.current, false, widgetData || undefined)
-
-          // Update React state
-          setInputState({
-            lines: [...inputStateRef.current.lines],
-            caret: { ...inputStateRef.current.caret },
-            selection: inputStateRef.current.selection
+          const nextInputState: InputState = {
+            lines: [...previousState.lines],
+            caret: previousState.caret ? { ...previousState.caret } : { ...inputStateRef.current.caret },
+            selection: previousState.selection
               ? {
-                start: { ...inputStateRef.current.selection.start },
-                end: { ...inputStateRef.current.selection.end },
+                start: { ...previousState.selection.start },
+                end: { ...previousState.selection.end },
               }
               : null,
-          })
+          }
+          applyState(nextInputState, { widgetPositions: widgetData || null, ensureCaretVisible: true })
           return
         }
       }
@@ -530,25 +578,17 @@ export const CodeEditor = ({
             }
             : null
 
-          // Set widgets first so they exist for restoration
-          if (canvasEditorRef.current) {
-            canvasEditorRef.current.setWidgetsWithoutDraw(widgets)
-          }
-
-          // Directly update canvas editor with widget data from history
-          canvasEditorRef.current?.updateState(inputStateRef.current, false, widgetData || undefined)
-
-          // Update React state
-          setInputState({
-            lines: [...inputStateRef.current.lines],
-            caret: { ...inputStateRef.current.caret },
-            selection: inputStateRef.current.selection
+          const nextInputState: InputState = {
+            lines: [...nextState.lines],
+            caret: nextState.caret ? { ...nextState.caret } : { ...inputStateRef.current.caret },
+            selection: nextState.selection
               ? {
-                start: { ...inputStateRef.current.selection.start },
-                end: { ...inputStateRef.current.selection.end },
+                start: { ...nextState.selection.start },
+                end: { ...nextState.selection.end },
               }
               : null,
-          })
+          }
+          applyState(nextInputState, { widgetPositions: widgetData || null, ensureCaretVisible: true })
           return
         }
       }
@@ -737,8 +777,6 @@ export const CodeEditor = ({
 
       // Call setInputState first - it needs to see oldState in the ref for comparison
       setInputStateRef.current(newState)
-      // Now update ref synchronously so it's available immediately for updateState call
-      inputStateRef.current = newState
 
       // If caret was set, ensure editor is focused
       if (caretWasSet) {
@@ -885,8 +923,7 @@ export const CodeEditor = ({
       mouseHandlerRef.current?.setScrollOffset(sx, sy)
       // Update CodeFile scroll position and track it
       lastScrollRef.current = { x: sx, y: sy }
-      codeFileRef.current.scrollX = sx
-      codeFileRef.current.scrollY = sy
+      codeFileRef.current.setState({ scrollX: sx, scrollY: sy }, codeFileWriteSourceRef.current)
     },
     onScrollMetricsChange: m =>
       setScrollMetrics(prev =>
@@ -927,8 +964,7 @@ export const CodeEditor = ({
         }
         // Update CodeFile scroll position and track it
         lastScrollRef.current = { x: sx, y: sy }
-        codeFileRef.current.scrollX = sx
-        codeFileRef.current.scrollY = sy
+        codeFileRef.current.setState({ scrollX: sx, scrollY: sy }, codeFileWriteSourceRef.current)
 
         // Update selection during auto-scroll when dragging
         if (mouseHandlerRef.current?.isDraggingSelection() && lastMousePositionRef.current.event) {

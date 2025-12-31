@@ -3385,6 +3385,29 @@ export class CanvasEditor {
         }
       }
 
+      // For word-wrapped lines, ensure the first logical line retains the maximum height
+      // of above widgets even if all widget segments are now in below visual lines
+      if (this.options.wordWrap) {
+        const logicalLine = wrappedLines[visualIndex].logicalLine
+        const firstVisualLine = logicalToVisual.get(logicalLine)?.[0] ?? visualIndex
+        if (visualIndex === firstVisualLine && (!widgets || widgets.above.length === 0)) {
+          // Check if this logical line has above widgets that are now in below visual lines
+          let maxAboveWidgetHeight = 0
+          for (let checkVisualIndex = visualIndex + 1; checkVisualIndex < wrappedLines.length; checkVisualIndex++) {
+            if (wrappedLines[checkVisualIndex].logicalLine !== logicalLine) break
+            const checkWidgets = widgetsByVisualLine.get(checkVisualIndex)
+            if (checkWidgets?.above && checkWidgets.above.length > 0) {
+              maxAboveWidgetHeight = Math.max(maxAboveWidgetHeight, ...checkWidgets.above.map(w =>
+                this.getWidgetHeight(w)
+              ))
+            }
+          }
+          if (maxAboveWidgetHeight > 0) {
+            cumulativeOffset += maxAboveWidgetHeight
+          }
+        }
+      }
+
       // Set offset for this line (before adding this line's widgets)
       yOffsets.set(visualIndex, cumulativeOffset)
 

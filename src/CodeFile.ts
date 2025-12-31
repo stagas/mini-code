@@ -9,6 +9,22 @@ export interface CodeFileState {
   rev: number
 }
 
+export type CodeFileEvent = {
+  rev: number
+  source?: unknown
+}
+
+const cloneInputState = (s: InputState): InputState => ({
+  lines: [...s.lines],
+  caret: { ...s.caret },
+  selection: s.selection
+    ? {
+      start: { ...s.selection.start },
+      end: { ...s.selection.end },
+    }
+    : null,
+})
+
 export class CodeFile {
   private _value: string
   private _inputState: InputState
@@ -16,7 +32,7 @@ export class CodeFile {
   private _scrollY = 0
   private _rev = 0
   private _history: History
-  private _listeners: Set<() => void> = new Set()
+  private _listeners: Set<(e: CodeFileEvent) => void> = new Set()
 
   constructor(initialValue = '') {
     this._value = initialValue
@@ -44,16 +60,11 @@ export class CodeFile {
   }
 
   get inputState(): InputState {
-    return this._inputState
+    return cloneInputState(this._inputState)
   }
 
   set inputState(newState: InputState) {
-    this._inputState = newState
-    const newValue = newState.lines.join('\n')
-    if (this._value !== newValue) {
-      this._value = newValue
-    }
-    this.notifyListeners()
+    this.setState({ inputState: newState })
   }
 
   get scrollX(): number {
@@ -83,23 +94,24 @@ export class CodeFile {
   }
 
   // Subscribe to changes
-  subscribe(listener: () => void): () => void {
+  subscribe(listener: (e: CodeFileEvent) => void): () => void {
     this._listeners.add(listener)
     return () => {
       this._listeners.delete(listener)
     }
   }
 
-  private notifyListeners() {
+  private notifyListeners(source?: unknown) {
     this._rev++
-    this._listeners.forEach(listener => listener())
+    const e: CodeFileEvent = { rev: this._rev, source }
+    this._listeners.forEach(listener => listener(e))
   }
 
   // Get a snapshot of the current state
   getState(): CodeFileState {
     return {
       value: this._value,
-      inputState: this._inputState,
+      inputState: cloneInputState(this._inputState),
       scrollX: this._scrollX,
       scrollY: this._scrollY,
       rev: this._rev,
@@ -107,7 +119,7 @@ export class CodeFile {
   }
 
   // Restore from a snapshot
-  setState(state: Partial<CodeFileState>) {
+  setState(state: Partial<CodeFileState>, source?: unknown) {
     let changed = false
 
     if (state.value !== undefined && state.value !== this._value) {
@@ -120,8 +132,9 @@ export class CodeFile {
     }
 
     if (state.inputState !== undefined) {
-      this._inputState = state.inputState
-      const newValue = state.inputState.lines.join('\n')
+      const nextState = cloneInputState(state.inputState)
+      this._inputState = nextState
+      const newValue = nextState.lines.join('\n')
       if (this._value !== newValue) {
         this._value = newValue
       }
@@ -139,7 +152,7 @@ export class CodeFile {
     }
 
     if (changed) {
-      this.notifyListeners()
+      this.notifyListeners(source)
     }
   }
 
