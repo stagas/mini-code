@@ -331,6 +331,20 @@ const findFirstChangedLine = (a: string[], b: string[]): number | null => {
   return null
 }
 
+const findChangedLogicalLines = (a: string[], b: string[]): Set<number> => {
+  const changed = new Set<number>()
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) changed.add(i)
+  }
+  // If lengths differ, all lines from the min length onward are considered changed
+  const maxLen = Math.max(a.length, b.length)
+  for (let i = n; i < maxLen; i++) {
+    changed.add(i)
+  }
+  return changed
+}
+
 type OffscreenLineEntry = {
   id: string
   key: number
@@ -370,6 +384,12 @@ class OffscreenLineCache {
   public invalidateFromLogicalLine(fromLogicalLine: number) {
     for (const [id, entry] of this.entries) {
       if (entry.logicalLine >= fromLogicalLine) this.entries.delete(id)
+    }
+  }
+
+  public invalidateLogicalLines(changedLogicalLines: Set<number>) {
+    for (const [id, entry] of this.entries) {
+      if (changedLogicalLines.has(entry.logicalLine)) this.entries.delete(id)
     }
   }
 
@@ -1833,7 +1853,7 @@ export class CanvasEditor {
     // Invalidate wrapped lines cache if lines changed
     const oldLines = this.inputState.lines
     const linesChanged = oldLines !== newState.lines
-    const changedFromLogicalLine = linesChanged ? findFirstChangedLine(oldLines, newState.lines) : null
+    const changedLogicalLines = linesChanged ? findChangedLogicalLines(oldLines, newState.lines) : new Set<number>()
 
     // Track caret position change before updating state
     const caretChanged = this.inputState.caret.line !== newState.caret.line
@@ -1909,8 +1929,9 @@ export class CanvasEditor {
     if (linesChanged) {
       this.wrappedLinesCache = null
       this.invalidateMeasurementCaches()
-      if (changedFromLogicalLine !== null) {
-        this.offscreenLineCache.invalidateFromLogicalLine(changedFromLogicalLine)
+      if (changedLogicalLines.size > 0) {
+        // Invalidate only the specific changed logical lines (assuming syntax highlighting doesn't cascade)
+        this.offscreenLineCache.invalidateLogicalLines(changedLogicalLines)
       }
     }
 

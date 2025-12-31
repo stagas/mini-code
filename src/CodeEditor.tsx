@@ -144,84 +144,112 @@ export const CodeEditor = ({
   isLegacyValueModeRef.current = value !== undefined && !externalCodeFile
   const codeFileWriteSourceRef = useRef({})
 
+  // Debounced updateState to batch multiple calls in the same tick
+  const debouncedUpdateStateScheduledRef = useRef(false)
+  const debouncedUpdateStateArgsRef = useRef<{
+    newState: InputState
+    ensureCaretVisible: boolean
+    widgetData?: Array<{ line: number; column: number; type: string; length: number; height?: number }>
+  } | null>(null)
+
+  const debouncedUpdateState = useCallback((
+    newState: InputState,
+    ensureCaretVisible = false,
+    widgetData?: Array<{ line: number; column: number; type: string; length: number; height?: number }>,
+  ) => {
+    // Store the latest arguments
+    debouncedUpdateStateArgsRef.current = { newState, ensureCaretVisible, widgetData }
+
+    // Schedule update for next microtask if not already scheduled
+    if (!debouncedUpdateStateScheduledRef.current) {
+      debouncedUpdateStateScheduledRef.current = true
+      queueMicrotask(() => {
+        const args = debouncedUpdateStateArgsRef.current
+        if (args) {
+          canvasEditorRef.current?.updateState(args.newState, args.ensureCaretVisible, args.widgetData)
+          debouncedUpdateStateArgsRef.current = null
+        }
+        debouncedUpdateStateScheduledRef.current = false
+      })
+    }
+  }, [])
+
   const applyState = useCallback((
     newState: InputState,
     opts?: { widgetPositions?: WidgetPositions | null; ensureCaretVisible?: boolean; writeToCodeFile?: boolean },
   ) => {
-      const oldState = inputStateRef.current
+    const oldState = inputStateRef.current
 
-      // Check if state actually changed to prevent unnecessary updates
-      const caretChanged = oldState.caret.line !== newState.caret.line
-        || oldState.caret.column !== newState.caret.column
-        || oldState.caret.columnIntent !== newState.caret.columnIntent
+    // Check if state actually changed to prevent unnecessary updates
+    const caretChanged = oldState.caret.line !== newState.caret.line
+      || oldState.caret.column !== newState.caret.column
+      || oldState.caret.columnIntent !== newState.caret.columnIntent
 
-      const selectionChanged = (oldState.selection === null) !== (newState.selection === null)
-        || (oldState.selection
-          && newState.selection
-          && (oldState.selection.start.line !== newState.selection.start.line
-            || oldState.selection.start.column !== newState.selection.start.column
-            || oldState.selection.end.line !== newState.selection.end.line
-            || oldState.selection.end.column !== newState.selection.end.column))
+    const selectionChanged = (oldState.selection === null) !== (newState.selection === null)
+      || (oldState.selection
+        && newState.selection
+        && (oldState.selection.start.line !== newState.selection.start.line
+          || oldState.selection.start.column !== newState.selection.start.column
+          || oldState.selection.end.line !== newState.selection.end.line
+          || oldState.selection.end.column !== newState.selection.end.column))
 
-      const newText = newState.lines.join('\n')
-      const oldText = lastTextRef.current
-      const linesChanged = oldText !== newText
+    const newText = newState.lines.join('\n')
+    const oldText = lastTextRef.current
+    const linesChanged = oldText !== newText
 
-      // Keep `lines` referentially stable when text didn't change.
-      // This avoids expensive downstream work (wrap/layout/autocomplete) that keys off `lines` identity.
-      const nextState: InputState = !linesChanged && newState.lines !== oldState.lines
-        ? { ...newState, lines: oldState.lines }
-        : newState
+    // Keep `lines` referentially stable when text didn't change.
+    // This avoids expensive downstream work (wrap/layout/autocomplete) that keys off `lines` identity.
+    const nextState: InputState = !linesChanged && newState.lines !== oldState.lines
+      ? { ...newState, lines: oldState.lines }
+      : newState
 
-      // Only update if something actually changed
-      if (!caretChanged && !selectionChanged && !linesChanged) {
-        return
-      }
+    // Only update if something actually changed
+    if (!caretChanged && !selectionChanged && !linesChanged) {
+      return
+    }
 
-      isUserInputRef.current = true
-      setInputStateInternal(nextState)
-      inputStateRef.current = nextState
+    isUserInputRef.current = true
+    setInputStateInternal(nextState)
+    inputStateRef.current = nextState
 
-      if (opts?.writeToCodeFile !== false) {
-        codeFileRef.current.setState({ inputState: nextState }, codeFileWriteSourceRef.current)
-      }
+    if (opts?.writeToCodeFile !== false) {
+      codeFileRef.current.setState({ inputState: nextState }, codeFileWriteSourceRef.current)
+    }
 
-      if (linesChanged) {
-        lastTextRef.current = newText
-        // Also call external setValue if provided (legacy mode)
-        if (isLegacyValueModeRef.current) {
-          const q = sentValueQueueRef.current
-          if (q[q.length - 1] !== newText) {
-            q.push(newText)
-            if (q.length > 200) q.splice(0, q.length - 200)
-          }
+    if (linesChanged) {
+      lastTextRef.current = newText
+      // Also call external setValue if provided (legacy mode)
+      if (isLegacyValueModeRef.current) {
+        const q = sentValueQueueRef.current
+        if (q[q.length - 1] !== newText) {
+          q.push(newText)
+          if (q.length > 200) q.splice(0, q.length - 200)
         }
-        setValue?.(newText)
       }
-      else {
-        // Keep lastTextRef in sync even if text didn't change
-        lastTextRef.current = newText
-      }
+      setValue?.(newText)
+    }
+    else {
+      // Keep lastTextRef in sync even if text didn't change
+      lastTextRef.current = newText
+    }
 
-      const canvasEditor = canvasEditorRef.current
-      if (canvasEditor) {
-        const widgetPositions = opts?.widgetPositions
-        if (widgetPositions) {
-          canvasEditor.setWidgetsWithoutDraw(widgetsRef.current)
-        }
-
-        const shouldEnsure = (opts?.ensureCaretVisible ?? true) && !skipEnsureCaretVisibleRef.current
-        canvasEditor.updateState(nextState, shouldEnsure, widgetPositions || undefined)
-        lastCanvasUpdateValueRef.current = newText
-        isUserInputRef.current = false
-        skipEnsureCaretVisibleRef.current = false
+    const canvasEditor = canvasEditorRef.current
+    if (canvasEditor) {
+      const widgetPositions = opts?.widgetPositions
+      if (widgetPositions) {
+        canvasEditor.setWidgetsWithoutDraw(widgetsRef.current)
       }
 
-      // Keep the popup-canvas autocomplete overlay in sync on caret/selection changes
-      updateAutocompletePopupCanvasRef.current()
-    },
-    [setValue],
-  )
+      const shouldEnsure = (opts?.ensureCaretVisible ?? true) && !skipEnsureCaretVisibleRef.current
+      debouncedUpdateState(nextState, shouldEnsure, widgetPositions || undefined)
+      lastCanvasUpdateValueRef.current = newText
+      isUserInputRef.current = false
+      skipEnsureCaretVisibleRef.current = false
+    }
+
+    // Keep the popup-canvas autocomplete overlay in sync on caret/selection changes
+    updateAutocompletePopupCanvasRef.current()
+  }, [setValue])
 
   // Custom setter that updates canvas editor
   const setInputState = useCallback(
@@ -1104,7 +1132,7 @@ export const CodeEditor = ({
       const shouldEnsureCaretVisible = isUserInputRef.current && !skipEnsureCaretVisibleRef.current
       isUserInputRef.current = false
       skipEnsureCaretVisibleRef.current = false
-      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible, widgetData || undefined)
+      debouncedUpdateState(inputState, shouldEnsureCaretVisible, widgetData || undefined)
     }
     else if (inputStateChanged) {
       // Only inputState changed
@@ -1114,7 +1142,7 @@ export const CodeEditor = ({
       const widgetPositions = pendingWidgetData || pendingWidgetPositionsRef.current
       pendingWidgetPositionsRef.current = null
       setPendingWidgetData(null)
-      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible, widgetPositions || undefined)
+      debouncedUpdateState(inputState, shouldEnsureCaretVisible, widgetPositions || undefined)
     }
     else if (widgetsChanged) {
       // Only widgets changed - update immediately and ensure caret visibility if this was user input
@@ -1123,7 +1151,7 @@ export const CodeEditor = ({
       skipEnsureCaretVisibleRef.current = false
       canvasEditorRef.current?.updateWidgets(widgets)
       // Call updateState with current inputState to trigger ensureCaretVisible when appropriate
-      canvasEditorRef.current?.updateState(inputState, shouldEnsureCaretVisible)
+      debouncedUpdateState(inputState, shouldEnsureCaretVisible)
     }
   }, [inputState, widgets])
 
@@ -1232,7 +1260,7 @@ export const CodeEditor = ({
       if (event.pointerType !== 'touch') {
         // Update canvas editor state synchronously with the updated ref from mouse handler callback
         // The callback already updated inputStateRef.current, so this will have the latest state
-        canvasEditorRef.current?.updateState(inputStateRef.current, true)
+        debouncedUpdateState(inputStateRef.current, true)
         // Reactivate textarea by blurring and focusing consecutively
         setActiveEditor(editorIdRef.current)
         textareaRef.current?.blur()
@@ -1497,7 +1525,7 @@ export const CodeEditor = ({
           || inputStateRef.current.selection !== oldSelection
         if (stateChanged) {
           // For taps, ensure caret is visible
-          canvasEditorRef.current?.updateState(inputStateRef.current, true)
+          debouncedUpdateState(inputStateRef.current, true)
         }
         canvasEditorRef.current?.clearTouchScrollFlag()
       }
