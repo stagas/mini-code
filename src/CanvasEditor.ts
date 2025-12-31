@@ -3435,14 +3435,21 @@ export class CanvasEditor {
         // Don't add overlay widgets to widgetPositions (no pointer events)
 
         const widgetHeight = this.getWidgetHeight(widget)
-        if (widgetY + widgetHeight >= visibleStartY && widgetY <= visibleEndY) {
-          // View area (content-space) excluding gutter/padding and scrollbar width
-          const showVBar = content.height > height + 1
-          const viewX = this.scrollX + textPadding
-          const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
-          const viewY = viewYByLogicalLine.get(widget.line - 1) ?? widgetY
-          widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth, viewY)
-        }
+        if (widgetY + widgetHeight < visibleStartY) continue
+
+        // In wordWrap mode, keep rendering widgets until their logical line scrolls out below.
+        const viewY = viewYByLogicalLine.get(widget.line - 1) ?? widgetY
+        const isBelowViewport = this.options.wordWrap
+          ? viewY > visibleEndY
+          : widgetY > visibleEndY
+
+        if (isBelowViewport) continue
+
+        // View area (content-space) excluding gutter/padding and scrollbar width
+        const showVBar = content.height > height + 1
+        const viewX = this.scrollX + textPadding
+        const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+        widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth, viewY)
       }
     }
 
@@ -3684,7 +3691,13 @@ export class CanvasEditor {
         if (widget.type === 'overlay') continue
         const info = widgetRenderInfo.get(widget)
         if (!info) continue
-        if (info.y + info.height < visibleStartY || info.y > visibleEndY) continue
+        if (info.y + info.height < visibleStartY) continue
+
+        const isBelowViewport = this.options.wordWrap
+          ? info.viewY > visibleEndY
+          : info.y > visibleEndY
+
+        if (isBelowViewport) continue
         widget.render(ctx, info.x, info.y, info.width, info.height, viewX, viewWidth, info.viewY)
       }
     }
@@ -3961,7 +3974,7 @@ export class CanvasEditor {
     // Draw header if present
     if (this.options.header) {
       const showVBar = content.height > contentHeight + 1
-      const viewX = textPadding
+      const viewX = textPadding + 1
       const viewWidth = Math.max(0, width - textPadding - this.padding / 2 - (showVBar ? this.scrollbarWidth : 0))
       this.options.header.render(ctx, 0, 0, width, headerHeight, viewX, viewWidth)
     }
