@@ -374,6 +374,7 @@ export const CodeEditor = ({
       && autocompleteInfo.suggestions.length > 0
       && autocompleteReady
       && !inputState.selection
+      && (autocompletePosition.x !== 0 || autocompletePosition.y !== 0)
       && (() => {
         const currentLine = inputState.lines[inputState.caret.line] || ''
         const wordInfo = findCurrentWord(

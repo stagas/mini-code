@@ -3834,9 +3834,10 @@ export class CanvasEditor {
         wrappedLines,
         theme,
         this.scrollY,
-        height,
+        contentHeight,
         widgetLayout.yOffsets,
         widgetLayout.widgetsByVisualLine,
+        widgetLayout.inlineWidgets,
       )
     }
 
@@ -4702,7 +4703,22 @@ export class CanvasEditor {
     //   wasAtBottom = this.scrollY >= maxScrollY - 1 // Allow 1px tolerance
     // }
 
-    this.errors = errors
+    const normalizedErrors: EditorError[] = []
+    for (const e of errors) {
+      const line = this.inputState.lines[e.line]
+      if (line === undefined) continue
+
+      const max = line.length
+      const startColumn = Math.max(0, Math.min(e.startColumn, max))
+      let endColumn = Math.max(0, Math.min(e.endColumn, max + 1))
+      if (endColumn <= startColumn) {
+        endColumn = Math.min(startColumn + 1, max + 1)
+      }
+
+      normalizedErrors.push({ ...e, startColumn, endColumn })
+    }
+
+    this.errors = normalizedErrors
 
     // Defer canvas size update to avoid feedback loop with ResizeObserver
     // The draw will use current canvas size, and metrics will be updated correctly
@@ -4893,6 +4909,13 @@ export class CanvasEditor {
             if (wrappedLine) {
               const textBeforeError = wrappedLine.text.substring(0, visualPos.visualColumn)
               preCalculatedContentX = textPadding + ctx.measureText(textBeforeError).width
+              const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualPos.visualLine) || []
+              for (const { widget, column } of inlineWidgetsForLine) {
+                const columnInWrappedLine = column - wrappedLine.startColumn
+                if (columnInWrappedLine <= visualPos.visualColumn) {
+                  preCalculatedContentX += ctx.measureText('X'.repeat(widget.length)).width
+                }
+              }
             }
           }
           else {
@@ -4957,6 +4980,7 @@ export class CanvasEditor {
     viewportHeight: number,
     yOffsets: Map<number, number>,
     widgetsByVisualLine: Map<number, { above: EditorWidget[]; below: EditorWidget[] }>,
+    inlineWidgets: Map<number, { widget: EditorWidget; column: number }[]>,
   ) {
     const textPadding = this.getTextPadding()
     const visibleStartY = scrollY
@@ -4976,17 +5000,13 @@ export class CanvasEditor {
       const endYOffset = yOffsets.get(visualEnd.visualLine) || 0
       let startAboveHeight = 0
       const startWidgets = widgetsByVisualLine.get(visualStart.visualLine)
-      if (startWidgets?.above) {
-        for (const widget of startWidgets.above) {
-          startAboveHeight += this.getWidgetHeight(widget)
-        }
+      if (startWidgets?.above && startWidgets.above.length > 0) {
+        startAboveHeight = Math.max(...startWidgets.above.map(w => this.getWidgetHeight(w)))
       }
       let endAboveHeight = 0
       const endWidgets = widgetsByVisualLine.get(visualEnd.visualLine)
-      if (endWidgets?.above) {
-        for (const widget of endWidgets.above) {
-          endAboveHeight += this.getWidgetHeight(widget)
-        }
+      if (endWidgets?.above && endWidgets.above.length > 0) {
+        endAboveHeight = Math.max(...endWidgets.above.map(w => this.getWidgetHeight(w)))
       }
       const errorStartY = this.padding + visualStart.visualLine * this.lineHeight + startYOffset + startAboveHeight
       const errorEndY = this.padding + (visualEnd.visualLine + 1) * this.lineHeight + endYOffset + endAboveHeight
@@ -5004,9 +5024,20 @@ export class CanvasEditor {
             visualEnd.visualColumn,
           )
 
-          const startX = textPadding + ctx.measureText(startText).width
+          let startX = textPadding + ctx.measureText(startText).width
           const errorWidth = ctx.measureText(errorText).width
-          const totalErrorWidth = errorWidth + overflowWidthForLine(wrappedLine.endColumn)
+          let totalErrorWidth = errorWidth + overflowWidthForLine(wrappedLine.endColumn)
+
+          const inlineWidgetsForLine = inlineWidgets.get(visualStart.visualLine) || []
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            const w = ctx.measureText('X'.repeat(widget.length)).width
+            if (columnInWrappedLine <= visualStart.visualColumn) startX += w
+            if (columnInWrappedLine > visualStart.visualColumn && columnInWrappedLine < visualEnd.visualColumn) {
+              totalErrorWidth += w
+            }
+          }
+
           const yOffset = yOffsets.get(visualStart.visualLine) || 0
           // Add max height of 'above' widgets on this line (they are in the same row)
           let aboveHeight = 0
@@ -5083,9 +5114,27 @@ export class CanvasEditor {
             errorWidth = ctx.measureText(wrappedLine.text).width
           }
 
-          const totalErrorWidth = errorWidth + (
+          let totalErrorWidth = errorWidth + (
             visualLine === visualEnd.visualLine ? overflowWidthForLine(wrappedLine.endColumn) : 0
           )
+
+          const inlineWidgetsForLine = inlineWidgets.get(visualLine) || []
+          for (const { widget, column } of inlineWidgetsForLine) {
+            const columnInWrappedLine = column - wrappedLine.startColumn
+            const w = ctx.measureText('X'.repeat(widget.length)).width
+            if (visualLine === visualStart.visualLine && columnInWrappedLine <= visualStart.visualColumn) {
+              startX += w
+            }
+            if (
+              (visualLine === visualStart.visualLine
+                && columnInWrappedLine > visualStart.visualColumn)
+              || (visualLine === visualEnd.visualLine
+                && columnInWrappedLine < visualEnd.visualColumn)
+              || (visualLine !== visualStart.visualLine && visualLine !== visualEnd.visualLine)
+            ) {
+              totalErrorWidth += w
+            }
+          }
 
           ctx.strokeStyle = theme.errorSquigglyColor
           ctx.lineWidth = 1.5
