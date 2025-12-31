@@ -3796,6 +3796,10 @@ export class CanvasEditor {
         const showVBar = content.height > height + 1
         const viewX = this.scrollX + textPadding
         const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
+
+        // Skip overlay widgets that are completely outside the X axis viewport
+        if (widgetX + widgetWidth < viewX || widgetX > viewX + viewWidth) continue
+
         widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth, viewY)
       }
     }
@@ -4045,6 +4049,10 @@ export class CanvasEditor {
           : info.y > visibleEndY
 
         if (isBelowViewport) continue
+
+        // Skip widgets that are completely outside the X axis viewport
+        if (info.x + info.width < viewX || info.x > viewX + viewWidth) continue
+
         widget.render(ctx, info.x, info.y, info.width, info.height, viewX, viewWidth, info.viewY)
       }
     }
