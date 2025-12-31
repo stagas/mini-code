@@ -238,6 +238,8 @@ export interface EditorWidget {
   length: number
   /** Height in pixels (optional: defaults to 20 for above/below, lineHeight for overlay/inline) */
   height?: number
+  /** Enable X-axis viewport culling for this widget (default: true) */
+  culling?: boolean
   /** Called to render the widget */
   render(canvasCtx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, viewX: number,
     viewWidth: number, viewY: number): void
@@ -3798,7 +3800,7 @@ export class CanvasEditor {
         const viewWidth = Math.max(0, width - textPadding - this.padding - (showVBar ? this.scrollbarWidth : 0))
 
         // Skip overlay widgets that are completely outside the X axis viewport
-        if (widgetX + widgetWidth < viewX || widgetX > viewX + viewWidth) continue
+        if (widget.culling !== false && (widgetX + widgetWidth < viewX || widgetX > viewX + viewWidth)) continue
 
         widget.render(ctx, widgetX, widgetY - 2, widgetWidth, widgetHeight + 1, viewX, viewWidth, viewY)
       }
@@ -4051,7 +4053,7 @@ export class CanvasEditor {
         if (isBelowViewport) continue
 
         // Skip widgets that are completely outside the X axis viewport
-        if (info.x + info.width < viewX || info.x > viewX + viewWidth) continue
+        if (widget.culling !== false && (info.x + info.width < viewX || info.x > viewX + viewWidth)) continue
 
         widget.render(ctx, info.x, info.y, info.width, info.height, viewX, viewWidth, info.viewY)
       }
