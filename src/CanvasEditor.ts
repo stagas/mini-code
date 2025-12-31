@@ -306,6 +306,152 @@ interface WrappedLine {
   endColumn: number
 }
 
+const hashString = (h: number, s: string): number => {
+  let x = h >>> 0
+  for (let i = 0; i < s.length; i++) {
+    x ^= s.charCodeAt(i)
+    x = Math.imul(x, 16777619)
+  }
+  return x >>> 0
+}
+
+const hashNumber = (h: number, n: number): number => {
+  let x = h >>> 0
+  x ^= n >>> 0
+  x = Math.imul(x, 16777619)
+  return x >>> 0
+}
+
+const findFirstChangedLine = (a: string[], b: string[]): number | null => {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) return i
+  }
+  if (a.length !== b.length) return n
+  return null
+}
+
+type OffscreenLineEntry = {
+  id: string
+  key: number
+  logicalLine: number
+  canvas: OffscreenCanvas
+  ctx: OffscreenCanvasRenderingContext2D
+  cssWidth: number
+  cssHeight: number
+  lastUsed: number
+}
+
+class OffscreenLineCache {
+  private entries = new Map<string, OffscreenLineEntry>()
+  private useCounter = 0
+  private dpr = 1
+  private capacity = 300
+
+  public setDpr(dpr: number) {
+    const next = dpr || 1
+    if (Math.abs(next - this.dpr) > 0.01) {
+      this.entries.clear()
+      this.dpr = next
+    }
+  }
+
+  public setCapacity(capacity: number) {
+    const next = Math.max(50, Math.floor(capacity))
+    if (next === this.capacity) return
+    this.capacity = next
+    this.evictIfNeeded()
+  }
+
+  public clear() {
+    this.entries.clear()
+  }
+
+  public invalidateFromLogicalLine(fromLogicalLine: number) {
+    for (const [id, entry] of this.entries) {
+      if (entry.logicalLine >= fromLogicalLine) this.entries.delete(id)
+    }
+  }
+
+  public get(
+    id: string,
+    logicalLine: number,
+    minCssWidth: number,
+    cssHeight: number,
+  ): OffscreenLineEntry | null {
+    if (typeof OffscreenCanvas === 'undefined') return null
+
+    const minWidth = Math.max(1, Math.ceil(minCssWidth))
+    const height = Math.max(1, Math.ceil(cssHeight))
+
+    const existing = this.entries.get(id)
+    if (existing) {
+      existing.lastUsed = ++this.useCounter
+      existing.logicalLine = logicalLine
+      return existing
+    }
+
+    const canvas = new OffscreenCanvas(Math.ceil(minWidth * this.dpr), Math.ceil(height * this.dpr))
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+
+    const entry: OffscreenLineEntry = {
+      id,
+      key: 0,
+      logicalLine,
+      canvas,
+      ctx,
+      cssWidth: minWidth,
+      cssHeight: height,
+      lastUsed: ++this.useCounter,
+    }
+
+    this.entries.set(id, entry)
+    this.evictIfNeeded()
+    return entry
+  }
+
+  public ensureCanvasSize(entry: OffscreenLineEntry) {
+    const w = Math.ceil(entry.cssWidth * this.dpr)
+    const h = Math.ceil(entry.cssHeight * this.dpr)
+    if (entry.canvas.width !== w) entry.canvas.width = w
+    if (entry.canvas.height !== h) entry.canvas.height = h
+    entry.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+    entry.ctx.textBaseline = 'top'
+  }
+
+  public fitWidthInBlocks(entry: OffscreenLineEntry, minWidth: number, neededWidth: number) {
+    const min = Math.max(1, Math.ceil(minWidth))
+    const needed = Math.max(1, Math.ceil(neededWidth))
+
+    let w = Math.max(entry.cssWidth, min)
+    while (w < needed) w *= 2
+
+    if (needed < w / 3 && w > min) {
+      while (w / 2 >= min && w / 2 >= needed) w = Math.floor(w / 2)
+    }
+
+    entry.cssWidth = w
+  }
+
+  private evictIfNeeded() {
+    if (this.entries.size <= this.capacity) return
+
+    while (this.entries.size > this.capacity) {
+      let oldestId: string | null = null
+      let oldestUse = Infinity
+      for (const [id, entry] of this.entries) {
+        if (entry.lastUsed < oldestUse) {
+          oldestUse = entry.lastUsed
+          oldestId = id
+        }
+      }
+      if (!oldestId) break
+      this.entries.delete(oldestId)
+    }
+  }
+}
+
 export class CanvasEditor {
   private canvas: HTMLCanvasElement
   private container: HTMLElement
@@ -456,8 +602,10 @@ export class CanvasEditor {
   private gutterWidthCache: number | null = null
   private textPaddingCache: number | null = null
   private lineWidthCache: Map<string, number> = new Map()
+  private offscreenLineCache = new OffscreenLineCache()
+  private offscreenLineRenderVersion = 1
 
-  private setFont(ctx: CanvasRenderingContext2D) {
+  private setFont(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
     const theme = this.options.theme || defaultTheme
     ctx.font = theme.font
   }
@@ -1683,7 +1831,9 @@ export class CanvasEditor {
     widgetData?: Array<{ line: number; column: number; type: string; length: number; height?: number }>)
   {
     // Invalidate wrapped lines cache if lines changed
-    const linesChanged = this.inputState.lines !== newState.lines
+    const oldLines = this.inputState.lines
+    const linesChanged = oldLines !== newState.lines
+    const changedFromLogicalLine = linesChanged ? findFirstChangedLine(oldLines, newState.lines) : null
 
     // Track caret position change before updating state
     const caretChanged = this.inputState.caret.line !== newState.caret.line
@@ -1759,6 +1909,9 @@ export class CanvasEditor {
     if (linesChanged) {
       this.wrappedLinesCache = null
       this.invalidateMeasurementCaches()
+      if (changedFromLogicalLine !== null) {
+        this.offscreenLineCache.invalidateFromLogicalLine(changedFromLogicalLine)
+      }
     }
 
     this.inputState = newState
@@ -1794,6 +1947,8 @@ export class CanvasEditor {
     // Invalidate wrapped lines cache on resize
     this.wrappedLinesCache = null
     this.invalidateMeasurementCaches()
+    this.offscreenLineCache.clear()
+    this.offscreenLineRenderVersion++
 
     // Store old dimensions before updating
     const oldWidth = this.canvas.width / (window.devicePixelRatio || 1)
@@ -3267,6 +3422,154 @@ export class CanvasEditor {
     return { widgetsByVisualLine, inlineWidgets, overlayWidgets, yOffsets }
   }
 
+  private getWrappedLineOffscreenKey(
+    wrappedLine: WrappedLine,
+    segmentTokens: Token[] | null,
+    inlineWidgets: { widget: EditorWidget; column: number }[],
+    textPadding: number,
+    theme: Theme,
+  ): number {
+    let h = 2166136261
+    h = hashNumber(h, this.offscreenLineRenderVersion)
+    h = hashNumber(h, wrappedLine.logicalLine)
+    h = hashNumber(h, wrappedLine.startColumn)
+    h = hashNumber(h, wrappedLine.endColumn)
+    h = hashNumber(h, textPadding)
+    h = hashString(h, theme.font)
+
+    if (segmentTokens) {
+      h = hashNumber(h, segmentTokens.length)
+      for (const t of segmentTokens) {
+        h = hashString(h, t.type)
+        h = hashString(h, t.content)
+      }
+    }
+    else {
+      h = hashString(h, wrappedLine.text)
+    }
+
+    if (inlineWidgets.length > 0) {
+      h = hashNumber(h, inlineWidgets.length)
+      for (const { widget, column } of inlineWidgets) {
+        h = hashNumber(h, column)
+        h = hashNumber(h, widget.length)
+      }
+    }
+
+    return h >>> 0
+  }
+
+  private drawWrappedLineText(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    wrappedLine: WrappedLine,
+    y: number,
+    theme: Theme,
+    textPadding: number,
+    segmentTokens: Token[] | null,
+    inlineWidgets: { widget: EditorWidget; column: number }[],
+  ): number {
+    let currentX = textPadding
+
+    if (segmentTokens) {
+      const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
+      let tokenIndex = 0
+      let tokenOffset = 0
+
+      for (const { widget, column } of inlineWidgets) {
+        const targetColumn = columnInWrappedLine(column)
+        let accumulatedLength = 0
+
+        while (
+          tokenIndex < segmentTokens.length
+          && accumulatedLength + segmentTokens[tokenIndex].length - tokenOffset <= targetColumn
+        ) {
+          const token = segmentTokens[tokenIndex]
+          const remainingContent = token.content.substring(tokenOffset)
+          currentX = drawTokensWithCustomLigatures(
+            ctx,
+            [{ ...token, content: remainingContent, length: remainingContent.length }],
+            currentX,
+            y,
+            theme,
+            { lineHeight: this.lineHeight, cache: this.measurementCache },
+          )
+          accumulatedLength += token.length - tokenOffset
+          tokenIndex++
+          tokenOffset = 0
+        }
+
+        if (tokenIndex < segmentTokens.length && accumulatedLength < targetColumn) {
+          const token = segmentTokens[tokenIndex]
+          const charsNeeded = targetColumn - accumulatedLength
+          const partialContent = token.content.substring(tokenOffset, tokenOffset + charsNeeded)
+          currentX = drawTokensWithCustomLigatures(
+            ctx,
+            [{ ...token, content: partialContent, length: partialContent.length }],
+            currentX,
+            y,
+            theme,
+            { lineHeight: this.lineHeight, cache: this.measurementCache },
+          )
+          tokenOffset += charsNeeded
+          accumulatedLength += charsNeeded
+        }
+
+        currentX += ctx.measureText('X'.repeat(widget.length)).width
+      }
+
+      while (tokenIndex < segmentTokens.length) {
+        const token = segmentTokens[tokenIndex]
+        const remainingContent = token.content.substring(tokenOffset)
+        currentX = drawTokensWithCustomLigatures(
+          ctx,
+          [{ ...token, content: remainingContent, length: remainingContent.length }],
+          currentX,
+          y,
+          theme,
+          { lineHeight: this.lineHeight, cache: this.measurementCache },
+        )
+        tokenIndex++
+        tokenOffset = 0
+      }
+
+      return currentX
+    }
+
+    let lastColumn = 0
+    for (const { widget, column } of inlineWidgets) {
+      const columnInWrappedLine = column - wrappedLine.startColumn
+
+      if (columnInWrappedLine > lastColumn) {
+        const textSegment = wrappedLine.text.substring(lastColumn, columnInWrappedLine)
+        currentX = drawTokensWithCustomLigatures(
+          ctx,
+          [{ type: 'plain', content: textSegment, length: textSegment.length }],
+          currentX,
+          y,
+          theme,
+          { lineHeight: this.lineHeight, cache: this.measurementCache },
+        )
+      }
+
+      currentX += ctx.measureText('X'.repeat(widget.length)).width
+      lastColumn = columnInWrappedLine
+    }
+
+    if (lastColumn < wrappedLine.text.length) {
+      const textSegment = wrappedLine.text.substring(lastColumn)
+      currentX = drawTokensWithCustomLigatures(
+        ctx,
+        [{ type: 'plain', content: textSegment, length: textSegment.length }],
+        currentX,
+        y,
+        theme,
+        { lineHeight: this.lineHeight, cache: this.measurementCache },
+      )
+    }
+
+    return currentX
+  }
+
   private draw() {
     this.options.onBeforeDraw?.()
 
@@ -3703,6 +4006,9 @@ export class CanvasEditor {
     }
 
     // Pass 2: Draw all lines with text and syntax highlighting
+    this.offscreenLineCache.setDpr(window.devicePixelRatio || 1)
+    this.offscreenLineCache.setCapacity(wrappedLines.length + 200)
+
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
       const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
       let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
@@ -3720,123 +4026,92 @@ export class CanvasEditor {
       const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
       const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
 
-      if (logicalHighlighted) {
-        const segmentTokens = extractTokensForSegment(
+      const sortedInlineWidgets = inlineWidgetsForLine.length <= 1
+        ? inlineWidgetsForLine
+        : [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+
+      const segmentTokens = logicalHighlighted
+        ? extractTokensForSegment(
           logicalHighlighted.tokens,
           wrappedLine.startColumn,
           wrappedLine.endColumn,
         )
+        : null
 
-        let currentX = textPadding
-        const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
-        const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+      const key = this.getWrappedLineOffscreenKey(
+        wrappedLine,
+        segmentTokens,
+        sortedInlineWidgets,
+        textPadding,
+        theme,
+      )
 
-        let tokenIndex = 0
-        let tokenOffset = 0
+      const id = `${wrappedLine.logicalLine}:${wrappedLine.startColumn}:${wrappedLine.endColumn}`
+      const entry = this.offscreenLineCache.get(id, wrappedLine.logicalLine, width, this.lineHeight + 6)
 
-        for (const { widget, column } of sortedInlineWidgets) {
-          const targetColumn = columnInWrappedLine(column)
-          let accumulatedLength = 0
+      if (entry) {
+        const needsRender = entry.key !== key
+        if (needsRender) {
+          entry.key = key
+          entry.cssWidth = Math.max(entry.cssWidth, Math.ceil(width))
 
-          while (tokenIndex < segmentTokens.length
-            && accumulatedLength + segmentTokens[tokenIndex].length - tokenOffset <= targetColumn)
-          {
-            const token = segmentTokens[tokenIndex]
-            const remainingContent = token.content.substring(tokenOffset)
-            currentX = drawTokensWithCustomLigatures(
-              ctx,
-              [{ ...token, content: remainingContent, length: remainingContent.length }],
-              currentX,
-              y,
+          const render = (): number => {
+            this.offscreenLineCache.ensureCanvasSize(entry)
+            this.setFont(entry.ctx)
+            entry.ctx.clearRect(0, 0, entry.cssWidth, entry.cssHeight)
+            return this.drawWrappedLineText(
+              entry.ctx,
+              wrappedLine,
+              0,
               theme,
-              { lineHeight: this.lineHeight, cache: this.measurementCache },
+              textPadding,
+              segmentTokens,
+              sortedInlineWidgets,
             )
-            accumulatedLength += token.length - tokenOffset
-            tokenIndex++
-            tokenOffset = 0
           }
 
-          if (tokenIndex < segmentTokens.length && accumulatedLength < targetColumn) {
-            const token = segmentTokens[tokenIndex]
-            const charsNeeded = targetColumn - accumulatedLength
-            const partialContent = token.content.substring(tokenOffset, tokenOffset + charsNeeded)
-            currentX = drawTokensWithCustomLigatures(
-              ctx,
-              [{ ...token, content: partialContent, length: partialContent.length }],
-              currentX,
-              y,
-              theme,
-              { lineHeight: this.lineHeight, cache: this.measurementCache },
-            )
-            tokenOffset += charsNeeded
-            accumulatedLength += charsNeeded
+          const usedX = render()
+          const prevWidth = entry.cssWidth
+          this.offscreenLineCache.fitWidthInBlocks(entry, width, usedX + 2)
+          if (entry.cssWidth !== prevWidth) {
+            render()
           }
-
-          currentX += ctx.measureText('X'.repeat(widget.length)).width
         }
 
-        while (tokenIndex < segmentTokens.length) {
-          const token = segmentTokens[tokenIndex]
-          const remainingContent = token.content.substring(tokenOffset)
-          currentX = drawTokensWithCustomLigatures(
-            ctx,
-            [{ ...token, content: remainingContent, length: remainingContent.length }],
-            currentX,
-            y,
-            theme,
-            { lineHeight: this.lineHeight, cache: this.measurementCache },
-          )
-          tokenIndex++
-          tokenOffset = 0
-        }
-
-        if (matchingBraces) {
-          this.drawBraceMatchingForWrappedLine(
-            ctx,
-            highlightedCode,
-            wrappedLine,
-            visualIndex,
-            y,
-            theme,
-            matchingBraces,
-          )
-        }
+        ctx.drawImage(
+          entry.canvas,
+          0,
+          0,
+          entry.canvas.width,
+          entry.canvas.height,
+          0,
+          y,
+          entry.cssWidth,
+          entry.cssHeight,
+        )
       }
       else {
-        let currentX = textPadding
-        const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+        this.drawWrappedLineText(
+          ctx,
+          wrappedLine,
+          y,
+          theme,
+          textPadding,
+          segmentTokens,
+          sortedInlineWidgets,
+        )
+      }
 
-        let lastColumn = 0
-        for (const { widget, column } of sortedInlineWidgets) {
-          const columnInWrappedLine = column - wrappedLine.startColumn
-
-          if (columnInWrappedLine > lastColumn) {
-            const textSegment = wrappedLine.text.substring(lastColumn, columnInWrappedLine)
-            currentX = drawTokensWithCustomLigatures(
-              ctx,
-              [{ type: 'plain', content: textSegment, length: textSegment.length }],
-              currentX,
-              y,
-              theme,
-              { lineHeight: this.lineHeight, cache: this.measurementCache },
-            )
-          }
-
-          currentX += ctx.measureText('X'.repeat(widget.length)).width
-          lastColumn = columnInWrappedLine
-        }
-
-        if (lastColumn < wrappedLine.text.length) {
-          const textSegment = wrappedLine.text.substring(lastColumn)
-          drawTokensWithCustomLigatures(
-            ctx,
-            [{ type: 'plain', content: textSegment, length: textSegment.length }],
-            currentX,
-            y,
-            theme,
-            { lineHeight: this.lineHeight, cache: this.measurementCache },
-          )
-        }
+      if (matchingBraces && logicalHighlighted) {
+        this.drawBraceMatchingForWrappedLine(
+          ctx,
+          highlightedCode,
+          wrappedLine,
+          visualIndex,
+          y,
+          theme,
+          matchingBraces,
+        )
       }
     })
 
@@ -4688,6 +4963,8 @@ export class CanvasEditor {
   public setTheme(theme: Theme) {
     this.options.theme = theme
     this.highlightCache = null
+    this.offscreenLineCache.clear()
+    this.offscreenLineRenderVersion++
     this.maybeDraw()
     if (this.signaturePopupState) setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
     if (this.errorPopupState) setPopupCanvasDrawable(this.errorPopupId, this.errorPopupDrawable)
@@ -4696,6 +4973,8 @@ export class CanvasEditor {
   public setTokenizer(tokenizer: Tokenizer) {
     this.options.tokenizer = tokenizer
     this.highlightCache = null
+    this.offscreenLineCache.clear()
+    this.offscreenLineRenderVersion++
     this.maybeDraw()
     if (this.signaturePopupState) setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
   }

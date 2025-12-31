@@ -5,8 +5,10 @@ export type MonoLigatureCache = {
   ligatureLineArrowWidth?: number
 }
 
+type Mono2dCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+
 const drawArrowLigature = (
-  ctx: CanvasRenderingContext2D,
+  ctx: Mono2dCtx,
   x: number,
   y: number,
   color: string,
@@ -37,7 +39,7 @@ const drawArrowLigature = (
 }
 
 const drawLineArrowLigature = (
-  ctx: CanvasRenderingContext2D,
+  ctx: Mono2dCtx,
   x: number,
   y: number,
   color: string,
@@ -69,7 +71,7 @@ const drawLineArrowLigature = (
 }
 
 export const drawTokensWithCustomLigatures = (
-  ctx: CanvasRenderingContext2D,
+  ctx: Mono2dCtx,
   tokens: Token[],
   startX: number,
   y: number,
@@ -199,5 +201,3 @@ export const extractTokensForSegment = (
 
   return result
 }
-
-
