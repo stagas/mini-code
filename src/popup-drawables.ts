@@ -152,6 +152,33 @@ export const drawFunctionSignaturePopup = (
     let y = contentTop
     let usedWidth = 0
 
+    const fitPrefixLength = (font: string, text: string, maxWidth: number) => {
+      if (text.length === 0) return 0
+      const prev = context.font
+      context.font = font
+      const limit = Math.max(1, maxWidth)
+      if (context.measureText(text).width <= limit) {
+        context.font = prev
+        return text.length
+      }
+      let lo = 1
+      let hi = text.length
+      let bestEnd = 1
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2)
+        const piece = text.substring(0, mid)
+        if (context.measureText(piece).width <= limit) {
+          bestEnd = mid
+          lo = mid + 1
+        }
+        else {
+          hi = mid - 1
+        }
+      }
+      context.font = prev
+      return bestEnd
+    }
+
     const ensureFits = (w: number) => {
       if (x !== contentLeft && x + w > contentRight) {
         x = contentLeft
@@ -167,14 +194,29 @@ export const drawFunctionSignaturePopup = (
     }
 
     const addText = (font: string, color: string, text: string) => {
-      context.font = font
-      const w = context.measureText(text).width
-      ensureFits(w)
-      if (paint) {
-        drawText(font, color, text, x, y)
+      let rest = text
+      while (rest.length > 0) {
+        context.font = font
+        const available = contentRight - x
+        const firstCharWidth = context.measureText(rest[0] ?? '').width
+        if (x !== contentLeft && firstCharWidth > available) {
+          x = contentLeft
+          y += lineHeight
+          continue
+        }
+
+        const end = fitPrefixLength(font, rest, available)
+        const piece = rest.substring(0, end)
+        const w = context.measureText(piece).width
+        if (paint) drawText(font, color, piece, x, y)
+        x += w
+        usedWidth = Math.max(usedWidth, x - contentLeft)
+        rest = rest.substring(end)
+        if (rest.length > 0) {
+          x = contentLeft
+          y += lineHeight
+        }
       }
-      x += w
-      usedWidth = Math.max(usedWidth, x - contentLeft)
     }
 
     const addParam = (param: FunctionParameter, index: number, isLast: boolean) => {
@@ -205,35 +247,73 @@ export const drawFunctionSignaturePopup = (
         const rects: Array<{ left: number; top: number; width: number }> = []
         const items: Array<{ font: string; color: string; text: string; left: number; top: number }> = []
 
-        const write = (seg: { font: string; color: string; text: string }) => {
-          context.font = seg.font
-          const w = context.measureText(seg.text).width
-          if (x !== contentLeft && x + w > contentRight) {
-            usedWidth = Math.max(usedWidth, x - contentLeft)
-            if (isActive) {
-              const rw = x - rectLeft
-              if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
-            }
-            x = contentLeft
-            y += lineHeight
-            if (isActive) {
-              rectLeft = x
-              rectTop = y
-            }
-          }
-          items.push({ ...seg, left: x, top: y })
-          x += w
+        const newLine = () => {
           usedWidth = Math.max(usedWidth, x - contentLeft)
+          if (isActive) {
+            const rw = x - rectLeft
+            if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
+          }
+          x = contentLeft
+          y += lineHeight
+          if (isActive) {
+            rectLeft = x
+            rectTop = y
+          }
         }
 
-        for (const seg of segments) write(seg)
+        const write = (seg: { font: string; color: string; text: string }, allowBreak: boolean) => {
+          context.font = seg.font
+          const w = context.measureText(seg.text).width
+          if (!allowBreak) {
+            if (x !== contentLeft && x + w > contentRight) newLine()
+            items.push({ ...seg, left: x, top: y })
+            x += w
+            usedWidth = Math.max(usedWidth, x - contentLeft)
+            return
+          }
+
+          let rest = seg.text
+          while (rest.length > 0) {
+            context.font = seg.font
+            const available = contentRight - x
+            const firstCharWidth = context.measureText(rest[0] ?? '').width
+            if (x !== contentLeft && firstCharWidth > available) {
+              newLine()
+              continue
+            }
+
+            const end = fitPrefixLength(seg.font, rest, available)
+            const piece = rest.substring(0, end)
+            const pw = context.measureText(piece).width
+            items.push({ font: seg.font, color: seg.color, text: piece, left: x, top: y })
+            x += pw
+            usedWidth = Math.max(usedWidth, x - contentLeft)
+            rest = rest.substring(end)
+            if (rest.length > 0) newLine()
+          }
+        }
+
+        for (let i = 0; i < segments.length; i++) {
+          const seg = segments[i]!
+          const next = segments[i + 1]
+          if (seg.text === ':' && next) {
+            context.font = seg.font
+            const w1 = context.measureText(seg.text).width
+            context.font = next.font
+            const w2 = context.measureText(next.text).width
+            if (x !== contentLeft && x + w1 + w2 > contentRight) newLine()
+            write(seg, false)
+            continue
+          }
+          write(seg, seg.text !== ':' && seg.text !== ', ')
+        }
 
         if (isActive) {
           const rw = x - rectLeft
           if (rw > 0) rects.push({ left: rectLeft, top: rectTop, width: rw })
         }
 
-        if (separatorSegment) write(separatorSegment)
+        if (separatorSegment) write(separatorSegment, false)
 
         if (paintRun) {
           if (isActive) {
@@ -331,6 +411,7 @@ export const drawFunctionSignaturePopup = (
       if (param.description) {
         y += 4
         const lines = wrapText(context, uiFont, param.description, contentWidth)
+        usedWidth = Math.max(usedWidth, maxLineWidth(context, uiFont, lines))
         for (const line of lines) {
           if (paint) {
             drawText(uiFont, effectiveTheme.functionSignaturePopup.description, line, contentLeft, y)
@@ -365,6 +446,13 @@ export const drawFunctionSignaturePopup = (
         const exampleFont = `11pt ${monoFont.split(' ').slice(1).join(' ')}`
         const availableWidth = contentWidth - boxPaddingX * 2
         const highlighted = highlightCode(example, tokenizer ?? defaultTokenizer, effectiveTheme)
+        usedWidth = Math.max(
+          usedWidth,
+          Math.min(
+            contentWidth,
+            boxPaddingX * 2 + maxLineWidth(context, exampleFont, highlighted.map(l => l.text)),
+          ),
+        )
 
         const wrapHighlightedLine = (
           lineText: string,
@@ -527,9 +615,12 @@ export const drawFunctionSignaturePopup = (
     if (d.w <= 0 || d.h <= 0) continue
     for (const frac of fractions) {
       const maxWidth = Math.max(220, Math.floor(d.w * frac))
-      const measured = layout(maxWidth, 0, 0, false)
-      const frameWidth = Math.min(maxWidth, Math.ceil(measured.usedWidth + padding * 2))
-      const frameHeight = measured.height
+      const measuredAtMaxWidth = layout(maxWidth, 0, 0, false)
+      const frameWidth = Math.min(maxWidth, Math.ceil(measuredAtMaxWidth.usedWidth + padding * 2))
+      const measuredAtFrameWidth = (frameWidth === maxWidth)
+        ? measuredAtMaxWidth
+        : layout(frameWidth, 0, 0, false)
+      const frameHeight = measuredAtFrameWidth.height
 
       const placed = place(d.quadrant, frameWidth, frameHeight)
       if (overlapCaret(placed.top, frameHeight)) continue
