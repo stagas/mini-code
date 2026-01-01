@@ -1323,6 +1323,10 @@ export const CodeEditor = ({
       const error = canvasEditorRef.current?.checkErrorHover(x, y)
       canvasEditorRef.current?.updateErrorHover(error || null)
 
+      // Check for function hover
+      const hoveredFunction = canvasEditorRef.current?.checkFunctionHover(x, y) ?? null
+      canvasEditorRef.current?.updateFunctionHover(hoveredFunction, x, y)
+
       // Selection updates are handled by handleWindowPointerMove to support auto-scroll outside canvas
       // Only update here if not dragging (to handle non-selection mouse moves)
       if (!mouseHandlerRef.current?.isDraggingSelection()) {
@@ -1338,6 +1342,8 @@ export const CodeEditor = ({
       // Clear scrollbar hover when pointer leaves the canvas, but only if not holding a button
       if (event.buttons === 0) {
         canvasEditorRef.current?.setScrollbarHover(null)
+        // Clear function hover when pointer leaves the canvas
+        canvasEditorRef.current?.updateFunctionHover(null)
       }
     }
 

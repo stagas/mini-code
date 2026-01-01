@@ -544,6 +544,12 @@ export class CanvasEditor {
   private errors: EditorError[] = []
   private hoveredError: EditorError | null = null
   private isHoveringGutter: boolean = false
+  private hoverTimeoutId: number | null = null
+  private hoveredFunction: {
+    functionName: string
+    parameterIndex?: number
+    parameterName?: string
+  } | null = null
   private signaturePopupId = `sig_${Math.random().toString(36).slice(2)}`
   private signaturePopupCache: FunctionSignaturePopupCache = {
     exampleLigatureCache: {},
@@ -5167,6 +5173,212 @@ export class CanvasEditor {
     }
 
     return null
+  }
+
+  public checkFunctionHover(x: number, y: number): {
+    functionName: string
+    parameterIndex?: number
+    parameterName?: string
+  } | null {
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return null
+
+    this.setFont(ctx)
+    const wrappedLines = this.getWrappedLines(ctx)
+    const widgetLayout = this.calculateWidgetLayout(ctx, wrappedLines)
+    const textPadding = this.getTextPadding()
+
+    // Adjust for scroll and header
+    const adjustedY = y - this.getHeaderHeight() + this.scrollY
+    const adjustedX = x + this.scrollX
+    const clampedVisualLineIndex = this.getVisualLineFromY(adjustedY, wrappedLines, widgetLayout)
+
+    const wrappedLine = wrappedLines[clampedVisualLineIndex]
+    if (!wrappedLine) return null
+
+    // Only allow hover when the pointer is inside the exact band where this line's text is drawn.
+    const yOffset = widgetLayout.yOffsets.get(clampedVisualLineIndex) || 0
+    const ws = widgetLayout.widgetsByVisualLine.get(clampedVisualLineIndex)
+    let aboveHeight = 0
+    if (ws?.above && ws.above.length > 0) {
+      aboveHeight = Math.max(...ws.above.map(w => this.getWidgetHeight(w)))
+    }
+    const lineTextTop = this.padding + clampedVisualLineIndex * this.lineHeight + yOffset + aboveHeight
+    const lineTextBottom = lineTextTop + this.lineHeight
+    if (adjustedY < lineTextTop || adjustedY >= lineTextBottom) return null
+
+    // Also ignore hover in the left padding/gutter area.
+    if (adjustedX < textPadding) return null
+
+    // Ignore hover when over inline widgets and when outside the drawn text width.
+    const xInLine = adjustedX - textPadding
+    const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || []
+    const sortedInlineWidgets = inlineWidgetsForLine.length > 0
+      ? [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+      : []
+
+    let currentX = 0
+    let visualColumn = 0
+    let foundColumn = false
+
+    for (const { widget, column } of sortedInlineWidgets) {
+      const columnInWrappedLine = column - wrappedLine.startColumn
+      if (columnInWrappedLine < 0) continue
+      if (columnInWrappedLine > wrappedLine.text.length) break
+
+      const textSegment = wrappedLine.text.substring(visualColumn, columnInWrappedLine)
+      const textWidth = ctx.measureText(textSegment).width
+      const widgetWidth = ctx.measureText('X'.repeat(widget.length)).width
+
+      if (xInLine < currentX + textWidth) {
+        const relativeColumn = this.getColumnFromXInclusive(xInLine - currentX, textSegment, ctx)
+        visualColumn = visualColumn + relativeColumn
+        foundColumn = true
+        break
+      }
+
+      currentX += textWidth
+
+      if (xInLine < currentX + widgetWidth) {
+        // Pointer is over an inline widget area, not text.
+        return null
+      }
+
+      currentX += widgetWidth
+      visualColumn = columnInWrappedLine
+    }
+
+    if (!foundColumn) {
+      const remainingText = wrappedLine.text.substring(visualColumn)
+      const remainingWidth = ctx.measureText(remainingText).width
+      if (xInLine > currentX + remainingWidth) return null
+      const relativeColumn = this.getColumnFromXInclusive(xInLine - currentX, remainingText, ctx)
+      visualColumn = visualColumn + relativeColumn
+    }
+
+    // Convert visual position to logical position
+    const logicalPos = this.visualToLogicalPosition(
+      clampedVisualLineIndex,
+      visualColumn,
+      wrappedLines,
+    )
+
+    // Check if we're hovering over a function call
+    const callInfo = findFunctionCallContext(
+      this.inputState.lines,
+      logicalPos.logicalLine,
+      logicalPos.logicalColumn,
+      this.functionDefinitions,
+    )
+
+    if (!callInfo) return null
+
+    const signature = this.functionDefinitions[callInfo.functionName]
+    if (!signature) return null
+
+    // Check if cursor is on the function name itself
+    const functionNameStart = callInfo.openParenPosition.column - callInfo.functionName.length
+    const functionNameEnd = callInfo.openParenPosition.column
+
+    if (logicalPos.logicalLine === callInfo.openParenPosition.line
+      && logicalPos.logicalColumn >= functionNameStart
+      && logicalPos.logicalColumn < functionNameEnd)
+    {
+      // Hovering over function name
+      return {
+        functionName: callInfo.functionName,
+      }
+    }
+
+    // Check if cursor is in a parameter position
+    if (callInfo.currentArgumentIndex >= 0 && callInfo.currentArgumentIndex < signature.parameters.length) {
+      return {
+        functionName: callInfo.functionName,
+        parameterIndex: callInfo.currentArgumentIndex,
+        parameterName: callInfo.currentParameterName,
+      }
+    }
+
+    return null
+  }
+
+  public updateFunctionHover(hoveredFunction: {
+    functionName: string
+    parameterIndex?: number
+    parameterName?: string
+  } | null, mouseX?: number, mouseY?: number) {
+    const isSameHover = (a: typeof hoveredFunction, b: typeof hoveredFunction): boolean =>
+      a?.functionName === b?.functionName
+      && a?.parameterIndex === b?.parameterIndex
+      && a?.parameterName === b?.parameterName
+
+    if (isSameHover(hoveredFunction, this.hoveredFunction)) {
+      // Keep existing timer/popup; update position if already visible.
+      if (hoveredFunction && this.signaturePopupState) {
+        this.signaturePopupState = {
+          ...this.signaturePopupState,
+          position: {
+            x: (mouseX ?? 0) + this.container.getBoundingClientRect().left,
+            y: (mouseY ?? 0) + this.container.getBoundingClientRect().top,
+          },
+        }
+        setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+      }
+      return
+    }
+
+    // Clear existing timeout
+    if (this.hoverTimeoutId !== null) {
+      clearTimeout(this.hoverTimeoutId)
+      this.hoverTimeoutId = null
+    }
+
+    // If hovering over a function/parameter, start the timeout
+    if (hoveredFunction && this.signatureEnabled) {
+      this.hoverTimeoutId = window.setTimeout(() => {
+        this.showFunctionHoverPopup(hoveredFunction, mouseX ?? 0, mouseY ?? 0)
+      }, 300)
+    }
+    else {
+      // Not hovering or signature disabled, clear any existing popup
+      this.clearFunctionHoverPopup()
+    }
+
+    this.hoveredFunction = hoveredFunction
+  }
+
+  private showFunctionHoverPopup(hoveredFunction: {
+    functionName: string
+    parameterIndex?: number
+    parameterName?: string
+  }, mouseX: number, mouseY: number) {
+    const signature = this.functionDefinitions[hoveredFunction.functionName]
+    if (!signature) return
+
+    const ctx = this.canvas.getContext('2d')
+    if (!ctx) return
+
+    this.setFont(ctx)
+    const rect = this.container.getBoundingClientRect()
+
+    // Create a call info for the popup
+    const callInfo: FunctionCallInfo = {
+      functionName: hoveredFunction.functionName,
+      currentArgumentIndex: hoveredFunction.parameterIndex ?? 0,
+      currentParameterName: hoveredFunction.parameterName,
+      openParenPosition: { line: 0, column: 0 }, // Not used for hover popup positioning
+    }
+
+    // Position the popup near the mouse cursor
+    const position = { x: mouseX + rect.left, y: mouseY + rect.top }
+
+    this.signaturePopupState = { signature, callInfo, position }
+    setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+  }
+
+  private clearFunctionHoverPopup() {
+    this.signaturePopupState = null
+    setPopupCanvasDrawable(this.signaturePopupId, null)
   }
 
   // For hover hit-testing: treat any x within a character cell as inside that character
