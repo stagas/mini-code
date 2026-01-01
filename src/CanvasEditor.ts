@@ -550,6 +550,39 @@ export class CanvasEditor {
     parameterIndex?: number
     parameterName?: string
   } | null = null
+  private hoverSignaturePopupId = `hsig_${Math.random().toString(36).slice(2)}`
+  private hoverSignaturePopupCache: FunctionSignaturePopupCache = {
+    exampleLigatureCache: {},
+    lastDimensions: null,
+  }
+  private hoverSignaturePopupState: {
+    signature: FunctionSignature
+    callInfo: FunctionCallInfo
+    position: { x: number; y: number }
+  } | null = null
+  private hoverSignaturePopupDrawable: PopupCanvasDrawable = {
+    priority: 11,
+    wantsPointer: false,
+    draw: ({ context, width, height }) => {
+      const s = this.hoverSignaturePopupState
+      if (!s) return null
+      if (width < 600) return null
+      drawFunctionSignaturePopup({
+        context,
+        width,
+        height,
+        position: s.position,
+        signature: s.signature,
+        currentArgumentIndex: s.callInfo.currentArgumentIndex,
+        currentParameterName: s.callInfo.currentParameterName,
+        theme: this.options.theme,
+        tokenizer: this.options.tokenizer,
+        cache: this.hoverSignaturePopupCache,
+        onDimensionsChange: (w, h) => this.setPopupDimensions(w, h),
+      })
+      return null
+    },
+  }
   private signaturePopupId = `sig_${Math.random().toString(36).slice(2)}`
   private signaturePopupCache: FunctionSignaturePopupCache = {
     exampleLigatureCache: {},
@@ -4384,6 +4417,11 @@ export class CanvasEditor {
       this.clearSignaturePopupCanvas()
       return
     }
+    // Hover signature (or its pending delay) should take precedence over caret-based signature popup.
+    if (this.hoverTimeoutId !== null || this.hoverSignaturePopupState !== null) {
+      this.clearSignaturePopupCanvas()
+      return
+    }
     // If the user recently hid the signature popup explicitly (e.g. pressed Escape),
     // and the caret/text haven't changed since, keep it suppressed.
     if (this.suppressSignatureUntil) {
@@ -4672,6 +4710,7 @@ export class CanvasEditor {
         this.lastFunctionCallInfo = null
         this.callbacks.onFunctionCallChange?.(null)
         this.clearSignaturePopupCanvas()
+        this.clearFunctionHoverPopup()
       }
       else {
         this.updateFunctionSignature()
@@ -4685,6 +4724,7 @@ export class CanvasEditor {
       this.callbacks.onFunctionCallChange?.(null)
     }
     this.clearSignaturePopupCanvas()
+    this.clearFunctionHoverPopup()
     // Suppress immediate reopening of the popup until the caret or text changes.
     // Store current caret position and text snapshot.
     try {
@@ -5314,15 +5354,15 @@ export class CanvasEditor {
 
     if (isSameHover(hoveredFunction, this.hoveredFunction)) {
       // Keep existing timer/popup; update position if already visible.
-      if (hoveredFunction && this.signaturePopupState) {
-        this.signaturePopupState = {
-          ...this.signaturePopupState,
+      if (hoveredFunction && this.hoverSignaturePopupState) {
+        this.hoverSignaturePopupState = {
+          ...this.hoverSignaturePopupState,
           position: {
             x: (mouseX ?? 0) + this.container.getBoundingClientRect().left,
             y: (mouseY ?? 0) + this.container.getBoundingClientRect().top,
           },
         }
-        setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+        setPopupCanvasDrawable(this.hoverSignaturePopupId, this.hoverSignaturePopupDrawable)
       }
       return
     }
@@ -5372,13 +5412,20 @@ export class CanvasEditor {
     // Position the popup near the mouse cursor
     const position = { x: mouseX + rect.left, y: mouseY + rect.top }
 
-    this.signaturePopupState = { signature, callInfo, position }
-    setPopupCanvasDrawable(this.signaturePopupId, this.signaturePopupDrawable)
+    // Hide caret signature popup while a hover popup is shown.
+    this.clearSignaturePopupCanvas()
+
+    this.hoverSignaturePopupState = { signature, callInfo, position }
+    setPopupCanvasDrawable(this.hoverSignaturePopupId, this.hoverSignaturePopupDrawable)
   }
 
   private clearFunctionHoverPopup() {
-    this.signaturePopupState = null
-    setPopupCanvasDrawable(this.signaturePopupId, null)
+    if (this.hoverTimeoutId !== null) {
+      clearTimeout(this.hoverTimeoutId)
+      this.hoverTimeoutId = null
+    }
+    this.hoveredFunction = null
+    this.clearHoverSignaturePopupCanvas()
   }
 
   // For hover hit-testing: treat any x within a character cell as inside that character
@@ -5523,6 +5570,11 @@ export class CanvasEditor {
   private clearSignaturePopupCanvas() {
     this.signaturePopupState = null
     setPopupCanvasDrawable(this.signaturePopupId, null)
+  }
+
+  private clearHoverSignaturePopupCanvas() {
+    this.hoverSignaturePopupState = null
+    setPopupCanvasDrawable(this.hoverSignaturePopupId, null)
   }
 
   private clearErrorPopupCanvas() {
