@@ -644,112 +644,111 @@ export const findFunctionCallContext = (
         }
       }
     }
-    else {
-      // No colon found - check if the argument text matches a parameter name prefix
-      if (signature) {
-        // Priority 1: Check currentArgText (text up to cursor) - most accurate when typing
-        // This is what the user is actively typing, so check it first
-        const trimmedCurrentArg = currentArgText.trim()
-        if (trimmedCurrentArg.length > 0) {
-          // Extract the first word from the current argument
-          const currentArgWordMatch = trimmedCurrentArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
-          if (currentArgWordMatch && currentArgWordMatch[1].length > 0) {
-            const argWord = currentArgWordMatch[1]
 
-            // Check if there's a colon after the cursor
-            const argTextFromCursor = code.substring(cursorPos, Math.min(
-              code.length,
-              bestMatch.openPos + 1 + fullTextBetween.length + 100,
-            ))
-            const hasColonAfterCursor = argTextFromCursor.match(/^\s*:/)
+    // Always do prefix matching regardless of whether named parameter was found
+    if (signature) {
+      // Priority 1: Check currentArgText (text up to cursor) - most accurate when typing
+      // This is what the user is actively typing, so check it first
+      const trimmedCurrentArg = currentArgText.trim()
+      if (trimmedCurrentArg.length > 0) {
+        // Extract the first word from the current argument
+        const currentArgWordMatch = trimmedCurrentArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+        if (currentArgWordMatch && currentArgWordMatch[1].length > 0) {
+          const argWord = currentArgWordMatch[1]
 
-            if (hasColonAfterCursor) {
-              // Has colon - use the word as parameter name (if not already used)
-              if (!usedParameterNames.has(argWord)) {
-                currentParameterName = argWord
-              }
-            }
-            else {
-              // No colon yet - first check for exact matches (even if used, to handle cursor on parameter name)
-              let exactMatch = false
-              for (let i = 0; i < signature.parameters.length; i++) {
-                const param = signature.parameters[i]
-                const paramName = param.name.replace(/^\.\.\./, '')
-                if (paramName === argWord || param.name === argWord) {
-                  currentParameterName = paramName
-                  commaCount = i // Update to point to the matched parameter
-                  exactMatch = true
-                  break
-                }
-              }
-              // If no exact match, check if the word matches the start of any unused parameter name
-              if (!exactMatch) {
-                for (let i = 0; i < signature.parameters.length; i++) {
-                  const param = signature.parameters[i]
-                  const paramName = param.name.replace(/^\.\.\./, '')
-                  // Check if parameter is not used and matches the word
-                  if (!usedParameterNames.has(paramName)
-                    && !usedParameterNames.has(param.name)
-                    && paramName.startsWith(argWord)
-                    && argWord.length > 0)
-                  {
-                    currentParameterName = paramName
-                    commaCount = i // Update to point to the matched parameter
-                    break // Use first match
-                  }
-                }
-              }
+          // Check if there's a colon after the cursor
+          const argTextFromCursor = code.substring(cursorPos, Math.min(
+            code.length,
+            bestMatch.openPos + 1 + fullTextBetween.length + 100,
+          ))
+          const hasColonAfterCursor = argTextFromCursor.match(/^\s*:/)
+
+          if (hasColonAfterCursor) {
+            // Has colon - use the word as parameter name (if not already used)
+            if (!usedParameterNames.has(argWord)) {
+              currentParameterName = argWord
             }
           }
-        }
-        else {
-          // Current argument is empty - find next unused positional parameter
-          for (let i = 0; i < signature.parameters.length; i++) {
-            if (!usedPositionalIndices.has(i) && !usedParameterNames.has(signature.parameters[i].name)) {
-              const paramName = signature.parameters[i].name.replace(/^\.\.\./, '')
-              if (!usedParameterNames.has(paramName)) {
-                // Don't set currentParameterName here - let positional index handle it
-                // But we need to adjust currentArgumentIndex to point to this parameter
-                commaCount = i
+          else {
+            // No colon yet - first check for exact matches (even if used, to handle cursor on parameter name)
+            let exactMatch = false
+            for (let i = 0; i < signature.parameters.length; i++) {
+              const param = signature.parameters[i]
+              const paramName = param.name.replace(/^\.\.\./, '')
+              if (paramName === argWord || param.name === argWord) {
+                currentParameterName = paramName
+                commaCount = i // Update to point to the matched parameter
+                exactMatch = true
                 break
               }
             }
+            // If no exact match, check if the word matches the start of any unused parameter name
+            if (!exactMatch) {
+              for (let i = 0; i < signature.parameters.length; i++) {
+                const param = signature.parameters[i]
+                const paramName = param.name.replace(/^\.\.\./, '')
+                // Check if parameter is not used and matches the word
+                if (!usedParameterNames.has(paramName)
+                  && !usedParameterNames.has(param.name)
+                  && paramName.toLowerCase().startsWith(argWord.toLowerCase())
+                  && argWord.length > 0)
+                {
+                  currentParameterName = paramName
+                  commaCount = i // Update to point to the matched parameter
+                  break // Use first match
+                }
+              }
+            }
           }
         }
+      }
+      else {
+        // Current argument is empty - find next unused positional parameter
+        for (let i = 0; i < signature.parameters.length; i++) {
+          if (!usedPositionalIndices.has(i) && !usedParameterNames.has(signature.parameters[i].name)) {
+            const paramName = signature.parameters[i].name.replace(/^\.\.\./, '')
+            if (!usedParameterNames.has(paramName)) {
+              // Don't set currentParameterName here - let positional index handle it
+              // But we need to adjust currentArgumentIndex to point to this parameter
+              commaCount = i
+              break
+            }
+          }
+        }
+      }
 
-        // Priority 2: Check fullCurrentArgText if we haven't found a match
-        // Always check, even if currentArg is empty (cursor at start of argument)
-        if (!currentParameterName) {
-          const trimmedFullArg = fullCurrentArgText.trim()
-          if (trimmedFullArg.length > 0) {
-            const argWordMatch = trimmedFullArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
-            if (argWordMatch && argWordMatch[1].length > 0) {
-              const argWord = argWordMatch[1]
-              // First check for exact matches (even if used)
-              const exactMatchIndex = signature.parameters.findIndex(
+      // Priority 2: Check fullCurrentArgText if we haven't found a match
+      // Always check, even if currentArg is empty (cursor at start of argument)
+      if (!currentParameterName) {
+        const trimmedFullArg = fullCurrentArgText.trim()
+        if (trimmedFullArg.length > 0) {
+          const argWordMatch = trimmedFullArg.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+          if (argWordMatch && argWordMatch[1].length > 0) {
+            const argWord = argWordMatch[1]
+            // First check for exact matches (even if used)
+            const exactMatchIndex = signature.parameters.findIndex(
+              param => {
+                const paramName = param.name.replace(/^\.\.\./, '')
+                return paramName === argWord || param.name === argWord
+              },
+            )
+            if (exactMatchIndex >= 0) {
+              currentParameterName = signature.parameters[exactMatchIndex].name.replace(/^\.\.\./, '')
+              commaCount = exactMatchIndex // Update to point to the matched parameter
+            }
+            else {
+              // Then check for unused prefix matches
+              const matchingIndex = signature.parameters.findIndex(
                 param => {
                   const paramName = param.name.replace(/^\.\.\./, '')
-                  return paramName === argWord || param.name === argWord
+                  return !usedParameterNames.has(paramName)
+                    && !usedParameterNames.has(param.name)
+                    && paramName.toLowerCase().startsWith(argWord.toLowerCase())
                 },
               )
-              if (exactMatchIndex >= 0) {
-                currentParameterName = signature.parameters[exactMatchIndex].name.replace(/^\.\.\./, '')
-                commaCount = exactMatchIndex // Update to point to the matched parameter
-              }
-              else {
-                // Then check for unused prefix matches
-                const matchingIndex = signature.parameters.findIndex(
-                  param => {
-                    const paramName = param.name.replace(/^\.\.\./, '')
-                    return !usedParameterNames.has(paramName)
-                      && !usedParameterNames.has(param.name)
-                      && paramName.startsWith(argWord)
-                  },
-                )
-                if (matchingIndex >= 0) {
-                  currentParameterName = signature.parameters[matchingIndex].name.replace(/^\.\.\./, '')
-                  commaCount = matchingIndex // Update to point to the matched parameter
-                }
+              if (matchingIndex >= 0) {
+                currentParameterName = signature.parameters[matchingIndex].name.replace(/^\.\.\./, '')
+                commaCount = matchingIndex // Update to point to the matched parameter
               }
             }
           }
