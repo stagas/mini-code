@@ -761,7 +761,7 @@ export class CanvasEditor {
     return best
   }
 
-  private findRawCommaOrSpaceBreak(
+  private findRawPunctuationBreak(
     line: string,
     start: number,
     bestEnd: number,
@@ -777,24 +777,33 @@ export class CanvasEditor {
       return i
     }
 
-    // Prefer breaking after the last comma (and consume trailing spaces after it),
-    // e.g. "a, b" breaks after ", " so the next line doesn't start with whitespace.
+    // 1) Prefer breaking after comma
     const commaIndex = line.lastIndexOf(',', upper - 1)
     if (commaIndex >= start) {
       const end = consumeTrailingWhitespace(commaIndex + 1)
       if (end > start) return end
     }
 
-    // Next best: break after whitespace (consume it).
+    // 2) Then other punctuation
+    const isPunct = (ch: string): boolean =>
+      ch === ';'
+      || ch === ':'
+      || ch === ')'
+      || ch === ']'
+      || ch === '}'
+      || ch === '|'
+      || ch === '='
+
     for (let i = upper - 1; i >= start; i--) {
-      if (line[i] === ' ' || line[i] === '\t') return i + 1
+      const ch = line[i]
+      if (!isPunct(ch)) continue
+      const end = consumeTrailingWhitespace(i + 1)
+      if (end > start) return end
     }
 
-    // Fallback for long name:value segments where comma isn't reachable in this wrap chunk.
-    const colonIndex = line.lastIndexOf(':', upper - 1)
-    if (colonIndex >= start) {
-      const end = consumeTrailingWhitespace(colonIndex + 1)
-      if (end > start) return end
+    // 3) Then whitespace
+    for (let i = upper - 1; i >= start; i--) {
+      if (line[i] === ' ' || line[i] === '\t') return i + 1
     }
 
     return -1
@@ -1090,6 +1099,7 @@ export class CanvasEditor {
         }
 
         // Try to break at better boundaries (in order of preference):
+        // 0. Move a whole call-like segment (name(...)) to the next line if it fits by itself
         // 1. Widget boundary (don't break within widget ranges)
         // 2. Token boundary
         // 3. Word boundary (space)
@@ -1098,13 +1108,15 @@ export class CanvasEditor {
 
         const widgetFitsFromStart = (range: { start: number; end: number }): boolean =>
           measure(startColumn, range.end) <= maxWidth
+        const widgetFitsAlone = (range: { start: number; end: number }): boolean =>
+          measure(range.start, range.end) <= maxWidth
 
         // Check if finalEnd would break a widget range.
         // Prefer pushing the widget to the next visual line (break before it) if possible.
         // If the widget span can't fit anyway, allow breaking within it.
         for (const range of widgetRanges) {
           if (finalEnd > range.start && finalEnd < range.end) {
-            if (range.start > startColumn && measure(startColumn, range.start) <= maxWidth) {
+            if (range.start > startColumn && widgetFitsAlone(range)) {
               finalEnd = range.start
             }
             else if (widgetFitsFromStart(range)) {
@@ -1124,13 +1136,75 @@ export class CanvasEditor {
           }
         }
 
-        const rawBreak = this.findRawCommaOrSpaceBreak(line, startColumn, bestEnd)
+        const rawBreak = this.findRawPunctuationBreak(line, startColumn, bestEnd)
+
+        const findMovableCallStart = (): number => {
+          const upper = Math.min(bestEnd, line.length)
+          for (let i = upper - 1; i >= startColumn; i--) {
+            if (line[i] !== '(') continue
+
+            // Find identifier start before '('
+            let j = i - 1
+            while (j >= startColumn) {
+              const ch = line[j]
+              const ok = (ch >= 'a' && ch <= 'z')
+                || (ch >= 'A' && ch <= 'Z')
+                || (ch >= '0' && ch <= '9')
+                || ch === '_'
+                || ch === '$'
+              if (!ok) break
+              j--
+            }
+            const nameStart = j + 1
+            if (nameStart <= startColumn || nameStart >= i) continue
+
+            // Find matching ')'
+            let depth = 0
+            let close = -1
+            for (let k = i; k < line.length; k++) {
+              const ch = line[k]
+              if (ch === '(') depth++
+              else if (ch === ')') {
+                depth--
+                if (depth === 0) {
+                  close = k
+                  break
+                }
+              }
+            }
+            if (close === -1) continue
+
+            const callEnd = close + 1
+            // Only useful if we would otherwise split inside it
+            if (callEnd <= bestEnd) continue
+
+            // Don't move into the middle of an unbreakable widget span
+            let startsInsideWidget = false
+            for (const range of widgetRanges) {
+              if (nameStart > range.start && nameStart < range.end) {
+                startsInsideWidget = true
+                break
+              }
+            }
+            if (startsInsideWidget) continue
+
+            // If the whole call fits on its own line, move it down.
+            if (measure(nameStart, callEnd) <= maxWidth) {
+              return nameStart
+            }
+          }
+          return -1
+        }
 
         let candidateEnd = finalEnd
         if (bestEnd < line.length) {
           // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth),
           // measured in pixels (not columns).
-          if (rawBreak > startColumn) {
+          const movableCallStart = findMovableCallStart()
+          if (movableCallStart > startColumn && measure(startColumn, movableCallStart) <= maxWidth) {
+            candidateEnd = movableCallStart
+          }
+          else if (rawBreak > startColumn) {
             candidateEnd = rawBreak
           }
           else if (lastTokenBoundary > startColumn) {
@@ -1151,12 +1225,28 @@ export class CanvasEditor {
           candidateEnd = bestEnd
         }
 
+        // If the chosen candidate would split a widget span, prefer pushing the whole widget to the next
+        // wrapped segment when the widget span can fit on its own.
+        for (const range of widgetRanges) {
+          if (candidateEnd > range.start && candidateEnd < range.end) {
+            if (range.start > startColumn && widgetFitsAlone(range)) {
+              candidateEnd = range.start
+            }
+            else if (widgetFitsFromStart(range)) {
+              candidateEnd = range.end
+            }
+            break
+          }
+        }
+
         // Verify candidate doesn't break widget ranges
         let candidateBreaksWidget = false
         for (const range of widgetRanges) {
           if (candidateEnd > range.start && candidateEnd < range.end) {
             // Only treat it as "breaking a widget" if we could have kept the widget intact.
-            if (widgetFitsFromStart(range)) candidateBreaksWidget = true
+            if (widgetFitsFromStart(range) || (range.start > startColumn && widgetFitsAlone(range))) {
+              candidateBreaksWidget = true
+            }
             break
           }
         }
