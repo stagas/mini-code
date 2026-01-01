@@ -529,6 +529,7 @@ export class CanvasEditor {
   private lastCaretContentX: number | null = null
   private lastCaretContentY: number | null = null
   private signatureEnabled = true
+  private hoverSignatureEnabled = true
   private scrollbarWidth = 10
   private scrollMetrics = {
     viewportWidth: 0,
@@ -4718,6 +4719,15 @@ export class CanvasEditor {
     }
   }
 
+  public setHoverSignatureEnabled(enabled: boolean) {
+    if (this.hoverSignatureEnabled !== enabled) {
+      this.hoverSignatureEnabled = enabled
+      if (!enabled) {
+        this.clearFunctionHoverPopup()
+      }
+    }
+  }
+
   public hideSignaturePopup() {
     if (this.lastFunctionCallInfo !== null) {
       this.lastFunctionCallInfo = null
@@ -5374,7 +5384,7 @@ export class CanvasEditor {
     }
 
     // If hovering over a function/parameter, start the timeout
-    if (hoveredFunction && this.signatureEnabled) {
+    if (hoveredFunction && this.hoverSignatureEnabled) {
       this.hoverTimeoutId = window.setTimeout(() => {
         this.showFunctionHoverPopup(hoveredFunction, mouseX ?? 0, mouseY ?? 0)
       }, 300)

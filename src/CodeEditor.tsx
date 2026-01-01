@@ -32,6 +32,7 @@ interface CodeEditorProps {
   autoHeight?: boolean
   keyOverride?: KeyOverrideFunction
   hideFunctionSignatures?: boolean
+  hideHoverFunctionSignatures?: boolean
   onPointerDown?: (event: PointerEvent) => void
   isAnimating?: boolean
   onBeforeDraw?: () => void
@@ -55,6 +56,7 @@ export const CodeEditor = ({
   autoHeight = false,
   keyOverride,
   hideFunctionSignatures = false,
+  hideHoverFunctionSignatures = false,
   onPointerDown,
   isAnimating = false,
   onBeforeDraw,
@@ -1047,6 +1049,7 @@ export const CodeEditor = ({
 
     // Signature popup is now rendered imperatively by CanvasEditor
     canvasEditorRef.current.setSignatureEnabled(!hideFunctionSignatures)
+    canvasEditorRef.current.setHoverSignatureEnabled(!hideHoverFunctionSignatures)
 
     // Set errors
     canvasEditorRef.current.setErrors(errors)
@@ -1168,6 +1171,10 @@ export const CodeEditor = ({
   useEffect(() => {
     canvasEditorRef.current?.setSignatureEnabled(!hideFunctionSignatures)
   }, [hideFunctionSignatures])
+
+  useEffect(() => {
+    canvasEditorRef.current?.setHoverSignatureEnabled(!hideHoverFunctionSignatures)
+  }, [hideHoverFunctionSignatures])
 
   useEffect(() => {
     updateAutocompletePopupCanvas()
