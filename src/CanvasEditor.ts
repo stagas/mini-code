@@ -4,6 +4,7 @@ import {
   calculateAutocompletePosition,
   findCurrentWord,
   getAutocompleteSuggestions,
+  KEYWORDS,
 } from './autocomplete.ts'
 import type { EditorError } from './editor-error.ts'
 import {
@@ -297,6 +298,7 @@ export interface CanvasEditorOptions {
   tokenizer?: Tokenizer
   widgets?: EditorWidget[]
   header?: EditorHeader
+  keywords?: string[]
   isAnimating?: boolean
   onBeforeDraw?: () => void
 }
@@ -514,6 +516,7 @@ export class CanvasEditor {
   } | null = null
   private autocompleteInputSource: 'keyboard' | 'mouse' = 'keyboard'
   private functionDefinitions: Record<string, FunctionSignature> = {}
+  private keywords: string[] = [...KEYWORDS]
   private highlightCache: { code: string; result: HighlightedLine[] } | null = null
   private resizeObserver: ResizeObserver | null = null
   private scrollX = 0
@@ -661,6 +664,7 @@ export class CanvasEditor {
     ligatureLineArrowWidth?: number
     spaceWidth?: number
   } = {}
+  private fontMeasureKey: number | null = null
   private gutterWidthCache: number | null = null
   private textPaddingCache: number | null = null
   private lineWidthCache: Map<string, number> = new Map()
@@ -670,6 +674,130 @@ export class CanvasEditor {
   private setFont(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D) {
     const theme = this.options.theme || defaultTheme
     ctx.font = theme.font
+  }
+
+  private ensureFontCaches(ctx: CanvasRenderingContext2D) {
+    this.setFont(ctx)
+
+    // Fonts may load asynchronously; if metrics change, cached wrapping/layout/widths become invalid.
+    const key = ctx.measureText('0').width
+      + ctx.measureText('m').width
+      + ctx.measureText('|>').width
+    if (this.fontMeasureKey === null) {
+      this.fontMeasureKey = key
+      return
+    }
+    if (Math.abs(key - this.fontMeasureKey) > 0.01) {
+      this.fontMeasureKey = key
+      this.wrappedLinesCache = null
+      this.pendingWrappedLines = null
+      this.invalidateMeasurementCaches()
+      this.offscreenLineCache.clear()
+      this.offscreenLineRenderVersion++
+    }
+  }
+
+  private adjustWrapEndForLigatures(
+    line: string,
+    start: number,
+    end: number,
+    maxWidth: number,
+    ctx: CanvasRenderingContext2D,
+  ): number {
+    if (end <= start || end >= line.length) return end
+
+    const a = line[end - 1]
+    const b = line[end]
+    const splitsArrow = (a === '|' || a === '-') && b === '>'
+    if (!splitsArrow) return end
+
+    // Prefer keeping the arrow operator together on the next line (break before it),
+    // but never return a non-progressing end.
+    const before = end - 1
+    if (before > start) {
+      const w = ctx.measureText(line.substring(start, before)).width
+      if (w <= maxWidth) return before
+    }
+
+    const after = end + 1
+    if (after <= line.length) {
+      const w = ctx.measureText(line.substring(start, after)).width
+      if (w <= maxWidth) return after
+    }
+
+    return end
+  }
+
+  private clampWrapEndToFit(
+    line: string,
+    start: number,
+    end: number,
+    maxWidth: number,
+    ctx: CanvasRenderingContext2D,
+  ): number {
+    const minEnd = Math.min(start + 1, line.length)
+    if (end <= minEnd) return minEnd
+
+    if (ctx.measureText(line.substring(start, end)).width <= maxWidth) {
+      return end
+    }
+
+    let left = minEnd
+    let right = Math.min(end, line.length)
+    let best = minEnd
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2)
+      const w = ctx.measureText(line.substring(start, mid)).width
+      if (w <= maxWidth) {
+        best = mid
+        left = mid + 1
+      }
+      else {
+        right = mid - 1
+      }
+    }
+
+    return best
+  }
+
+  private findRawCommaOrSpaceBreak(
+    line: string,
+    start: number,
+    bestEnd: number,
+  ): number {
+    const upper = Math.min(bestEnd, line.length)
+    if (upper <= start) return -1
+
+    const consumeTrailingWhitespace = (end: number): number => {
+      let i = end
+      while (i < line.length && i < upper && (line[i] === ' ' || line[i] === '\t')) {
+        i++
+      }
+      return i
+    }
+
+    // Prefer breaking after the last comma (and consume trailing spaces after it),
+    // e.g. "a, b" breaks after ", " so the next line doesn't start with whitespace.
+    const commaIndex = line.lastIndexOf(',', upper - 1)
+    if (commaIndex >= start) {
+      const end = consumeTrailingWhitespace(commaIndex + 1)
+      if (end > start) return end
+    }
+
+    // Next best: break after whitespace (consume it).
+    for (let i = upper - 1; i >= start; i--) {
+      if (line[i] === ' ' || line[i] === '\t') return i + 1
+    }
+
+    // Fallback for long name:value segments where comma isn't reachable in this wrap chunk.
+    const colonIndex = line.lastIndexOf(':', upper - 1)
+    if (colonIndex >= start) {
+      const end = consumeTrailingWhitespace(colonIndex + 1)
+      if (end > start) return end
+    }
+
+    return -1
   }
 
   private invalidateMeasurementCaches() {
@@ -693,7 +821,7 @@ export class CanvasEditor {
 
     // Get canvas context to measure actual character width
     const ctx = this.canvas.getContext('2d')!
-    this.setFont(ctx)
+    this.ensureFontCaches(ctx)
 
     if (!this.measurementCache.charWidth) {
       this.measurementCache.charWidth = ctx.measureText('0').width
@@ -739,6 +867,7 @@ export class CanvasEditor {
     this.inputState = initialState
     this.callbacks = callbacks
     this.options = { tokenizer: defaultTokenizer, ...options }
+    this.keywords = options.keywords ? [...options.keywords] : [...KEYWORDS]
 
     this.updateCanvasSize()
     this.maybeDraw()
@@ -794,6 +923,7 @@ export class CanvasEditor {
       }))
     }
 
+    this.ensureFontCaches(ctx)
     const viewportWidth = this.canvas.width / (window.devicePixelRatio || 1)
     const textPadding = this.getTextPadding()
     const maxWidth = Math.max(100, viewportWidth - textPadding - this.padding)
@@ -822,6 +952,9 @@ export class CanvasEditor {
 
     const wrappedLines: WrappedLine[] = []
 
+    // Widgets define unbreakable spans in column space (we avoid wrapping inside their ranges),
+    // but only inline widgets affect horizontal layout and should influence wrap measurement.
+    const inlineWidgetsByLine = new Map<number, { column: number; widthPx: number }[]>()
     // Collect widget ranges per line (convert from 1-based to 0-based)
     const widgetRangesByLine = new Map<number, { start: number; end: number }[]>()
     if (this.options.widgets) {
@@ -829,6 +962,12 @@ export class CanvasEditor {
         const logicalLine = widget.line - 1
         const widgetColumn = widget.column - 1
         if (widget.length !== undefined && widget.length > 0) {
+          if (widget.type === 'inline') {
+            const ws = inlineWidgetsByLine.get(logicalLine) || []
+            ws.push({ column: widgetColumn, widthPx: ctx.measureText('X'.repeat(widget.length)).width })
+            inlineWidgetsByLine.set(logicalLine, ws)
+          }
+
           const ranges = widgetRangesByLine.get(logicalLine) || []
           ranges.push({
             start: widgetColumn,
@@ -843,6 +982,55 @@ export class CanvasEditor {
       const line = this.inputState.lines[lineIndex] || ''
       const tokens = highlightedCode[lineIndex]?.tokens || []
       const widgetRanges = widgetRangesByLine.get(lineIndex) || []
+      const inlineWidgets = inlineWidgetsByLine.get(lineIndex) || []
+      if (inlineWidgets.length > 1) inlineWidgets.sort((a, b) => a.column - b.column)
+
+      const measure = (start: number, end: number): number => {
+        let w = ctx.measureText(line.substring(start, end)).width
+        if (inlineWidgets.length > 0) {
+          for (const iw of inlineWidgets) {
+            if (iw.column >= start && iw.column < end) w += iw.widthPx
+          }
+        }
+        return w
+      }
+
+      const minAllowedEnd = (start: number): number => {
+        let minEnd = Math.min(start + 1, line.length)
+        for (const range of widgetRanges) {
+          if (start >= range.start && start < range.end) {
+            // Only force consuming the whole widget span if it actually fits;
+            // otherwise allow wrapping within it so the line can continue wrapping.
+            if (measure(start, range.end) <= maxWidth) {
+              minEnd = Math.max(minEnd, Math.min(range.end, line.length))
+            }
+          }
+        }
+        return minEnd
+      }
+
+      const clampEndToFit = (start: number, end: number): number => {
+        const minEnd = minAllowedEnd(start)
+        if (end <= minEnd) return minEnd
+
+        if (measure(start, end) <= maxWidth) return end
+
+        let left = minEnd
+        let right = Math.min(end, line.length)
+        let best = minEnd
+        while (left <= right) {
+          const mid = Math.floor((left + right) / 2)
+          const w = measure(start, mid)
+          if (w <= maxWidth) {
+            best = mid
+            left = mid + 1
+          }
+          else {
+            right = mid - 1
+          }
+        }
+        return best
+      }
 
       if (line.length === 0) {
         // Empty line
@@ -857,18 +1045,10 @@ export class CanvasEditor {
 
       // Pre-compute token boundaries and space positions once per line
       const tokenBoundaries: number[] = []
-      const spacePositions: number[] = []
       let currentColumn = 0
       for (const token of tokens) {
         const tokenEnd = currentColumn + token.content.length
         tokenBoundaries.push(tokenEnd)
-
-        // Find all spaces in this token
-        let spaceIndex = token.content.indexOf(' ')
-        while (spaceIndex >= 0) {
-          spacePositions.push(currentColumn + spaceIndex + 1)
-          spaceIndex = token.content.indexOf(' ', spaceIndex + 1)
-        }
 
         currentColumn = tokenEnd
       }
@@ -877,7 +1057,7 @@ export class CanvasEditor {
       while (startColumn < line.length) {
         // Try to fit as much as possible
         const fullText = line.substring(startColumn)
-        const fullWidth = ctx.measureText(fullText).width
+        const fullWidth = measure(startColumn, line.length)
 
         // If everything fits, use it all
         if (fullWidth <= maxWidth) {
@@ -891,14 +1071,14 @@ export class CanvasEditor {
         }
 
         // Binary search to find the longest substring that fits
-        let left = startColumn + 1
+        let left = minAllowedEnd(startColumn)
         let right = line.length
-        let bestEnd = startColumn + 1
+        let bestEnd = left
 
         while (left <= right) {
           const mid = Math.floor((left + right) / 2)
           const testText = line.substring(startColumn, mid)
-          const width = ctx.measureText(testText).width
+          const width = measure(startColumn, mid)
 
           if (width <= maxWidth) {
             bestEnd = mid
@@ -916,14 +1096,18 @@ export class CanvasEditor {
         // 4. Character boundary
         let finalEnd = bestEnd
 
-        // Check if finalEnd would break a widget range
-        // If so, move the break point to before the widget starts
+        const widgetFitsFromStart = (range: { start: number; end: number }): boolean =>
+          measure(startColumn, range.end) <= maxWidth
+
+        // Check if finalEnd would break a widget range.
+        // Prefer pushing the widget to the next visual line (break before it) if possible.
+        // If the widget span can't fit anyway, allow breaking within it.
         for (const range of widgetRanges) {
           if (finalEnd > range.start && finalEnd < range.end) {
-            if (range.start > startColumn) {
+            if (range.start > startColumn && measure(startColumn, range.start) <= maxWidth) {
               finalEnd = range.start
             }
-            else {
+            else if (widgetFitsFromStart(range)) {
               finalEnd = range.end
             }
             break
@@ -940,31 +1124,28 @@ export class CanvasEditor {
           }
         }
 
-        // Find best space boundary before bestEnd
-        let lastSpaceBoundary = -1
-        for (let i = spacePositions.length - 1; i >= 0; i--) {
-          const spacePos = spacePositions[i]
-          if (spacePos <= bestEnd && spacePos > startColumn) {
-            lastSpaceBoundary = spacePos
-            break
-          }
-        }
-
-        // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth)
-        // But only if it doesn't conflict with widget boundaries
-        const tokenBoundaryDistance = lastTokenBoundary > 0 ? bestEnd - lastTokenBoundary : Infinity
-        const spaceBoundaryDistance = lastSpaceBoundary > 0 ? bestEnd - lastSpaceBoundary : Infinity
+        const rawBreak = this.findRawCommaOrSpaceBreak(line, startColumn, bestEnd)
 
         let candidateEnd = finalEnd
-        if (
-          lastTokenBoundary > startColumn
-          && tokenBoundaryDistance < maxWidth * 0.2
-          && bestEnd < line.length
-        ) {
-          candidateEnd = lastTokenBoundary
-        }
-        else if (lastSpaceBoundary > startColumn && bestEnd < line.length) {
-          candidateEnd = lastSpaceBoundary
+        if (bestEnd < line.length) {
+          // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth),
+          // measured in pixels (not columns).
+          if (rawBreak > startColumn) {
+            candidateEnd = rawBreak
+          }
+          else if (lastTokenBoundary > startColumn) {
+            const bestWidth = measure(startColumn, bestEnd)
+            const tokenWidth = measure(startColumn, lastTokenBoundary)
+            if ((bestWidth - tokenWidth) < maxWidth * 0.2) {
+              candidateEnd = lastTokenBoundary
+            }
+            else {
+              candidateEnd = bestEnd
+            }
+          }
+          else {
+            candidateEnd = bestEnd
+          }
         }
         else {
           candidateEnd = bestEnd
@@ -974,7 +1155,8 @@ export class CanvasEditor {
         let candidateBreaksWidget = false
         for (const range of widgetRanges) {
           if (candidateEnd > range.start && candidateEnd < range.end) {
-            candidateBreaksWidget = true
+            // Only treat it as "breaking a widget" if we could have kept the widget intact.
+            if (widgetFitsFromStart(range)) candidateBreaksWidget = true
             break
           }
         }
@@ -982,6 +1164,9 @@ export class CanvasEditor {
         if (!candidateBreaksWidget) {
           finalEnd = candidateEnd
         }
+
+        finalEnd = this.adjustWrapEndForLigatures(line, startColumn, finalEnd, maxWidth, ctx)
+        finalEnd = clampEndToFit(startColumn, finalEnd)
 
         wrappedLines.push({
           logicalLine: lineIndex,
@@ -1097,7 +1282,8 @@ export class CanvasEditor {
       if (w > maxLineWidth) maxLineWidth = w
     }
     const textPadding = this.getTextPadding()
-    const width = textPadding + maxLineWidth + this.padding
+    const viewportWidth = this.canvas.width / (window.devicePixelRatio || 1)
+    const width = Math.min(textPadding + maxLineWidth + this.padding, viewportWidth)
 
     // Calculate base height
     let height = this.padding + wrappedLines.length * this.lineHeight + this.padding
@@ -3298,8 +3484,6 @@ export class CanvasEditor {
     const hasEmptyLogicalLineAbove = (logicalLine: number): boolean =>
       logicalLine > 0 && (this.inputState.lines[logicalLine - 1] || '').trim().length === 0
 
-    const wrapAboveAnchors = new Map<EditorWidget, number>()
-
     // Organize widgets by their target visual line
     for (const widget of this.options.widgets) {
       // Convert from 1-based line number to 0-based
@@ -3310,8 +3494,11 @@ export class CanvasEditor {
       // Find the visual line that contains the widget's column (convert from 1-based to 0-based)
       const widgetColumn = widget.column - 1
       let targetVisualLine = visualLines[visualLines.length - 1]
+
       for (const visualIndex of visualLines) {
         const wrappedLine = wrappedLines[visualIndex]
+        if (!wrappedLine) continue
+
         if (
           widgetColumn >= wrappedLine.startColumn
           && widgetColumn < wrappedLine.endColumn
@@ -3319,12 +3506,18 @@ export class CanvasEditor {
           targetVisualLine = visualIndex
           break
         }
-      }
-      // If widget column is at the exact end of a line, place it on that line
-      if (targetVisualLine === visualLines[visualLines.length - 1]) {
-        const lastWrappedLine = wrappedLines[targetVisualLine]
-        if (widgetColumn === lastWrappedLine.endColumn && lastWrappedLine.endColumn > lastWrappedLine.startColumn) {
-          // Widget is at the end of the line, keep it there
+        // Boundary: if column lands exactly at the end of a segment, prefer the next segment (start column),
+        // so widgets at wrap boundaries appear at the start of the following visual segment.
+        if (widgetColumn === wrappedLine.endColumn && wrappedLine.endColumn > wrappedLine.startColumn) {
+          const nextVisualLine = visualIndex + 1
+          const nextWrappedLine = wrappedLines[nextVisualLine]
+          if (nextWrappedLine && nextWrappedLine.logicalLine === wrappedLine.logicalLine) {
+            targetVisualLine = nextVisualLine
+          }
+          else {
+            targetVisualLine = visualIndex
+          }
+          break
         }
       }
 
@@ -3337,15 +3530,9 @@ export class CanvasEditor {
         inlineWidgets.set(targetVisualLine, widgets)
       }
       else {
-        if (widget.type === 'above' && this.options.wordWrap && !hasEmptyLogicalLineAbove(logicalLine)) {
-          continue
-        }
         const widgets = widgetsByVisualLine.get(targetVisualLine) || { above: [], below: [] }
         if (widget.type === 'above') {
           widgets.above.push(widget)
-          if (this.options.wordWrap) {
-            wrapAboveAnchors.set(widget, targetVisualLine)
-          }
         }
         else {
           widgets.below.push(widget)
@@ -3905,8 +4092,20 @@ export class CanvasEditor {
           // Calculate natural width from widget length
           const naturalWidgetWidth = ctx.measureText('X'.repeat(widget.length)).width
 
+          // Calculate width to span to end of wrapped line segment
+          const textAfterWidget = wrappedLine.text.substring(columnInWrappedLine)
+          let remainingLineWidth = ctx.measureText(textAfterWidget).width
+          // Account for inline widgets that come after this above widget
+          for (const { widget: inlineWidget, column } of inlineWidgetsForAbove) {
+            const colInWrapped = column - wrappedLine.startColumn
+            if (colInWrapped > columnInWrappedLine) {
+              remainingLineWidth += ctx.measureText('X'.repeat(inlineWidget.length)).width
+            }
+          }
+          const maxWidgetWidth = remainingLineWidth
+
           // If there's a next widget, reduce width only if it would overlap
-          let widgetWidth = naturalWidgetWidth
+          let widgetWidth = Math.min(naturalWidgetWidth, maxWidgetWidth)
           if (i < widgetsForWidth.length - 1) {
             const nextWidget = widgetsForWidth[i + 1]
             const nextWidgetColumn = nextWidget.column - 1
@@ -4754,6 +4953,10 @@ export class CanvasEditor {
     this.functionDefinitions = definitions as Record<string, FunctionSignature>
   }
 
+  public setKeywords(keywords: string[]) {
+    this.keywords = [...keywords]
+  }
+
   public hideAutocomplete() {
     if (this.autocompleteDebounceTimer !== null) {
       clearTimeout(this.autocompleteDebounceTimer)
@@ -4820,6 +5023,7 @@ export class CanvasEditor {
       wordInfo.word,
       this.inputState.lines,
       this.functionDefinitions,
+      this.keywords,
     )
 
     const autocompleteInfo: AutocompleteInfo | null = suggestions.length > 0

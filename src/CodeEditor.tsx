@@ -25,6 +25,7 @@ interface CodeEditorProps {
   theme?: Theme
   tokenizer?: Tokenizer
   functionDefinitions?: Record<string, FunctionSignature>
+  keywords?: string[]
   errors?: EditorError[]
   widgets?: EditorWidget[]
   header?: EditorHeader
@@ -49,6 +50,7 @@ export const CodeEditor = ({
   theme,
   tokenizer,
   functionDefinitions = defaultFunctionDefinitions,
+  keywords,
   errors = [],
   widgets = [],
   header,
@@ -1036,6 +1038,7 @@ export const CodeEditor = ({
         tokenizer,
         widgets,
         header,
+        keywords,
         isAnimating,
         onBeforeDraw,
       },
@@ -1046,6 +1049,11 @@ export const CodeEditor = ({
 
     // Set function definitions for autocomplete
     canvasEditorRef.current.setFunctionDefinitions(functionDefinitions)
+
+    // Set keywords for autocomplete
+    if (keywords) {
+      canvasEditorRef.current.setKeywords(keywords)
+    }
 
     // Signature popup is now rendered imperatively by CanvasEditor
     canvasEditorRef.current.setSignatureEnabled(!hideFunctionSignatures)
@@ -1078,6 +1086,12 @@ export const CodeEditor = ({
       canvasEditorRef.current?.destroy()
     }
   }, [wordWrap, gutter])
+
+  useEffect(() => {
+    if (canvasEditorRef.current && keywords) {
+      canvasEditorRef.current.setKeywords(keywords)
+    }
+  }, [keywords])
 
   useEffect(() => {
     canvasEditorRef.current?.updateHeader(header!)

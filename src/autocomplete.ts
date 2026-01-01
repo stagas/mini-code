@@ -33,7 +33,7 @@ const isInsideString = (line: string, column: number): boolean => {
   return inString
 }
 
-const KEYWORDS = new Set([
+export const KEYWORDS = new Set([
   'break',
   'case',
   'catch',
@@ -225,6 +225,7 @@ export const getAutocompleteSuggestions = (
   currentWord: string,
   lines: string[],
   functionDefinitions: Record<string, FunctionSignature>,
+  keywords: string[] = [...KEYWORDS],
 ): string[] => {
   if (!currentWord) return []
 
@@ -246,7 +247,7 @@ export const getAutocompleteSuggestions = (
     if (matchesPrefix(funcName)) matches.add(funcName)
   }
 
-  for (const kw of KEYWORDS) {
+  for (const kw of keywords) {
     if (matchesPrefix(kw)) matches.add(kw)
   }
 
