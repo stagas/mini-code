@@ -65,8 +65,15 @@ const ensureCanvas = () => {
   canvas.style.position = 'fixed'
   canvas.style.left = '0'
   canvas.style.top = '0'
-  canvas.style.width = '100dvw'
-  canvas.style.height = '100dvh'
+  // Some runtimes (older Electron/WebViews) don't support dvw/dvh.
+  // If unsupported, the style assignment is ignored and the canvas can remain 300x150 CSS pixels,
+  // causing popups to render off-canvas even though the logic is working.
+  canvas.style.width = '100vw'
+  canvas.style.height = '100vh'
+  if (typeof CSS !== 'undefined' && CSS.supports) {
+    if (CSS.supports('width', '100dvw')) canvas.style.width = '100dvw'
+    if (CSS.supports('height', '100dvh')) canvas.style.height = '100dvh'
+  }
   canvas.style.zIndex = '999999'
   canvas.style.pointerEvents = 'none'
   canvas.style.userSelect = 'none'
