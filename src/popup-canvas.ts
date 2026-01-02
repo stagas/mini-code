@@ -65,6 +65,8 @@ const ensureCanvas = () => {
   canvas.style.position = 'fixed'
   canvas.style.left = '0'
   canvas.style.top = '0'
+  canvas.style.display = 'block'
+  canvas.style.visibility = 'visible'
   // Some runtimes (older Electron/WebViews) don't support dvw/dvh.
   // If unsupported, the style assignment is ignored and the canvas can remain 300x150 CSS pixels,
   // causing popups to render off-canvas even though the logic is working.
@@ -136,6 +138,14 @@ const ensureCanvas = () => {
 
   state.canvas = canvas
   state.context = context
+}
+
+export const isPopupCanvasVisible = (): boolean => {
+  if (typeof window === 'undefined') return false
+  const canvas = state.canvas
+  if (!canvas || !canvas.isConnected) return false
+  const rect = canvas.getBoundingClientRect()
+  return rect.width > 0 && rect.height > 0
 }
 
 const destroyCanvasIfUnused = () => {

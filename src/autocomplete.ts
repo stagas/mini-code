@@ -160,8 +160,10 @@ export const findCurrentWord = (
   const line = lines[cursorLine]
   if (!line) return null
 
+  const col = Math.max(0, Math.min(cursorColumn, line.length))
+
   // Don't autocomplete if cursor is inside a string
-  if (isInsideString(line, cursorColumn)) return null
+  if (isInsideString(line, col)) return null
 
   // Identifier segment characters: letters, numbers, $, _
   const isSegmentChar = (char: string) => /[a-zA-Z0-9$_]/.test(char)
@@ -169,7 +171,7 @@ export const findCurrentWord = (
   // Find start of the "word" (supports dotted chains like `foo.bar`).
   // Include '.' only when it is part of an identifier chain (i.e. preceded by an identifier char),
   // so optional chaining `?.` doesn't produce words starting with '.'.
-  let startColumn = cursorColumn
+  let startColumn = col
   while (startColumn > 0) {
     const prevChar = line[startColumn - 1]
     if (isSegmentChar(prevChar)) {
@@ -184,7 +186,7 @@ export const findCurrentWord = (
   }
 
   // Find end of current segment (scan forwards until a non-segment char OR a dot)
-  let endColumn = cursorColumn
+  let endColumn = col
   while (endColumn < line.length) {
     const ch = line[endColumn]
     if (ch === '.') break
@@ -192,14 +194,12 @@ export const findCurrentWord = (
     endColumn++
   }
 
-  const word = line.substring(startColumn, endColumn)
+  // Use the prefix up to the caret for matching suggestions, but keep `endColumn` pointing at the
+  // end of the segment so accepting a suggestion replaces the whole segment (not just the prefix).
+  const word = line.substring(startColumn, col)
 
   // Reject empty words
   if (word.length === 0) return null
-
-  // Only show autocomplete if cursor is at the end of the word (indicating active typing)
-  // This prevents autocomplete from showing when navigating within or past words
-  if (cursorColumn !== endColumn) return null
 
   return { word, startColumn, endColumn }
 }

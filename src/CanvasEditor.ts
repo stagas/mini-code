@@ -777,14 +777,21 @@ export class CanvasEditor {
       return i
     }
 
-    // 1) Prefer breaking after comma
+    // 1) Prefer breaking on whitespace (consume it).
+    for (let i = upper - 1; i >= start; i--) {
+      const ch = line[i]
+      if (ch !== ' ' && ch !== '\t') continue
+      return consumeTrailingWhitespace(i + 1)
+    }
+
+    // 2) Then commas
     const commaIndex = line.lastIndexOf(',', upper - 1)
     if (commaIndex >= start) {
       const end = consumeTrailingWhitespace(commaIndex + 1)
       if (end > start) return end
     }
 
-    // 2) Then other punctuation
+    // 3) Then other punctuation
     const isPunct = (ch: string): boolean =>
       ch === ';'
       || ch === ':'
@@ -801,12 +808,23 @@ export class CanvasEditor {
       if (end > start) return end
     }
 
-    // 3) Then whitespace
-    for (let i = upper - 1; i >= start; i--) {
-      if (line[i] === ' ' || line[i] === '\t') return i + 1
-    }
-
     return -1
+  }
+
+  private getWrapWidgetsKey(): number {
+    if (!this.options.widgets || this.options.widgets.length === 0) return 0
+
+    let h = 2166136261
+    h = hashNumber(h, this.options.widgets.length)
+    for (const w of this.options.widgets) {
+      h = hashString(h, w.type)
+      h = hashNumber(h, w.line)
+      h = hashNumber(h, w.column)
+      h = hashNumber(h, w.length)
+      h = hashNumber(h, w.height ?? -1)
+      h = hashNumber(h, w.culling === false ? 1 : 0)
+    }
+    return h >>> 0
   }
 
   private invalidateMeasurementCaches() {
@@ -861,6 +879,7 @@ export class CanvasEditor {
     code: string
     viewportWidth: number
     result: WrappedLine[]
+    widgetsKey: number
   } | null = null
   private pendingWrappedLines: WrappedLine[] | null = null
 
@@ -960,10 +979,12 @@ export class CanvasEditor {
 
     // Check cache
     const code = this.inputState.lines.join('\n')
+    const widgetsKey = this.getWrapWidgetsKey()
     if (this.wrappedLinesCache) {
       if (
         this.wrappedLinesCache.code === code
         && this.wrappedLinesCache.viewportWidth === viewportWidth
+        && this.wrappedLinesCache.widgetsKey === widgetsKey
       ) {
         return this.wrappedLinesCache.result
       }
@@ -1217,29 +1238,63 @@ export class CanvasEditor {
           return -1
         }
 
+        const findMovableWordStart = (): number => {
+          // If bestEnd splits a non-whitespace run, and that whole run fits on its own line,
+          // move the whole run down instead of splitting characters.
+          if (bestEnd <= startColumn || bestEnd >= line.length) return -1
+          const isWs = (ch: string): boolean => ch === ' ' || ch === '\t'
+
+          // If the character before bestEnd is whitespace, we are not splitting a run.
+          if (isWs(line[bestEnd - 1] || '')) return -1
+
+          // Find run start
+          let runStart = bestEnd - 1
+          while (runStart > startColumn && !isWs(line[runStart - 1] || '')) {
+            runStart--
+          }
+          if (runStart <= startColumn) return -1
+
+          // Find run end
+          let runEnd = bestEnd
+          while (runEnd < line.length && !isWs(line[runEnd] || '')) {
+            runEnd++
+          }
+
+          if (measure(runStart, runEnd) <= maxWidth) {
+            return runStart
+          }
+          return -1
+        }
+
         let candidateEnd = finalEnd
         if (bestEnd < line.length) {
           // Prefer token boundary if close enough to bestEnd (within 20% of maxWidth),
           // measured in pixels (not columns).
-          const movableCallStart = findMovableCallStart()
-          if (movableCallStart > startColumn && measure(startColumn, movableCallStart) <= maxWidth) {
-            candidateEnd = movableCallStart
+          const movableWordStart = findMovableWordStart()
+          if (movableWordStart > startColumn && measure(startColumn, movableWordStart) <= maxWidth) {
+            candidateEnd = movableWordStart
           }
-          else if (rawBreak > startColumn) {
-            candidateEnd = rawBreak
-          }
-          else if (lastTokenBoundary > startColumn) {
-            const bestWidth = measure(startColumn, bestEnd)
-            const tokenWidth = measure(startColumn, lastTokenBoundary)
-            if ((bestWidth - tokenWidth) < maxWidth * 0.2) {
-              candidateEnd = lastTokenBoundary
+          else {
+            const movableCallStart = findMovableCallStart()
+            if (movableCallStart > startColumn && measure(startColumn, movableCallStart) <= maxWidth) {
+              candidateEnd = movableCallStart
+            }
+            else if (rawBreak > startColumn) {
+              candidateEnd = rawBreak
+            }
+            else if (lastTokenBoundary > startColumn) {
+              const bestWidth = measure(startColumn, bestEnd)
+              const tokenWidth = measure(startColumn, lastTokenBoundary)
+              if ((bestWidth - tokenWidth) < maxWidth * 0.2) {
+                candidateEnd = lastTokenBoundary
+              }
+              else {
+                candidateEnd = bestEnd
+              }
             }
             else {
               candidateEnd = bestEnd
             }
-          }
-          else {
-            candidateEnd = bestEnd
           }
         }
         else {
@@ -1295,6 +1350,7 @@ export class CanvasEditor {
       code,
       viewportWidth,
       result: wrappedLines,
+      widgetsKey,
     }
 
     return wrappedLines

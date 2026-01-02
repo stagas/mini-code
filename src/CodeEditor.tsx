@@ -8,11 +8,12 @@ import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignatu
 import {
   getSelectedText,
   InputHandler,
+  isSelectionEmpty,
   type InputState,
   type KeyOverrideFunction,
 } from './input.ts'
 import { MouseHandler } from './mouse.ts'
-import { type PopupCanvasDrawable, setPopupCanvasDrawable } from './popup-canvas.ts'
+import { type PopupCanvasDrawable, isPopupCanvasVisible, setPopupCanvasDrawable } from './popup-canvas.ts'
 import { drawAutocompletePopup } from './popup-drawables.ts'
 import { defaultTheme, type Theme, type Tokenizer } from './syntax.ts'
 
@@ -93,6 +94,8 @@ export const CodeEditor = ({
   const autocompleteReadyRef = useRef(false)
   const autocompleteSelectedIndexRef = useRef(0)
   const autocompletePopupIdRef = useRef(`ac_${Math.random().toString(36).slice(2)}`)
+  const autocompletePopupVisibleRef = useRef(false)
+  const autocompleteHideTimerRef = useRef<number | null>(null)
   const themeRef = useRef(theme ?? defaultTheme)
   themeRef.current = theme ?? defaultTheme
   const autocompleteOnHoverRef = useRef<(index: number) => void>(() => {})
@@ -471,32 +474,16 @@ export const CodeEditor = ({
       return
     }
 
-    // Handle autocomplete interactions (before general key handling)
-    // Only handle if autocomplete is actually visible (same conditions as JSX)
-    const isAutocompleteVisible = isActive
-      && autocompleteInfo
-      && autocompleteInfo.suggestions.length > 0
-      && autocompleteReady
-      && !inputState.selection
-      && (autocompletePosition.x !== 0 || autocompletePosition.y !== 0)
-      && (() => {
-        const currentLine = inputState.lines[inputState.caret.line] || ''
-        const wordInfo = findCurrentWord(
-          inputState.lines,
-          inputState.caret.line,
-          inputState.caret.column,
-        )
-        const matchesCurrentWord = wordInfo !== null
-          && wordInfo.startColumn === autocompleteInfo.startColumn
-          && wordInfo.endColumn === autocompleteInfo.endColumn
-          && wordInfo.word === autocompleteInfo.word
-        return wordInfo !== null && currentLine.trim().length > 0 && matchesCurrentWord
-      })()
+    // Handle autocomplete interactions (before general key handling).
+    // Hardened: only allow keyboard acceptance if the popup-canvas overlay is actually visible.
+    const isAutocompleteVisible = autocompletePopupVisibleRef.current && isPopupCanvasVisible()
 
     if (isAutocompleteVisible) {
       if (e.key === 'Tab') {
         e.preventDefault()
-        const len = autocompleteInfo.suggestions.length
+        const info = autocompleteInfoRef.current
+        if (!info || info.suggestions.length === 0) return
+        const len = info.suggestions.length
         // Cycle through suggestions (Shift+Tab goes backwards)
         const prev = autocompleteSelectedIndexRef.current
         const next = (prev + (e.shiftKey ? len - 1 : 1)) % len
@@ -834,29 +821,17 @@ export const CodeEditor = ({
     const id = autocompletePopupIdRef.current
     const info = autocompleteInfoRef.current
     const pos = autocompletePositionRef.current
-    const ready = autocompleteReadyRef.current
     const selectedIndex = autocompleteSelectedIndexRef.current
     const state = inputStateRef.current
 
-    const currentLine = state.lines[state.caret.line] || ''
-    const wordInfo = info
-      ? findCurrentWord(state.lines, state.caret.line, state.caret.column)
-      : null
-    const matchesCurrentWord = !!info
-      && wordInfo !== null
-      && wordInfo.startColumn === info.startColumn
-      && wordInfo.endColumn === info.endColumn
-      && wordInfo.word === info.word
-
-    const visible = isActive
-      && !!info
+    const selectionEmpty = !state.selection || isSelectionEmpty(state.selection)
+    // Show autocomplete if we have suggestions and no selection, regardless of isActive
+    // (isActive can be false during rapid state updates but we still want to show completions)
+    const visible = !!info
       && info.suggestions.length > 0
-      && ready
-      && !state.selection
-      && wordInfo !== null
-      && currentLine.trim().length > 0
-      && matchesCurrentWord
-      && (pos.x !== 0 || pos.y !== 0)
+      && selectionEmpty
+    console.log('[AC] updatePopupCanvas - visible:', visible, 'isActive:', isActive, 'info:', !!info, 'suggestions:', info?.suggestions.length, 'selectionEmpty:', selectionEmpty)
+    autocompletePopupVisibleRef.current = visible
 
     if (!autocompletePopupDrawableRef.current) {
       autocompletePopupDrawableRef.current = {
@@ -866,7 +841,7 @@ export const CodeEditor = ({
           const info = autocompleteInfoRef.current
           const pos = autocompletePositionRef.current
           const selectedIndex = autocompleteSelectedIndexRef.current
-          if (!info || info.suggestions.length === 0 || (pos.x === 0 && pos.y === 0)) return null
+          if (!info || info.suggestions.length === 0) return null
 
           return drawAutocompletePopup({
             context,
@@ -910,6 +885,7 @@ export const CodeEditor = ({
     const newState: InputState = {
       ...inputStateRef.current,
       lines: newLines,
+      selection: null,
       caret: {
         line: inputStateRef.current.caret.line,
         column: info.startColumn + selectedSuggestion.length,
@@ -934,13 +910,46 @@ export const CodeEditor = ({
   autocompleteOnHoverRef.current = setAutocompleteIndex
   autocompleteOnSelectRef.current = applyAutocompleteSuggestion
 
+  useEffect(() => {
+    return () => {
+      if (autocompleteHideTimerRef.current !== null) {
+        clearTimeout(autocompleteHideTimerRef.current)
+        autocompleteHideTimerRef.current = null
+      }
+    }
+  }, [])
+
   // Store callbacks in refs to avoid recreating CanvasEditor
   const callbacksRef = useRef<CanvasEditorCallbacks>({
     onAutocompleteChange: info => {
-      autocompleteInfoRef.current = info
-      setAutocompleteInfo(info)
-      setAutocompleteIndex(0)
-      updateAutocompletePopupCanvas()
+      console.log('[AC] onAutocompleteChange:', info ? `${info.suggestions.length} suggestions for "${info.word}"` : 'null')
+      if (info) {
+        if (autocompleteHideTimerRef.current !== null) {
+          console.log('[AC] Canceling hide timer - got new suggestions')
+          clearTimeout(autocompleteHideTimerRef.current)
+          autocompleteHideTimerRef.current = null
+        }
+        autocompleteInfoRef.current = info
+        setAutocompleteInfo(info)
+        setAutocompleteIndex(0)
+        updateAutocompletePopupCanvas()
+        return
+      }
+
+      // Avoid flicker: CanvasEditor may transiently emit null during rapid state/layout updates.
+      // Keep the last non-null suggestions briefly unless an explicit hide happened.
+      if (autocompleteHideTimerRef.current !== null) {
+        clearTimeout(autocompleteHideTimerRef.current)
+      }
+      console.log('[AC] Scheduling hide in 120ms')
+      autocompleteHideTimerRef.current = window.setTimeout(() => {
+        console.log('[AC] Hide timer fired - clearing')
+        autocompleteHideTimerRef.current = null
+        autocompleteInfoRef.current = null
+        setAutocompleteInfo(null)
+        setAutocompleteIndex(0)
+        updateAutocompletePopupCanvasRef.current()
+      }, 120)
     },
     onAutocompletePositionChange: pos => {
       autocompletePositionRef.current = pos
@@ -974,10 +983,28 @@ export const CodeEditor = ({
   useEffect(() => {
     callbacksRef.current = {
       onAutocompleteChange: info => {
-        autocompleteInfoRef.current = info
-        setAutocompleteInfo(info)
-        setAutocompleteIndex(0)
-        updateAutocompletePopupCanvas()
+        if (info) {
+          if (autocompleteHideTimerRef.current !== null) {
+            clearTimeout(autocompleteHideTimerRef.current)
+            autocompleteHideTimerRef.current = null
+          }
+          autocompleteInfoRef.current = info
+          setAutocompleteInfo(info)
+          setAutocompleteIndex(0)
+          updateAutocompletePopupCanvas()
+          return
+        }
+
+        if (autocompleteHideTimerRef.current !== null) {
+          clearTimeout(autocompleteHideTimerRef.current)
+        }
+        autocompleteHideTimerRef.current = window.setTimeout(() => {
+          autocompleteHideTimerRef.current = null
+          autocompleteInfoRef.current = null
+          setAutocompleteInfo(null)
+          setAutocompleteIndex(0)
+          updateAutocompletePopupCanvasRef.current()
+        }, 120)
       },
       onAutocompletePositionChange: pos => {
         autocompletePositionRef.current = pos
