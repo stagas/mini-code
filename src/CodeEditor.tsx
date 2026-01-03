@@ -8,12 +8,12 @@ import { functionDefinitions as defaultFunctionDefinitions, type FunctionSignatu
 import {
   getSelectedText,
   InputHandler,
-  isSelectionEmpty,
   type InputState,
+  isSelectionEmpty,
   type KeyOverrideFunction,
 } from './input.ts'
 import { MouseHandler } from './mouse.ts'
-import { type PopupCanvasDrawable, isPopupCanvasVisible, setPopupCanvasDrawable } from './popup-canvas.ts'
+import { isPopupCanvasVisible, type PopupCanvasDrawable, setPopupCanvasDrawable } from './popup-canvas.ts'
 import { drawAutocompletePopup } from './popup-drawables.ts'
 import { defaultTheme, type Theme, type Tokenizer } from './syntax.ts'
 
@@ -830,7 +830,6 @@ export const CodeEditor = ({
     const visible = !!info
       && info.suggestions.length > 0
       && selectionEmpty
-    console.log('[AC] updatePopupCanvas - visible:', visible, 'isActive:', isActive, 'info:', !!info, 'suggestions:', info?.suggestions.length, 'selectionEmpty:', selectionEmpty)
     autocompletePopupVisibleRef.current = visible
 
     if (!autocompletePopupDrawableRef.current) {
@@ -922,10 +921,8 @@ export const CodeEditor = ({
   // Store callbacks in refs to avoid recreating CanvasEditor
   const callbacksRef = useRef<CanvasEditorCallbacks>({
     onAutocompleteChange: info => {
-      console.log('[AC] onAutocompleteChange:', info ? `${info.suggestions.length} suggestions for "${info.word}"` : 'null')
       if (info) {
         if (autocompleteHideTimerRef.current !== null) {
-          console.log('[AC] Canceling hide timer - got new suggestions')
           clearTimeout(autocompleteHideTimerRef.current)
           autocompleteHideTimerRef.current = null
         }
@@ -941,9 +938,7 @@ export const CodeEditor = ({
       if (autocompleteHideTimerRef.current !== null) {
         clearTimeout(autocompleteHideTimerRef.current)
       }
-      console.log('[AC] Scheduling hide in 120ms')
       autocompleteHideTimerRef.current = window.setTimeout(() => {
-        console.log('[AC] Hide timer fired - clearing')
         autocompleteHideTimerRef.current = null
         autocompleteInfoRef.current = null
         setAutocompleteInfo(null)
