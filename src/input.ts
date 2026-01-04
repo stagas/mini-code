@@ -66,16 +66,15 @@ export function getSelectedText(inputState: InputState): string {
   const { start, end } = inputState.selection
 
   // Normalize selection (ensure start comes before end)
-  const normalizedStart =
-    start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-  const normalizedEnd =
-    start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+  const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
+  const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
   if (normalizedStart.line === normalizedEnd.line) {
     // Single line selection
     const line = inputState.lines[normalizedStart.line] || ''
     return line.substring(normalizedStart.column, normalizedEnd.column)
-  } else {
+  }
+  else {
     // Multi-line selection
     const selectedLines: string[] = []
 
@@ -85,10 +84,12 @@ export function getSelectedText(inputState: InputState): string {
       if (lineIndex === normalizedStart.line) {
         // First line: from start column to end of line
         selectedLines.push(line.substring(normalizedStart.column))
-      } else if (lineIndex === normalizedEnd.line) {
+      }
+      else if (lineIndex === normalizedEnd.line) {
         // Last line: from start of line to end column
         selectedLines.push(line.substring(0, normalizedEnd.column))
-      } else {
+      }
+      else {
         // Middle lines: entire line
         selectedLines.push(line)
       }
@@ -103,7 +104,11 @@ export class InputHandler {
   private history: History
   private movementCallbacks: MovementCallbacks
   private keyOverride: KeyOverrideFunction | null = null
-  private getWidgets: (() => Array<{ line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }>) | null = null
+  private getWidgets:
+    | (() => Array<
+      { line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }
+    >)
+    | null = null
 
   constructor(
     onStateChange: (state: InputState) => void,
@@ -127,7 +132,14 @@ export class InputHandler {
     this.history = history
   }
 
-  setGetWidgets(fn: (() => Array<{ line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number; height?: number }>) | null) {
+  setGetWidgets(
+    fn:
+      | (() => Array<
+        { line: number; column: number; type: 'above' | 'below' | 'inline' | 'overlay'; length: number;
+          height?: number }
+      >)
+      | null,
+  ) {
     this.getWidgets = fn
   }
 
@@ -153,9 +165,9 @@ export class InputHandler {
       caret: { ...currentState.caret },
       selection: currentState.selection
         ? {
-            start: { ...currentState.selection.start },
-            end: { ...currentState.selection.end },
-          }
+          start: { ...currentState.selection.start },
+          end: { ...currentState.selection.end },
+        }
         : null,
     }
     const isShiftPressed = event.shiftKey
@@ -174,14 +186,16 @@ export class InputHandler {
     if (shouldSaveToHistory) {
       if (isCharacterInput) {
         this.saveDebouncedBeforeStateToHistory(newState)
-      } else {
+      }
+      else {
         // Flush any pending debounced state before non-character operations
         this.history.flushDebouncedState(newState)
 
         // Special handling for Enter - it needs caret position in before state
         if (event.key === 'Enter') {
           this.saveBeforeStateWithCaretToHistory(newState)
-        } else {
+        }
+        else {
           this.saveBeforeStateToHistory(newState)
         }
       }
@@ -215,6 +229,13 @@ export class InputHandler {
           event.preventDefault()
           this.handleToggleLineComment(currentState)
           return
+        case '?':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault()
+            this.handleToggleBlockComment(currentState)
+            return
+          }
+          break
         case 'd':
           if (event.shiftKey) {
             event.preventDefault()
@@ -253,14 +274,16 @@ export class InputHandler {
       case 'ArrowLeft':
         if (event.ctrlKey || event.metaKey) {
           this.moveCaretWordLeft(newState)
-        } else {
+        }
+        else {
           this.moveCaretLeft(newState)
         }
         break
       case 'ArrowRight':
         if (event.ctrlKey || event.metaKey) {
           this.moveCaretWordRight(newState)
-        } else {
+        }
+        else {
           this.moveCaretRight(newState)
         }
         break
@@ -285,23 +308,27 @@ export class InputHandler {
       case 'Backspace':
         if (event.ctrlKey || event.metaKey) {
           this.deleteWordLeft(newState)
-        } else {
+        }
+        else {
           this.handleBackspace(newState)
         }
         break
       case 'Delete':
         if (event.shiftKey) {
           this.deleteCurrentLine(newState)
-        } else if (event.ctrlKey || event.metaKey) {
+        }
+        else if (event.ctrlKey || event.metaKey) {
           this.deleteWordRight(newState)
-        } else {
+        }
+        else {
           this.handleDelete(newState)
         }
         break
       case 'Tab':
         if (event.shiftKey) {
           this.handleShiftTab(newState)
-        } else {
+        }
+        else {
           this.handleTab(newState)
         }
         break
@@ -325,9 +352,9 @@ export class InputHandler {
     // Clear selection if shift is not pressed (except for special keys)
     // Don't clear selection for Tab key when there's already a selection
     if (
-      (!isShiftPressed || event.key === 'Tab') &&
-      ['Backspace', 'Delete'].indexOf(event.key) === -1 &&
-      !(event.key === 'Tab' && newState.selection)
+      (!isShiftPressed || event.key === 'Tab')
+      && ['Backspace', 'Delete'].indexOf(event.key) === -1
+      && !(event.key === 'Tab' && newState.selection)
     ) {
       newState.selection = null
     }
@@ -336,7 +363,8 @@ export class InputHandler {
     if (shouldSaveToHistory) {
       if (isCharacterInput) {
         this.saveDebouncedAfterStateToHistory(newState)
-      } else {
+      }
+      else {
         this.saveAfterStateToHistory(newState)
       }
     }
@@ -349,12 +377,12 @@ export class InputHandler {
     // This includes: Backspace, Delete, Tab, Enter, and printable characters
     // This excludes: Navigation keys, function keys, and modifier keys
     return (
-      key === 'Backspace' ||
-      key === 'Delete' ||
-      key === 'Tab' ||
-      key === 'Enter' ||
-      (key.length === 1 &&
-        ![
+      key === 'Backspace'
+      || key === 'Delete'
+      || key === 'Tab'
+      || key === 'Enter'
+      || (key.length === 1
+        && ![
           'z',
           'y',
           'ArrowLeft',
@@ -418,9 +446,9 @@ export class InputHandler {
       caret: null, // Don't save caret position - it's not relevant for most operations
       selection: state.selection
         ? {
-            start: { ...state.selection.start },
-            end: { ...state.selection.end },
-          }
+          start: { ...state.selection.start },
+          end: { ...state.selection.end },
+        }
         : null,
       widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
@@ -432,9 +460,9 @@ export class InputHandler {
       caret: { ...state.caret }, // Save final caret position after content changes
       selection: state.selection
         ? {
-            start: { ...state.selection.start },
-            end: { ...state.selection.end },
-          }
+          start: { ...state.selection.start },
+          end: { ...state.selection.end },
+        }
         : null,
       widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
@@ -447,9 +475,9 @@ export class InputHandler {
       caret: { ...state.caret }, // Save caret position before operation
       selection: state.selection
         ? {
-            start: { ...state.selection.start },
-            end: { ...state.selection.end },
-          }
+          start: { ...state.selection.start },
+          end: { ...state.selection.end },
+        }
         : null,
       widgets: this.getWidgets ? this.getWidgets() : undefined,
     })
@@ -490,7 +518,8 @@ export class InputHandler {
     if (state.caret.column > 0) {
       state.caret.column--
       state.caret.columnIntent = state.caret.column
-    } else if (state.caret.line > 0) {
+    }
+    else if (state.caret.line > 0) {
       state.caret.line--
       state.caret.column = state.lines[state.caret.line]?.length || 0
       state.caret.columnIntent = state.caret.column
@@ -518,7 +547,8 @@ export class InputHandler {
     if (state.caret.column < currentLine.length) {
       state.caret.column++
       state.caret.columnIntent = state.caret.column
-    } else if (state.caret.line < state.lines.length - 1) {
+    }
+    else if (state.caret.line < state.lines.length - 1) {
       state.caret.line++
       state.caret.column = 0
       state.caret.columnIntent = 0
@@ -578,7 +608,8 @@ export class InputHandler {
       state.caret.line = newLine
       const targetLine = state.lines[state.caret.line] || ''
       state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
-    } else {
+    }
+    else {
       // Already at the first line – jump to column 0
       state.caret.column = 0
       state.caret.columnIntent = 0
@@ -592,7 +623,8 @@ export class InputHandler {
       state.caret.line = newLine
       const targetLine = state.lines[state.caret.line] || ''
       state.caret.column = Math.min(state.caret.columnIntent, targetLine.length)
-    } else {
+    }
+    else {
       // Already at the last line – jump to last column
       const currentLine = state.lines[state.caret.line] || ''
       state.caret.column = currentLine.length
@@ -627,11 +659,13 @@ export class InputHandler {
       // At beginning → move to first non-whitespace
       state.caret.column = firstNonWhitespaceColumn
       state.caret.columnIntent = firstNonWhitespaceColumn
-    } else if (state.caret.column === firstNonWhitespaceColumn) {
+    }
+    else if (state.caret.column === firstNonWhitespaceColumn) {
       // At first non-whitespace → move to beginning
       state.caret.column = 0
       state.caret.columnIntent = 0
-    } else {
+    }
+    else {
       // In middle → move to first non-whitespace
       state.caret.column = firstNonWhitespaceColumn
       state.caret.columnIntent = firstNonWhitespaceColumn
@@ -673,12 +707,14 @@ export class InputHandler {
       while (column > 0 && /\s/.test(line[column - 1])) {
         column--
       }
-    } else if (this.isWordChar(startChar)) {
+    }
+    else if (this.isWordChar(startChar)) {
       // If we're on a word character, move to start of word
       while (column > 0 && this.isWordChar(line[column - 1])) {
         column--
       }
-    } else {
+    }
+    else {
       // If we're on punctuation, move to start of punctuation group
       while (column > 0 && !this.isWordChar(line[column - 1]) && !/\s/.test(line[column - 1])) {
         column--
@@ -701,12 +737,14 @@ export class InputHandler {
       while (column < line.length && /\s/.test(line[column])) {
         column++
       }
-    } else if (this.isWordChar(startChar)) {
+    }
+    else if (this.isWordChar(startChar)) {
       // If we're on a word character, move to end of word
       while (column < line.length && this.isWordChar(line[column])) {
         column++
       }
-    } else {
+    }
+    else {
       // If we're on punctuation, move to end of punctuation group
       while (column < line.length && !this.isWordChar(line[column]) && !/\s/.test(line[column])) {
         column++
@@ -724,7 +762,8 @@ export class InputHandler {
       const newColumn = this.findWordStart(currentLine, state.caret.column)
       state.caret.column = newColumn
       state.caret.columnIntent = newColumn
-    } else if (state.caret.line > 0) {
+    }
+    else if (state.caret.line > 0) {
       // Move to end of previous line
       state.caret.line--
       const prevLine = state.lines[state.caret.line] || ''
@@ -741,7 +780,8 @@ export class InputHandler {
       const newColumn = this.findWordEnd(currentLine, state.caret.column)
       state.caret.column = newColumn
       state.caret.columnIntent = newColumn
-    } else if (state.caret.line < state.lines.length - 1) {
+    }
+    else if (state.caret.line < state.lines.length - 1) {
       // Move to start of next line
       state.caret.line++
       state.caret.column = 0
@@ -777,7 +817,8 @@ export class InputHandler {
       state.lines[state.caret.line] = newLine
       state.caret.column = startCol
       state.caret.columnIntent = startCol
-    } else if (state.caret.line > 0) {
+    }
+    else if (state.caret.line > 0) {
       // Merge with previous line when at column 0
       const prev = state.lines[state.caret.line - 1] || ''
       const newLine = prev + line
@@ -819,7 +860,8 @@ export class InputHandler {
       const newLine = line.slice(0, state.caret.column) + line.slice(endCol)
       state.lines[state.caret.line] = newLine
       // Caret stays at same column
-    } else if (state.caret.line < state.lines.length - 1) {
+    }
+    else if (state.caret.line < state.lines.length - 1) {
       // Merge with next line when at end of line
       const next = state.lines[state.caret.line + 1] || ''
       const newLine = line + next
@@ -856,12 +898,12 @@ export class InputHandler {
 
     if (state.caret.column > 0) {
       // Delete character before cursor
-      const newLine =
-        currentLine.slice(0, state.caret.column - 1) + currentLine.slice(state.caret.column)
+      const newLine = currentLine.slice(0, state.caret.column - 1) + currentLine.slice(state.caret.column)
       state.lines[state.caret.line] = newLine
       state.caret.column--
       state.caret.columnIntent = state.caret.column
-    } else if (state.caret.line > 0) {
+    }
+    else if (state.caret.line > 0) {
       // Merge with previous line
       const prevLine = state.lines[state.caret.line - 1] || ''
       const newLine = prevLine + currentLine
@@ -900,10 +942,10 @@ export class InputHandler {
 
     if (state.caret.column < currentLine.length) {
       // Delete character after cursor
-      const newLine =
-        currentLine.slice(0, state.caret.column) + currentLine.slice(state.caret.column + 1)
+      const newLine = currentLine.slice(0, state.caret.column) + currentLine.slice(state.caret.column + 1)
       state.lines[state.caret.line] = newLine
-    } else if (state.caret.line < state.lines.length - 1) {
+    }
+    else if (state.caret.line < state.lines.length - 1) {
       // Merge with next line
       const nextLine = state.lines[state.caret.line + 1] || ''
       const newLine = currentLine + nextLine
@@ -937,7 +979,8 @@ export class InputHandler {
       state.lines[0] = ''
       state.caret.column = 0
       state.caret.columnIntent = 0
-    } else {
+    }
+    else {
       // Remove the current line
       state.lines.splice(state.caret.line, 1)
 
@@ -963,7 +1006,8 @@ export class InputHandler {
       this.saveDebouncedBeforeStateToHistory(state)
       this.deleteSelection(state)
       // Don't return here - continue to insert the character
-    } else {
+    }
+    else {
       // Clear any empty selection
       if (state.selection && this.isSelectionEmpty(state.selection)) {
         state.selection = null
@@ -973,8 +1017,7 @@ export class InputHandler {
     }
 
     const currentLine = state.lines[state.caret.line] || ''
-    const newLine =
-      currentLine.slice(0, state.caret.column) + char + currentLine.slice(state.caret.column)
+    const newLine = currentLine.slice(0, state.caret.column) + char + currentLine.slice(state.caret.column)
     state.lines[state.caret.line] = newLine
     state.caret.column++
     state.caret.columnIntent = state.caret.column
@@ -988,25 +1031,24 @@ export class InputHandler {
     this.history.flushDebouncedState(state)
 
     // Check if we have a real selection (not just cursor position)
-    const hasRealSelection =
-      state.selection &&
-      (state.selection.start.line !== state.selection.end.line ||
-        state.selection.start.column !== state.selection.end.column)
+    const hasRealSelection = state.selection
+      && (state.selection.start.line !== state.selection.end.line
+        || state.selection.start.column !== state.selection.end.column)
 
     if (hasRealSelection) {
       // Save selection in history since we're modifying it
       this.saveBeforeStateWithSelectionToHistory(state)
       this.indentSelection(state)
       this.saveAfterStateWithSelectionToHistory(state)
-    } else {
+    }
+    else {
       // No selection - save before state without selection
       this.saveBeforeStateToHistory(state)
 
       // No selection or cursor position - insert spaces/tab characters
       const currentLine = state.lines[state.caret.line] || ''
       const spaces = '  ' // 2 spaces for indentation
-      const newLine =
-        currentLine.slice(0, state.caret.column) + spaces + currentLine.slice(state.caret.column)
+      const newLine = currentLine.slice(0, state.caret.column) + spaces + currentLine.slice(state.caret.column)
       state.lines[state.caret.line] = newLine
       state.caret.column += spaces.length
       state.caret.columnIntent = state.caret.column
@@ -1021,17 +1063,17 @@ export class InputHandler {
     this.history.flushDebouncedState(state)
 
     // Check if we have a real selection (not just cursor position)
-    const hasRealSelection =
-      state.selection &&
-      (state.selection.start.line !== state.selection.end.line ||
-        state.selection.start.column !== state.selection.end.column)
+    const hasRealSelection = state.selection
+      && (state.selection.start.line !== state.selection.end.line
+        || state.selection.start.column !== state.selection.end.column)
 
     if (hasRealSelection) {
       // Save selection in history since we're modifying it
       this.saveBeforeStateWithSelectionToHistory(state)
       this.unindentSelection(state)
       this.saveAfterStateWithSelectionToHistory(state)
-    } else {
+    }
+    else {
       // No selection - save before state without selection
       this.saveBeforeStateToHistory(state)
 
@@ -1108,18 +1150,17 @@ export class InputHandler {
     const spaces = '  ' // 2 spaces for indentation
 
     // Normalize selection (ensure start comes before end)
-    const normalizedStart =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-    const normalizedEnd =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+    const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? start
+      : end
+    const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
     const firstLineToIndent = normalizedStart.line
 
     // If the end is at column 0, don't include that line in indentation
-    const lastLineToIndent =
-      normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
-        ? normalizedEnd.line - 1
-        : normalizedEnd.line
+    const lastLineToIndent = normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
+      ? normalizedEnd.line - 1
+      : normalizedEnd.line
 
     // Indent all lines in the selection (excluding boundary lines if at column 0)
     for (let lineIndex = firstLineToIndent; lineIndex <= lastLineToIndent; lineIndex++) {
@@ -1129,14 +1170,14 @@ export class InputHandler {
 
     // Adjust selection boundaries - only adjust if the line was actually indented
     if (
-      state.selection.start.line >= firstLineToIndent &&
-      state.selection.start.line <= lastLineToIndent
+      state.selection.start.line >= firstLineToIndent
+      && state.selection.start.line <= lastLineToIndent
     ) {
       state.selection.start.column += spaces.length
     }
     if (
-      state.selection.end.line >= firstLineToIndent &&
-      state.selection.end.line <= lastLineToIndent
+      state.selection.end.line >= firstLineToIndent
+      && state.selection.end.line <= lastLineToIndent
     ) {
       state.selection.end.column += spaces.length
     }
@@ -1155,18 +1196,17 @@ export class InputHandler {
     const spaces = '  ' // 2 spaces for indentation
 
     // Normalize selection (ensure start comes before end)
-    const normalizedStart =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-    const normalizedEnd =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+    const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? start
+      : end
+    const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
     const firstLineToUnindent = normalizedStart.line
 
     // If the end is at column 0, don't include that line in unindentation
-    const lastLineToUnindent =
-      normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
-        ? normalizedEnd.line - 1
-        : normalizedEnd.line
+    const lastLineToUnindent = normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
+      ? normalizedEnd.line - 1
+      : normalizedEnd.line
 
     // Track how much we actually removed from each line
     const removedPerLine: number[] = []
@@ -1189,7 +1229,8 @@ export class InputHandler {
         state.lines[lineIndex] = newLine
 
         removedPerLine[lineIndex] = spacesToRemove
-      } else {
+      }
+      else {
         removedPerLine[lineIndex] = 0
       }
     }
@@ -1200,14 +1241,14 @@ export class InputHandler {
 
     // Adjust selection boundaries - only adjust if the line was actually unindented
     if (
-      state.selection.start.line >= firstLineToUnindent &&
-      state.selection.start.line <= lastLineToUnindent
+      state.selection.start.line >= firstLineToUnindent
+      && state.selection.start.line <= lastLineToUnindent
     ) {
       state.selection.start.column = Math.max(0, state.selection.start.column - startLineRemoved)
     }
     if (
-      state.selection.end.line >= firstLineToUnindent &&
-      state.selection.end.line <= lastLineToUnindent
+      state.selection.end.line >= firstLineToUnindent
+      && state.selection.end.line <= lastLineToUnindent
     ) {
       state.selection.end.column = Math.max(0, state.selection.end.column - endLineRemoved)
     }
@@ -1230,10 +1271,10 @@ export class InputHandler {
     const { start, end } = state.selection
 
     // Normalize selection (ensure start comes before end)
-    const normalizedStart =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-    const normalizedEnd =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+    const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? start
+      : end
+    const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
     if (normalizedStart.line === normalizedEnd.line) {
       // Single line selection
@@ -1245,14 +1286,14 @@ export class InputHandler {
       state.caret.line = normalizedStart.line
       state.caret.column = normalizedStart.column
       state.caret.columnIntent = state.caret.column
-    } else {
+    }
+    else {
       // Multi-line selection
       const startLine = state.lines[normalizedStart.line] || ''
       const endLine = state.lines[normalizedEnd.line] || ''
 
       // Merge start and end lines
-      const newStartLine =
-        startLine.slice(0, normalizedStart.column) + endLine.slice(normalizedEnd.column)
+      const newStartLine = startLine.slice(0, normalizedStart.column) + endLine.slice(normalizedEnd.column)
       state.lines[normalizedStart.line] = newStartLine
 
       // Remove middle lines
@@ -1268,7 +1309,9 @@ export class InputHandler {
     state.selection = null
   }
 
-  handleUndo(state: InputState, skipHistoryUndo: boolean = false): Array<{ line: number; column: number; type: string; length: number; height?: number }> | null {
+  handleUndo(state: InputState, skipHistoryUndo: boolean = false): Array<
+    { line: number; column: number; type: string; length: number; height?: number }
+  > | null {
     // Flush any pending debounced state before undo
     this.history.flushDebouncedState(state)
 
@@ -1284,9 +1327,9 @@ export class InputHandler {
       // Only restore selection if it was saved in history
       state.selection = previousState.selection
         ? {
-            start: { ...previousState.selection.start },
-            end: { ...previousState.selection.end },
-          }
+          start: { ...previousState.selection.start },
+          end: { ...previousState.selection.end },
+        }
         : null
 
       // Update the React component state
@@ -1295,9 +1338,9 @@ export class InputHandler {
         caret: { ...state.caret },
         selection: state.selection
           ? {
-              start: { ...state.selection.start },
-              end: { ...state.selection.end },
-            }
+            start: { ...state.selection.start },
+            end: { ...state.selection.end },
+          }
           : null,
       })
 
@@ -1307,7 +1350,9 @@ export class InputHandler {
     return null
   }
 
-  handleRedo(state: InputState): Array<{ line: number; column: number; type: string; length: number; height?: number }> | null {
+  handleRedo(
+    state: InputState,
+  ): Array<{ line: number; column: number; type: string; length: number; height?: number }> | null {
     // Flush any pending debounced state before redo
     this.history.flushDebouncedState(state)
 
@@ -1321,9 +1366,9 @@ export class InputHandler {
       // Only restore selection if it was saved in history
       state.selection = nextState.selection
         ? {
-            start: { ...nextState.selection.start },
-            end: { ...nextState.selection.end },
-          }
+          start: { ...nextState.selection.start },
+          end: { ...nextState.selection.end },
+        }
         : null
 
       // Update the React component state
@@ -1332,9 +1377,9 @@ export class InputHandler {
         caret: { ...state.caret },
         selection: state.selection
           ? {
-              start: { ...state.selection.start },
-              end: { ...state.selection.end },
-            }
+            start: { ...state.selection.start },
+            end: { ...state.selection.end },
+          }
           : null,
       })
 
@@ -1395,7 +1440,8 @@ export class InputHandler {
       this.deleteSelection(newState)
 
       this.saveAfterStateWithSelectionToHistory(newState)
-    } else {
+    }
+    else {
       // No selection - save before state with caret position
       this.saveBeforeStateWithCaretToHistory(newState)
       this.saveAfterStateToHistory(newState)
@@ -1407,9 +1453,9 @@ export class InputHandler {
       caret: { ...newState.caret },
       selection: newState.selection
         ? {
-            start: { ...newState.selection.start },
-            end: { ...newState.selection.end },
-          }
+          start: { ...newState.selection.start },
+          end: { ...newState.selection.end },
+        }
         : null,
     })
   }
@@ -1426,7 +1472,8 @@ export class InputHandler {
       this.deleteSelection(newState)
       this.insertText(newState, text)
       this.saveAfterStateWithSelectionToHistory(newState)
-    } else {
+    }
+    else {
       // No selection - save before state with caret position
       this.saveBeforeStateWithCaretToHistory(newState)
       this.insertText(newState, text)
@@ -1439,9 +1486,9 @@ export class InputHandler {
       caret: { ...newState.caret },
       selection: newState.selection
         ? {
-            start: { ...newState.selection.start },
-            end: { ...newState.selection.end },
-          }
+          start: { ...newState.selection.start },
+          end: { ...newState.selection.end },
+        }
         : null,
     })
   }
@@ -1467,12 +1514,12 @@ export class InputHandler {
     if (lines.length === 1) {
       // Single line paste
       const currentLine = state.lines[state.caret.line] || ''
-      const newLine =
-        currentLine.slice(0, state.caret.column) + text + currentLine.slice(state.caret.column)
+      const newLine = currentLine.slice(0, state.caret.column) + text + currentLine.slice(state.caret.column)
       state.lines[state.caret.line] = newLine
       state.caret.column += text.length
       state.caret.columnIntent = state.caret.column
-    } else {
+    }
+    else {
       // Multi-line paste
       const currentLine = state.lines[state.caret.line] || ''
       const beforeCaret = currentLine.slice(0, state.caret.column)
@@ -1506,7 +1553,8 @@ export class InputHandler {
     if (state.selection && !this.isSelectionEmpty(state.selection)) {
       // Move selection lines
       this.moveSelectionLinesUp(state)
-    } else {
+    }
+    else {
       // Clear any empty selection and move current line
       if (state.selection && this.isSelectionEmpty(state.selection)) {
         state.selection = null
@@ -1522,7 +1570,8 @@ export class InputHandler {
     if (state.selection && !this.isSelectionEmpty(state.selection)) {
       // Move selection lines
       this.moveSelectionLinesDown(state)
-    } else {
+    }
+    else {
       // Clear any empty selection and move current line
       if (state.selection && this.isSelectionEmpty(state.selection)) {
         state.selection = null
@@ -1579,10 +1628,10 @@ export class InputHandler {
     const { start, end } = state.selection
 
     // Normalize selection (ensure start comes before end)
-    const normalizedStart =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-    const normalizedEnd =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+    const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? start
+      : end
+    const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
     // Can't move if first line is already at top
     if (normalizedStart.line === 0) return
@@ -1614,10 +1663,10 @@ export class InputHandler {
     const { start, end } = state.selection
 
     // Normalize selection (ensure start comes before end)
-    const normalizedStart =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? start : end
-    const normalizedEnd =
-      start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
+    const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+      ? start
+      : end
+    const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column) ? end : start
 
     // Can't move if last line is already at bottom
     if (normalizedEnd.line === state.lines.length - 1) return
@@ -1656,22 +1705,20 @@ export class InputHandler {
       hasRealSelection = true
       const { start, end } = state.selection
 
-      const normalizedStart =
-        start.line < end.line || (start.line === end.line && start.column <= end.column)
-          ? start
-          : end
-      const normalizedEnd =
-        start.line < end.line || (start.line === end.line && start.column <= end.column)
-          ? end
-          : start
+      const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+        ? start
+        : end
+      const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column)
+        ? end
+        : start
 
       firstLine = normalizedStart.line
       // Exclude last line if selection ends at column 0 (like typical editors)
-      lastLine =
-        normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
-          ? normalizedEnd.line - 1
-          : normalizedEnd.line
-    } else {
+      lastLine = normalizedEnd.column === 0 && normalizedEnd.line > normalizedStart.line
+        ? normalizedEnd.line - 1
+        : normalizedEnd.line
+    }
+    else {
       firstLine = state.caret.line
       lastLine = state.caret.line
     }
@@ -1694,10 +1741,9 @@ export class InputHandler {
     for (let i = firstLine; i <= lastLine; i++) {
       const original = state.lines[i] || ''
       if (original.trim() === '') continue
-      const line =
-        original.length < baseIndent
-          ? original + ' '.repeat(baseIndent - original.length)
-          : original
+      const line = original.length < baseIndent
+        ? original + ' '.repeat(baseIndent - original.length)
+        : original
       const restAtBase = line.slice(baseIndent)
       if (!(restAtBase.startsWith('//') || restAtBase.startsWith('// '))) {
         shouldUncomment = false
@@ -1708,7 +1754,8 @@ export class InputHandler {
     // Save before state (with selection if present)
     if (hasRealSelection) {
       this.saveBeforeStateWithSelectionToHistory(state)
-    } else {
+    }
+    else {
       this.saveBeforeStateWithCaretToHistory(state)
     }
 
@@ -1731,11 +1778,13 @@ export class InputHandler {
           const newLine = line.slice(0, targetIndex) + rest.slice(removeCount)
           state.lines[i] = newLine
           deltaPerLine[i] = -removeCount
-        } else {
+        }
+        else {
           state.lines[i] = line
           deltaPerLine[i] = 0
         }
-      } else {
+      }
+      else {
         const commentToken = '// '
         const newLine = line.slice(0, targetIndex) + commentToken + line.slice(targetIndex)
         state.lines[i] = newLine
@@ -1764,20 +1813,23 @@ export class InputHandler {
         const caretDelta = deltaPerLine[caretLine] || 0
         state.caret.column = adjust(state.caret.column, caretDelta)
         state.caret.columnIntent = state.caret.column
-      } else if (endLine > lastLine && state.selection.end.column === 0) {
+      }
+      else if (endLine > lastLine && state.selection.end.column === 0) {
         // Selection ended at start of line after last commented line
         // Position caret at end of last commented line
         const lastLineContent = state.lines[lastLine] || ''
         state.caret.line = lastLine
         state.caret.column = lastLineContent.length
         state.caret.columnIntent = lastLineContent.length
-      } else {
+      }
+      else {
         // Caret is not on a commented line, set it to match selection end
         state.caret.line = endLine
         state.caret.column = state.selection.end.column
         state.caret.columnIntent = state.selection.end.column
       }
-    } else {
+    }
+    else {
       // Adjust caret if it's on an affected line and after insert position
       if (state.caret.line >= firstLine && state.caret.line <= lastLine) {
         const caretLine = state.caret.line
@@ -1793,7 +1845,8 @@ export class InputHandler {
     // Save after state
     if (hasRealSelection) {
       this.saveAfterStateWithSelectionToHistory(state)
-    } else {
+    }
+    else {
       this.saveAfterStateToHistory(state)
     }
 
@@ -1803,9 +1856,90 @@ export class InputHandler {
       caret: { ...state.caret },
       selection: state.selection
         ? {
-            start: { ...state.selection.start },
-            end: { ...state.selection.end },
-          }
+          start: { ...state.selection.start },
+          end: { ...state.selection.end },
+        }
+        : null,
+    })
+  }
+
+  private handleToggleBlockComment(state: InputState) {
+    // Flush any pending debounced state before non-character operations
+    this.history.flushDebouncedState(state)
+
+    // Get selected text
+    const selectedText = getSelectedText(state)
+    if (!selectedText) return
+
+    // Check if selection already starts and ends with block comment markers
+    const trimmedText = selectedText.trim()
+    const startsWithBlockComment = trimmedText.startsWith('/*')
+    const endsWithBlockComment = trimmedText.endsWith('*/')
+
+    // Save before state
+    this.saveBeforeStateWithSelectionToHistory(state)
+
+    // Store the original selection start position before modifying
+    const originalSelection = state.selection ? { ...state.selection } : null
+
+    if (startsWithBlockComment && endsWithBlockComment) {
+      // Remove block comment markers
+      const innerText = trimmedText.slice(2, -2)
+      const newText = selectedText.replace(/^[\s]*\/\*[\s]*/, '').replace(/[\s]*\*\/[\s]*$/, '')
+
+      // Replace the selection with the uncommented text
+      this.deleteSelection(state)
+      this.insertText(state, newText)
+
+      // Adjust selection to cover the uncommented text
+      if (originalSelection) {
+        const start = originalSelection.start
+        const uncommentedLength = newText.length
+        state.selection = {
+          start: { line: start.line, column: start.column },
+          end: { line: start.line, column: start.column + uncommentedLength },
+        }
+        // Update caret to end of selection
+        state.caret.line = start.line
+        state.caret.column = start.column + uncommentedLength
+        state.caret.columnIntent = state.caret.column
+      }
+    }
+    else {
+      // Add block comment markers
+      const newText = `/*${selectedText}*/`
+
+      // Replace the selection with the commented text
+      this.deleteSelection(state)
+      this.insertText(state, newText)
+
+      // Extend selection to include the comment tokens
+      if (originalSelection) {
+        const start = originalSelection.start
+        const commentedLength = newText.length
+        state.selection = {
+          start: { line: start.line, column: start.column },
+          end: { line: start.line, column: start.column + commentedLength },
+        }
+        // Update caret to end of selection
+        state.caret.line = start.line
+        state.caret.column = start.column + commentedLength
+        state.caret.columnIntent = state.caret.column
+      }
+    }
+
+    // Save after state
+    this.saveAfterStateWithSelectionToHistory(state)
+
+    // Update the state - ensure we create a new object for React
+    this.onStateChange({
+      lines: [...state.lines],
+      caret: { ...state.caret },
+      selection: state.selection
+        ? {
+          start: { ...state.selection.start },
+          end: { ...state.selection.end },
+        }
         : null,
     })
   }
@@ -1829,14 +1963,12 @@ export class InputHandler {
       hasRealSelection = true
       const { start, end } = newState.selection
 
-      const normalizedStart =
-        start.line < end.line || (start.line === end.line && start.column <= end.column)
-          ? start
-          : end
-      const normalizedEnd =
-        start.line < end.line || (start.line === end.line && start.column <= end.column)
-          ? end
-          : start
+      const normalizedStart = start.line < end.line || (start.line === end.line && start.column <= end.column)
+        ? start
+        : end
+      const normalizedEnd = start.line < end.line || (start.line === end.line && start.column <= end.column)
+        ? end
+        : start
 
       firstLine = normalizedStart.line
       lastLine = normalizedEnd.line
@@ -1846,7 +1978,8 @@ export class InputHandler {
         start: { ...normalizedStart },
         end: { ...normalizedEnd },
       }
-    } else {
+    }
+    else {
       firstLine = newState.caret.line
       lastLine = newState.caret.line
     }
@@ -1854,7 +1987,8 @@ export class InputHandler {
     // Save before state
     if (hasRealSelection) {
       this.saveBeforeStateWithSelectionToHistory(newState)
-    } else {
+    }
+    else {
       this.saveBeforeStateWithCaretToHistory(newState)
     }
 
@@ -1878,7 +2012,8 @@ export class InputHandler {
       newState.caret.line = newCaretLine
       newState.caret.column = Math.min(originalCaret.column, newCaretLineContent.length)
       newState.caret.columnIntent = newState.caret.column
-    } else {
+    }
+    else {
       // Caret is outside the duplicated range, keep it at original position
       newState.caret = { ...originalCaret }
     }
@@ -1895,14 +2030,16 @@ export class InputHandler {
           column: originalSelection.end.column,
         },
       }
-    } else {
+    }
+    else {
       newState.selection = null
     }
 
     // Save after state
     if (hasRealSelection) {
       this.saveAfterStateWithSelectionToHistory(newState)
-    } else {
+    }
+    else {
       this.saveAfterStateToHistory(newState)
     }
 
@@ -1912,9 +2049,9 @@ export class InputHandler {
       caret: { ...newState.caret },
       selection: newState.selection
         ? {
-            start: { ...newState.selection.start },
-            end: { ...newState.selection.end },
-          }
+          start: { ...newState.selection.start },
+          end: { ...newState.selection.end },
+        }
         : null,
     })
   }

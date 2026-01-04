@@ -11,6 +11,43 @@ export class AnimationManager {
   private entries = new Map<string, AnimationEntry>()
   private isRunning = false
   private lastTimestamp = 0
+  private lastErrorLogTime = new Map<string, number>()
+
+  private readonly animateFrame = (timestamp: number): void => {
+    if (!this.isRunning) return
+
+    // Sort entries by priority (lower priority number = higher priority)
+    const sortedEntries = Array.from(this.entries.values()).sort(
+      (a, b) => (a.priority ?? 0) - (b.priority ?? 0),
+    )
+
+    // Call all registered callbacks, but never let one bad callback stall the RAF loop.
+    for (const entry of sortedEntries) {
+      try {
+        entry.callback(timestamp)
+      }
+      catch (err) {
+        // Throttle logs to avoid flooding the console (especially if a callback throws every frame).
+        const now = performance.now()
+        const last = this.lastErrorLogTime.get(entry.id) ?? 0
+        if (now - last > 1000) {
+          this.lastErrorLogTime.set(entry.id, now)
+          console.error(`[AnimationManager] callback "${entry.id}" threw`, err)
+        }
+      }
+    }
+
+    this.lastTimestamp = timestamp
+
+    // Continue the loop if we still have entries
+    if (this.entries.size > 0) {
+      this.rafId = requestAnimationFrame(this.animateFrame)
+    }
+    else {
+      this.isRunning = false
+      this.rafId = null
+    }
+  }
 
   /**
    * Register an animation callback. If already registered, it will be updated.
@@ -20,6 +57,11 @@ export class AnimationManager {
 
     if (!this.isRunning) {
       this.start()
+    }
+    else if (this.rafId === null) {
+      // Defensive: if we ever end up "running" but without a scheduled RAF (e.g. due to an exception),
+      // reschedule it so draws don't get stuck until user interaction.
+      this.rafId = requestAnimationFrame(this.animateFrame)
     }
   }
 
@@ -77,7 +119,7 @@ export class AnimationManager {
 
     this.isRunning = true
     this.lastTimestamp = performance.now()
-    this.rafId = requestAnimationFrame(this.animate.bind(this))
+    this.rafId = requestAnimationFrame(this.animateFrame)
   }
 
   /**
@@ -93,31 +135,7 @@ export class AnimationManager {
     }
   }
 
-  /**
-   * The main animation loop - called once per frame
-   */
-  private animate(timestamp: number): void {
-    if (!this.isRunning) return
-
-    // Sort entries by priority (lower priority number = higher priority)
-    const sortedEntries = Array.from(this.entries.values()).sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-
-    // Call all registered callbacks
-    for (const entry of sortedEntries) {
-      entry.callback(timestamp)
-    }
-
-    this.lastTimestamp = timestamp
-
-    // Continue the loop if we still have entries
-    if (this.entries.size > 0) {
-      this.rafId = requestAnimationFrame(this.animate.bind(this))
-    }
-    else {
-      this.isRunning = false
-      this.rafId = null
-    }
-  }
+  // (animation loop implementation moved to `animateFrame` to avoid `bind()` allocations and to harden against exceptions)
 
   /**
    * Get the number of registered animations

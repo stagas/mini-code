@@ -745,7 +745,11 @@ export const CodeEditor = ({
     const unsub = subscribeActiveEditor(activeId => {
       const active = activeId === editorIdRef.current
       setIsActive(active)
-      canvasEditorRef.current?.setActive(active)
+
+      // Only set canvas editor active if this editor should be active AND textarea has focus
+      // This prevents caret from showing when editor is "active" but textarea doesn't have focus
+      const shouldBeActive = active && document.activeElement === textareaRef.current
+      canvasEditorRef.current?.setActive(shouldBeActive)
     })
 
     // Handle clicks outside the canvas to blur it
@@ -1138,6 +1142,19 @@ export const CodeEditor = ({
     const inputStateChanged = prevInputStateRef.current !== inputState
     const widgetsChanged = prevWidgetsRef.current !== widgets
 
+    // In external CodeFile mode, the CanvasEditor is updated directly from the CodeFile subscription
+    // and the input pipeline (`applyState`). Updating it again from this effect can apply stale
+    // intermediate states during rapid `codeFile.edit()` bursts (leaving the canvas “stuck” until
+    // the next interaction).
+    if (externalCodeFile) {
+      prevInputStateRef.current = inputState
+      prevWidgetsRef.current = widgets
+      if (widgetsChanged) {
+        canvasEditorRef.current?.updateWidgets(widgets)
+      }
+      return
+    }
+
     // Skip if we already updated the canvas editor for this value (from CodeFile subscription)
     if (lastCanvasUpdateValueRef.current === currentValue) {
       lastCanvasUpdateValueRef.current = null
@@ -1192,7 +1209,7 @@ export const CodeEditor = ({
       // Call updateState with current inputState to trigger ensureCaretVisible when appropriate
       debouncedUpdateState(inputState, shouldEnsureCaretVisible)
     }
-  }, [inputState, widgets])
+  }, [inputState, widgets, externalCodeFile])
 
   // Update theme and tokenizer when they change
   useEffect(() => {
@@ -1643,7 +1660,12 @@ export const CodeEditor = ({
         onPaste={handlePaste}
         onCut={handleCut}
         onBlur={() => {
-          // Allow natural focus changes between editors
+          // Stop caret blinking immediately when textarea loses focus
+          canvasEditorRef.current?.setActive(false)
+          // Also clear the active editor state if this was the active editor
+          if (getActiveEditor() === editorIdRef.current) {
+            setActiveEditor(null)
+          }
         }}
         onFocus={() => {
           // Don't activate if we're in the middle of a pointer down handler
@@ -1654,11 +1676,17 @@ export const CodeEditor = ({
             const isTouchGesture = canvasEditorRef.current?.isTouchGestureActive()
             if (!didScroll && !isTouchGesture) {
               setActiveEditor(editorIdRef.current)
+              // Immediately activate canvas editor since textarea now has focus
+              canvasEditorRef.current?.setActive(true)
             }
             else if (didScroll || isTouchGesture) {
               // Blur the textarea if it got focused during a scroll gesture
               textareaRef.current?.blur()
             }
+          }
+          else {
+            // Even if we're in a pointer handler, ensure caret is visible when focused
+            canvasEditorRef.current?.setActive(true)
           }
         }}
       />

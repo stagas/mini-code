@@ -477,6 +477,13 @@ class OffscreenLineCache {
 }
 
 export class CanvasEditor {
+  private static instanceCounter = 0
+  private readonly instanceId = ++CanvasEditor.instanceCounter
+
+  private animId(name: string): string {
+    return `${name}:${this.instanceId}`
+  }
+
   private canvas: HTMLCanvasElement
   private container: HTMLElement
   private inputState: InputState
@@ -3215,7 +3222,7 @@ export class CanvasEditor {
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       })
       // This eliminates a weird flicker probably caused by some other reactive change
-      animationManager.nextFrame('scrollFlickerFix', () => {
+      animationManager.nextFrame(this.animId('scrollFlickerFix'), () => {
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         queueMicrotask(() => {
@@ -3315,15 +3322,15 @@ export class CanvasEditor {
   }
 
   public stopAutoScroll() {
-    animationManager.unregister('autoScroll')
+    animationManager.unregister(this.animId('autoScroll'))
     this.autoScrollDirection = null
     this.autoScrollLastTime = null
   }
 
   private startMomentumScroll() {
     // Stop any existing momentum scroll first
-    if (animationManager.isRegistered('momentumScroll')) {
-      animationManager.unregister('momentumScroll')
+    if (animationManager.isRegistered(this.animId('momentumScroll'))) {
+      animationManager.unregister(this.animId('momentumScroll'))
     }
 
     const deceleration = 0.95
@@ -3339,7 +3346,7 @@ export class CanvasEditor {
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
-        animationManager.unregister('momentumScroll')
+        animationManager.unregister(this.animId('momentumScroll'))
         return
       }
 
@@ -3397,30 +3404,30 @@ export class CanvasEditor {
 
       // Stop if velocity is too low
       if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
-        animationManager.unregister('momentumScroll')
+        animationManager.unregister(this.animId('momentumScroll'))
         return
       }
     }
 
-    animationManager.register('momentumScroll', momentum)
+    animationManager.register(this.animId('momentumScroll'), momentum)
   }
 
   private stopMomentumScroll() {
-    animationManager.unregister('momentumScroll')
+    animationManager.unregister(this.animId('momentumScroll'))
     this.touchVelocityX = 0
     this.touchVelocityY = 0
   }
 
   private startAutoScroll() {
-    if (animationManager.isRegistered('autoScroll')) {
-      animationManager.unregister('autoScroll')
+    if (animationManager.isRegistered(this.animId('autoScroll'))) {
+      animationManager.unregister(this.animId('autoScroll'))
     }
 
     this.autoScrollLastTime = performance.now()
 
     const scroll = (currentTime: number) => {
       if (!this.autoScrollDirection) {
-        animationManager.unregister('autoScroll')
+        animationManager.unregister(this.animId('autoScroll'))
         this.autoScrollLastTime = null
         return
       }
@@ -3432,7 +3439,7 @@ export class CanvasEditor {
 
       const ctx = this.canvas.getContext('2d')
       if (!ctx) {
-        animationManager.unregister('autoScroll')
+        animationManager.unregister(this.animId('autoScroll'))
         this.autoScrollLastTime = null
         return
       }
@@ -3483,23 +3490,23 @@ export class CanvasEditor {
       }
 
       if (!this.autoScrollDirection) {
-        animationManager.unregister('autoScroll')
+        animationManager.unregister(this.animId('autoScroll'))
         this.autoScrollLastTime = null
       }
     }
 
-    animationManager.register('autoScroll', scroll)
+    animationManager.register(this.animId('autoScroll'), scroll)
   }
 
   private startCaretBlink() {
-    if (animationManager.isRegistered('caretBlink')) return
+    if (animationManager.isRegistered(this.animId('caretBlink'))) return
     this.caretBlinkStartTime = performance.now()
     this.lastCaretActivityTime = performance.now()
     this.caretOpacity = 1
 
     const blink = () => {
       if (!this.isActive) {
-        animationManager.unregister('caretBlink')
+        animationManager.unregister(this.animId('caretBlink'))
         return
       }
 
@@ -3521,11 +3528,11 @@ export class CanvasEditor {
       this.maybeDraw()
     }
 
-    animationManager.register('caretBlink', blink)
+    animationManager.register(this.animId('caretBlink'), blink)
   }
 
   private stopCaretBlink() {
-    animationManager.unregister('caretBlink')
+    animationManager.unregister(this.animId('caretBlink'))
     this.caretOpacity = 1
   }
 
@@ -3543,17 +3550,17 @@ export class CanvasEditor {
   }
 
   private startAnimationLoop() {
-    if (animationManager.isRegistered('mainAnimation')) return
+    if (animationManager.isRegistered(this.animId('mainAnimation'))) return
 
     const animate = () => {
       this.draw()
     }
 
-    animationManager.register('mainAnimation', animate, -1000) // High priority
+    animationManager.register(this.animId('mainAnimation'), animate, -1000) // High priority
   }
 
   private stopAnimationLoop() {
-    animationManager.unregister('mainAnimation')
+    animationManager.unregister(this.animId('mainAnimation'))
   }
 
   private updateCanvasSize() {
@@ -3744,6 +3751,17 @@ export class CanvasEditor {
 
         for (const widget of ws.above) {
           widgetAdjustments.set(widget, { startVisualLine, anchorVisualLine: visualIndex })
+        }
+      }
+
+      // If the logical line has no empty logical line above, 'above' widgets must be hidden for all
+      // wrapped segments of that logical line (wrapping does not create space above the first segment).
+      for (const [visualIndex, ws] of widgetsByVisualLine.entries()) {
+        if (!ws.above || ws.above.length === 0) continue
+        const filteredAbove = ws.above.filter(w => hasEmptyLogicalLineAbove(w.line - 1))
+        if (filteredAbove.length !== ws.above.length) {
+          ws.above = filteredAbove
+          widgetsByVisualLine.set(visualIndex, ws)
         }
       }
     }
@@ -4728,13 +4746,13 @@ export class CanvasEditor {
 
   private maybeDraw() {
     // Only draw if not animating (animation loop handles drawing)
-    if (animationManager.isRegistered('mainAnimation')) {
+    if (animationManager.isRegistered(this.animId('mainAnimation'))) {
       return
     }
 
     // Batch multiple draw calls in the same frame using AnimationManager
-    if (!animationManager.isRegistered('drawBatch')) {
-      animationManager.nextFrame('drawBatch', () => {
+    if (!animationManager.isRegistered(this.animId('drawBatch'))) {
+      animationManager.nextFrame(this.animId('drawBatch'), () => {
         this.draw()
       })
     }
@@ -5339,7 +5357,7 @@ export class CanvasEditor {
         // Force immediate update if canvas state is already finalized (e.g., after error updates)
         if (changed && this.lastAutocompleteInfo !== null) {
           // Delay slightly to ensure caret/layout state is finalized before measuring
-          animationManager.nextFrame('autocompleteDelay', () => {
+          animationManager.nextFrame(this.animId('autocompleteDelay'), () => {
             const ctx = this.canvas.getContext('2d')
             if (!ctx) return
 
@@ -5505,7 +5523,7 @@ export class CanvasEditor {
 
     // Defer canvas size update to avoid feedback loop with ResizeObserver
     // The draw will use current canvas size, and metrics will be updated correctly
-    animationManager.nextFrame('errorUpdateDefer', () => {
+    animationManager.nextFrame(this.animId('errorUpdateDefer'), () => {
       this.updateCanvasSize()
 
       const drawCtx = this.canvas.getContext('2d')
