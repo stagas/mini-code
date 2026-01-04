@@ -1380,8 +1380,14 @@ export class CanvasEditor {
         }
       }
 
-      // Exactly at the boundary: prefer the end of this segment instead of start of next
+      // Exactly at the boundary: prefer the start of the next segment (when it exists).
+      // This makes mouse hit-testing and caret rendering behave naturally at the beginning
+      // of wrapped continuation segments (startColumn === previous endColumn).
       if (logicalColumn === wrapped.endColumn) {
+        const next = wrappedLines[i + 1]
+        if (next && next.logicalLine === logicalLine && next.startColumn === wrapped.endColumn) {
+          return { visualLine: i + 1, visualColumn: 0 }
+        }
         return { visualLine: i, visualColumn: wrapped.text.length }
       }
     }
@@ -1931,9 +1937,10 @@ export class CanvasEditor {
       }
     }
 
-    // If we're at the start of a wrapped segment (visualColumn = 0) and this is a continuation
-    // of the previous segment (same logical line), place caret at end of previous segment instead
-    if (visualColumn === 0 && clampedVisualLineIndex > 0) {
+    // Only snap to the end of the previous segment when the pointer is in the left padding area.
+    // Otherwise, allow selecting/caret placement at the start of wrapped continuation segments.
+    const isInLeftPadding = xAdjusted <= 0
+    if (isInLeftPadding && visualColumn === 0 && clampedVisualLineIndex > 0) {
       const prevWrappedLine = wrappedLines[clampedVisualLineIndex - 1]
       if (prevWrappedLine && prevWrappedLine.logicalLine === wrappedLine.logicalLine) {
         // Place caret at end of previous segment
@@ -2030,15 +2037,7 @@ export class CanvasEditor {
       else if (currentVisual.visualLine < wrappedLines.length - 1) {
         // Move to next segment
         nextVisualLine = currentVisual.visualLine + 1
-        const nextWrapped = wrappedLines[nextVisualLine]
-        // If next segment is part of same logical line, move to position 1 (inside the segment)
-        // to avoid being placed back at end of previous segment, but only if segment has content
-        if (nextWrapped.logicalLine === currentWrapped.logicalLine && nextWrapped.text.length > 1) {
-          nextVisualColumn = 1
-        }
-        else {
-          nextVisualColumn = 0
-        }
+        nextVisualColumn = 0
       }
       else {
         // At end of last segment, try to move to next line
@@ -2231,22 +2230,29 @@ export class CanvasEditor {
   private getColumnFromX(x: number, line: string, ctx: CanvasRenderingContext2D): number {
     if (x <= 0) return 0
 
-    // Measure text width to find the closest character position
-    let currentWidth = 0
-    for (let i = 0; i < line.length; i++) {
-      const charWidth = ctx.measureText(line[i]).width
-      const nextWidth = currentWidth + charWidth
+    // Ligature/kerning-safe: per-character widths don't match shaped runs (e.g. Fira Code).
+    // Use prefix measurement so hit-testing matches the rendered text.
+    const n = line.length
+    if (n === 0) return 0
 
-      // If x is closer to the middle of this character, return this position
-      if (x <= currentWidth + charWidth / 2) {
-        return i
-      }
+    const w = (end: number) => ctx.measureText(line.substring(0, end)).width
 
-      currentWidth = nextWidth
+    // Find the first prefix whose width is >= x
+    let lo = 0
+    let hi = n
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (w(mid) < x) lo = mid + 1
+      else hi = mid
     }
 
-    // If we've gone through all characters, return the end of the line
-    return line.length
+    const i = Math.max(0, Math.min(lo, n))
+    if (i === 0) return 0
+    if (i === n) return n
+
+    const prevW = w(i - 1)
+    const curW = w(i)
+    return x <= (prevW + curW) / 2 ? i - 1 : i
   }
 
   public updateState(newState: InputState, ensureCaretVisible = false,
@@ -3615,8 +3621,9 @@ export class CanvasEditor {
         aboveHeight = this.getAboveSpacingHeight(wrappedLines, i, widgets.above)
       }
 
-      const lineY = this.padding + i * this.lineHeight + yOffset + aboveHeight
-      const lineEndY = lineY + this.lineHeight
+      // lineTopY is the top of the entire band (including above widgets)
+      const lineTopY = this.padding + i * this.lineHeight + yOffset
+      const lineEndY = lineTopY + aboveHeight + this.lineHeight
 
       if (adjustedY < lineEndY) {
         return i
@@ -5842,15 +5849,23 @@ export class CanvasEditor {
   private getColumnFromXInclusive(x: number, line: string, ctx: CanvasRenderingContext2D): number {
     if (x <= 0) return 0
 
-    let currentWidth = 0
-    for (let i = 0; i < line.length; i++) {
-      const charWidth = ctx.measureText(line[i]).width
-      const nextWidth = currentWidth + charWidth
-      if (x < nextWidth) return i
-      currentWidth = nextWidth
+    // Ligature/kerning-safe inclusive hit-testing.
+    const n = line.length
+    if (n === 0) return 0
+
+    const w = (end: number) => ctx.measureText(line.substring(0, end)).width
+
+    // Find smallest end in [1..n] where width(end) > x, then return end-1.
+    let lo = 1
+    let hi = n
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (w(mid) > x) hi = mid
+      else lo = mid + 1
     }
 
-    return line.length
+    const end = lo
+    return w(end) > x ? end - 1 : n
   }
 
   public updateErrorHover(error: EditorError | null) {
@@ -6370,8 +6385,10 @@ export class CanvasEditor {
     // Convert viewport Y to content Y: subtract header area, then add scrollY
     const adjustedY = y - headerHeight + this.scrollY
 
-    // Check if any widget was clicked
+    // Check if any widget was clicked (skip widgets with culling:false - they don't render)
     for (const [widget, pos] of this.widgetPositions.entries()) {
+      if (widget.culling === false) continue
+
       if (
         adjustedX >= pos.x
         && adjustedX <= pos.x + pos.width
