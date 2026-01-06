@@ -5364,7 +5364,9 @@ export class CanvasEditor {
         // Force immediate update if canvas state is already finalized (e.g., after error updates)
         if (changed && this.lastAutocompleteInfo !== null) {
           // Delay slightly to ensure caret/layout state is finalized before measuring
-          animationManager.nextFrame(this.animId('autocompleteDelay'), () => {
+          // Use higher priority to ensure position updates before popup draws
+          animationManager.register(this.animId('autocompleteDelay'), (timestamp) => {
+            animationManager.unregister(this.animId('autocompleteDelay'))
             const ctx = this.canvas.getContext('2d')
             if (!ctx) return
 
@@ -5375,7 +5377,7 @@ export class CanvasEditor {
               : undefined
 
             publishPosition(ctx, textPadding, fallback)
-          })
+          }, -1) // Higher priority than popup canvas draw (default 0)
         }
         else {
           publishPosition(ctx, textPadding, fallback)
