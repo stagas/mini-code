@@ -1879,8 +1879,24 @@ export class InputHandler {
     // Save before state
     this.saveBeforeStateWithSelectionToHistory(state)
 
-    // Store the original selection start position before modifying
+    // Store the original selection and detect direction
     const originalSelection = state.selection ? { ...state.selection } : null
+
+    // Normalize selection to determine actual start/end
+    const normalizedStart = originalSelection && (
+      originalSelection.start.line < originalSelection.end.line
+      || (originalSelection.start.line === originalSelection.end.line && originalSelection.start.column <= originalSelection.end.column)
+    ) ? originalSelection.start : originalSelection?.end
+
+    const normalizedEnd = originalSelection && (
+      originalSelection.start.line < originalSelection.end.line
+      || (originalSelection.start.line === originalSelection.end.line && originalSelection.start.column <= originalSelection.end.column)
+    ) ? originalSelection.end : originalSelection?.start
+
+    // Detect if selection was made backwards (caret is at the normalized start)
+    const isBackwardSelection = originalSelection && normalizedStart
+      ? (state.caret.line === normalizedStart.line && state.caret.column === normalizedStart.column)
+      : false
 
     if (startsWithBlockComment && endsWithBlockComment) {
       // Remove block comment markers
@@ -1889,19 +1905,29 @@ export class InputHandler {
 
       // Replace the selection with the uncommented text
       this.deleteSelection(state)
+      const startPosition = { ...state.caret }
       this.insertText(state, newText)
 
       // Adjust selection to cover the uncommented text
       if (originalSelection) {
-        const start = originalSelection.start
-        const uncommentedLength = newText.length
+        const newTextLines = newText.split('\n')
+        const endLine = startPosition.line + newTextLines.length - 1
+        const endColumn = newTextLines.length === 1
+          ? startPosition.column + newText.length
+          : newTextLines[newTextLines.length - 1].length
+
         state.selection = {
-          start: { line: start.line, column: start.column },
-          end: { line: start.line, column: start.column + uncommentedLength },
+          start: { line: startPosition.line, column: startPosition.column },
+          end: { line: endLine, column: endColumn },
         }
-        // Update caret to end of selection
-        state.caret.line = start.line
-        state.caret.column = start.column + uncommentedLength
+        // Update caret based on original selection direction
+        if (isBackwardSelection) {
+          state.caret.line = startPosition.line
+          state.caret.column = startPosition.column
+        } else {
+          state.caret.line = endLine
+          state.caret.column = endColumn
+        }
         state.caret.columnIntent = state.caret.column
       }
     }
@@ -1911,19 +1937,29 @@ export class InputHandler {
 
       // Replace the selection with the commented text
       this.deleteSelection(state)
+      const startPosition = { ...state.caret }
       this.insertText(state, newText)
 
       // Extend selection to include the comment tokens
       if (originalSelection) {
-        const start = originalSelection.start
-        const commentedLength = newText.length
+        const newTextLines = newText.split('\n')
+        const endLine = startPosition.line + newTextLines.length - 1
+        const endColumn = newTextLines.length === 1
+          ? startPosition.column + newText.length
+          : newTextLines[newTextLines.length - 1].length
+
         state.selection = {
-          start: { line: start.line, column: start.column },
-          end: { line: start.line, column: start.column + commentedLength },
+          start: { line: startPosition.line, column: startPosition.column },
+          end: { line: endLine, column: endColumn },
         }
-        // Update caret to end of selection
-        state.caret.line = start.line
-        state.caret.column = start.column + commentedLength
+        // Update caret based on original selection direction
+        if (isBackwardSelection) {
+          state.caret.line = startPosition.line
+          state.caret.column = startPosition.column
+        } else {
+          state.caret.line = endLine
+          state.caret.column = endColumn
+        }
         state.caret.columnIntent = state.caret.column
       }
     }
