@@ -691,7 +691,7 @@ export class InputHandler {
   }
 
   private isWordChar(char: string): boolean {
-    return /[a-zA-Z0-9_]/.test(char)
+    return /[a-zA-Z0-9_#.]/.test(char)
   }
 
   private findWordStart(line: string, startColumn: number): number {

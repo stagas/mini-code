@@ -51,10 +51,10 @@ export const javascriptTokenizer: Tokenizer = (line: string, isBeginOfCode: bool
       continue
     }
 
-    // Keywords and identifiers
-    if (/[a-zA-Z_$]/.test(char)) {
+    // Keywords and identifiers (including those starting with . or #)
+    if (/[a-zA-Z_$#]/.test(char) || (char === '.' && i + 1 < line.length && /[a-zA-Z_$#]/.test(line[i + 1]))) {
       let word = ''
-      while (i < line.length && /[a-zA-Z0-9_$]/.test(line[i])) {
+      while (i < line.length && /[a-zA-Z0-9_$#.]/.test(line[i])) {
         word += line[i]
         i++
       }

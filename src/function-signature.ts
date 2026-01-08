@@ -4,6 +4,10 @@ export interface FunctionParameter {
   optional?: boolean
   description?: string
   defaultValue?: any
+  min?: number
+  max?: number
+  step?: number
+  slope?: 'linear' | 'exp2' | 'exp10' | 'log2' | 'log10'
 }
 
 export interface FunctionSignature {
@@ -13,6 +17,8 @@ export interface FunctionSignature {
   description?: string
   deprecated?: boolean
   examples?: string[]
+  type?: 'function' | 'variable'
+  category?: string
 }
 
 export interface FunctionCallInfo {
@@ -20,6 +26,11 @@ export interface FunctionCallInfo {
   currentArgumentIndex: number
   currentParameterName?: string
   openParenPosition: { line: number; column: number }
+}
+
+export interface VariableHoverInfo {
+  variableName: string
+  position: { line: number; column: number }
 }
 
 // Sample function definitions for demonstration
@@ -181,6 +192,128 @@ export const functionDefinitions: Record<string, FunctionSignature> = {
     returnType: 'any',
     description: 'Sequence function',
   },
+  // Variables
+  PI: {
+    name: 'PI',
+    parameters: [],
+    returnType: 'number',
+    description: 'The mathematical constant π (pi), approximately 3.14159',
+    type: 'variable',
+  },
+  TWO_PI: {
+    name: 'TWO_PI',
+    parameters: [],
+    returnType: 'number',
+    description: 'Two times π (pi), approximately 6.28318',
+    type: 'variable',
+  },
+  HALF_PI: {
+    name: 'HALF_PI',
+    parameters: [],
+    returnType: 'number',
+    description: 'Half of π (pi), approximately 1.57079',
+    type: 'variable',
+  },
+  E: {
+    name: 'E',
+    parameters: [],
+    returnType: 'number',
+    description: 'Euler\'s number, the base of natural logarithms, approximately 2.71828',
+    type: 'variable',
+  },
+  LN2: {
+    name: 'LN2',
+    parameters: [],
+    returnType: 'number',
+    description: 'Natural logarithm of 2, approximately 0.693147',
+    type: 'variable',
+  },
+  LN10: {
+    name: 'LN10',
+    parameters: [],
+    returnType: 'number',
+    description: 'Natural logarithm of 10, approximately 2.302585',
+    type: 'variable',
+  },
+  LOG2E: {
+    name: 'LOG2E',
+    parameters: [],
+    returnType: 'number',
+    description: 'Base-2 logarithm of E, approximately 1.442695',
+    type: 'variable',
+  },
+  LOG10E: {
+    name: 'LOG10E',
+    parameters: [],
+    returnType: 'number',
+    description: 'Base-10 logarithm of E, approximately 0.434294',
+    type: 'variable',
+  },
+  SQRT1_2: {
+    name: 'SQRT1_2',
+    parameters: [],
+    returnType: 'number',
+    description: 'Square root of 1/2, approximately 0.707106',
+    type: 'variable',
+  },
+  SQRT2: {
+    name: 'SQRT2',
+    parameters: [],
+    returnType: 'number',
+    description: 'Square root of 2, approximately 1.414213',
+    type: 'variable',
+  },
+  // Special variables with # prefix
+  '#scale': {
+    name: '#scale',
+    parameters: [],
+    returnType: 'number',
+    description: 'Current scale factor',
+    type: 'variable',
+  },
+  '#tempo': {
+    name: '#tempo',
+    parameters: [],
+    returnType: 'number',
+    description: 'Current tempo in BPM',
+    type: 'variable',
+  },
+  '#time': {
+    name: '#time',
+    parameters: [],
+    returnType: 'number',
+    description: 'Current time in seconds',
+    type: 'variable',
+  },
+  '.rate': {
+    name: '.rate',
+    parameters: [],
+    returnType: 'number',
+    description: 'Playback rate multiplier',
+    type: 'variable',
+  },
+  '.offset': {
+    name: '.offset',
+    parameters: [],
+    returnType: 'number',
+    description: 'Time offset in seconds',
+    type: 'variable',
+  },
+  '.volume': {
+    name: '.volume',
+    parameters: [],
+    returnType: 'number',
+    description: 'Volume level (0.0 to 1.0)',
+    type: 'variable',
+  },
+  '.step': {
+    name: '.step',
+    parameters: [
+      { name: 'rate', type: 'number', description: 'Step rate' },
+    ],
+    returnType: 'any',
+    description: 'Steps through values at the specified rate',
+  },
 }
 
 /**
@@ -238,10 +371,10 @@ export const findFunctionCallContext = (
   const beforeCursor = code.substring(0, cursorPos)
   const afterCursor = code.substring(cursorPos)
 
-  const isIdent = (c: string): boolean => /[a-zA-Z0-9_$]/.test(c)
-  const isIdentStart = (c: string): boolean => /[a-zA-Z_$]/.test(c)
+  const isIdent = (c: string): boolean => /[a-zA-Z0-9_$#]/.test(c)
+  const isIdentStart = (c: string): boolean => /[a-zA-Z_$#]/.test(c)
   const isValidName = (s: string): boolean =>
-    /^(\.[a-zA-Z_$][a-zA-Z0-9_$]*|[a-zA-Z_$][a-zA-Z0-9_$]*)(\.[a-zA-Z_$][a-zA-Z0-9_$]*)*$/.test(s)
+    /^(\.[a-zA-Z_$#][a-zA-Z0-9_$#]*|[a-zA-Z_$#][a-zA-Z0-9_$#]*)(\.[a-zA-Z_$#][a-zA-Z0-9_$#]*)*$/.test(s)
 
   // Robust word boundary scan around the cursor (handles cases where regex misses)
   {
@@ -339,8 +472,8 @@ export const findFunctionCallContext = (
     text: string,
     cursorOffset: number,
   ): { ident: string; start: number; end: number } | null => {
-    const isIdentChar = (c: string): boolean => /[a-zA-Z0-9_$]/.test(c)
-    const isIdentStart = (c: string): boolean => /[a-zA-Z_$]/.test(c)
+    const isIdentChar = (c: string): boolean => /[a-zA-Z0-9_$#]/.test(c)
+    const isIdentStart = (c: string): boolean => /[a-zA-Z_$#]/.test(c)
 
     let i = Math.max(0, Math.min(cursorOffset, text.length))
     if (i === text.length) i = Math.max(0, i - 1)
@@ -734,6 +867,145 @@ export const findFunctionCallContext = (
     currentParameterName,
     openParenPosition: { line: bestMatch.openLine, column: bestMatch.openColumn },
   }
+}
+
+/**
+ * Finds the variable hover context at the given cursor position
+ * Returns information about a variable (identifier not followed by parentheses) at the cursor
+ */
+export const findVariableHoverContext = (
+  lines: string[],
+  cursorLine: number,
+  cursorColumn: number,
+  functionDefinitions: Record<string, FunctionSignature> = {},
+): VariableHoverInfo | null => {
+  const code = lines.join('\n')
+
+  const lineStarts: number[] = new Array(lines.length)
+  {
+    let pos = 0
+    for (let i = 0; i < lines.length; i++) {
+      lineStarts[i] = pos
+      pos += (lines[i]?.length ?? 0) + 1
+    }
+  }
+
+  const findLine = (pos: number): number => {
+    let low = 0
+    let high = lineStarts.length - 1
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      const start = lineStarts[mid] ?? 0
+      const nextStart = (mid + 1 < lineStarts.length) ? (lineStarts[mid + 1] ?? code.length) : code.length + 1
+      if (pos < start) high = mid - 1
+      else if (pos >= nextStart) low = mid + 1
+      else return mid
+    }
+    return Math.max(0, Math.min(lineStarts.length - 1, low))
+  }
+
+  const toLineColumn = (pos: number): { line: number; column: number } => {
+    const line = findLine(pos)
+    return { line, column: pos - (lineStarts[line] ?? 0) }
+  }
+
+  const clampedCursorLine = Math.max(0, Math.min(cursorLine, Math.max(0, lines.length - 1)))
+  const clampedCursorColumn = Math.max(0, Math.min(cursorColumn, lines[clampedCursorLine]?.length ?? 0))
+  const cursorGlobalPos = Math.max(0, Math.min(
+    (lineStarts[clampedCursorLine] ?? 0) + clampedCursorColumn,
+    code.length,
+  ))
+
+  const isIdent = (c: string): boolean => /[a-zA-Z0-9_$#]/.test(c)
+  const isIdentStart = (c: string): boolean => /[a-zA-Z_$#]/.test(c)
+  const isValidName = (s: string): boolean =>
+    /^(\.[a-zA-Z_$#][a-zA-Z0-9_$#]*|[a-zA-Z_$#][a-zA-Z0-9_$#]*)(\.[a-zA-Z_$#][a-zA-Z0-9_$#]*)*$/.test(s)
+
+  // Find the identifier at the cursor position
+  {
+    let start = cursorGlobalPos
+    while (start > 0) {
+      const c = code[start - 1]!
+      if (isIdent(c) || c === '.') start--
+      else break
+    }
+    let end = cursorGlobalPos
+    while (end < code.length) {
+      const c = code[end]!
+      if (isIdent(c) || c === '.') end++
+      else break
+    }
+    if (start < end) {
+      const fullChain = code.substring(start, end)
+
+      // For dotted chains like "#scale.step", we need to check each segment
+      // to see which one we're actually hovering over
+      if (fullChain.includes('.')) {
+        // Find which segment the cursor is in by looking for dots
+        let segmentStart = start
+        let segmentEnd = start
+
+        // Scan through the chain to find segment boundaries
+        for (let i = start; i < end; i++) {
+          if (code[i] === '.') {
+            // Found a dot - check if cursor is in the segment before it
+            if (cursorGlobalPos >= segmentStart && cursorGlobalPos < i) {
+              const segment = code.substring(segmentStart, i)
+              if (segment.length > 0 && isValidName(segment)) {
+                const signature = functionDefinitions[segment]
+                if (signature) {
+                  const lc = toLineColumn(segmentStart)
+                  return {
+                    variableName: segment,
+                    position: lc,
+                  }
+                }
+              }
+              break
+            }
+            // Move to next segment (skip the dot)
+            segmentStart = i
+            segmentEnd = i
+          }
+        }
+
+        // Check the last segment (after the last dot, or if we didn't find the cursor yet)
+        const segment = code.substring(segmentStart, end)
+        if (segment.length > 0 && isValidName(segment)) {
+          const signature = functionDefinitions[segment]
+          if (signature) {
+            const lc = toLineColumn(segmentStart)
+            return {
+              variableName: segment,
+              position: lc,
+            }
+          }
+        }
+      }
+      else {
+        // Single identifier (no dots)
+        const word = fullChain
+        if (word.length > 0 && isValidName(word)) {
+          const afterWord = code.substring(end).trimStart()
+          // Only consider it a variable if it's NOT followed by opening parenthesis
+          if (!afterWord.startsWith('(')) {
+            // Check if this identifier exists in our definitions
+            // (either as a variable, or as a function that's being referenced without calling)
+            const signature = functionDefinitions[word]
+            if (signature) {
+              const lc = toLineColumn(start)
+              return {
+                variableName: word,
+                position: lc,
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return null
 }
 
 /**

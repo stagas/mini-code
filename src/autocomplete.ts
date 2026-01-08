@@ -165,12 +165,12 @@ export const findCurrentWord = (
   // Don't autocomplete if cursor is inside a string
   if (isInsideString(line, col)) return null
 
-  // Identifier segment characters: letters, numbers, $, _
-  const isSegmentChar = (char: string) => /[a-zA-Z0-9$_]/.test(char)
+  // Identifier segment characters: letters, numbers, $, _, #
+  const isSegmentChar = (char: string) => /[a-zA-Z0-9$_#]/.test(char)
 
   // Find start of the "word" (supports dotted chains like `foo.bar`).
-  // Include '.' only when it is part of an identifier chain (i.e. preceded by an identifier char),
-  // so optional chaining `?.` doesn't produce words starting with '.'.
+  // Include '.' when it is part of an identifier chain OR at the start (for .walk style identifiers)
+  // Also support # at the start (for #scale style identifiers)
   let startColumn = col
   while (startColumn > 0) {
     const prevChar = line[startColumn - 1]
@@ -178,9 +178,12 @@ export const findCurrentWord = (
       startColumn--
       continue
     }
-    if (prevChar === '.' && isSegmentChar(line[startColumn - 2])) {
-      startColumn--
-      continue
+    if (prevChar === '.') {
+      // Allow . at the start or when preceded by an identifier char
+      if (startColumn === 1 || isSegmentChar(line[startColumn - 2])) {
+        startColumn--
+        continue
+      }
     }
     break
   }

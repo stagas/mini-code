@@ -10,7 +10,9 @@ import type { EditorError } from './editor-error.ts'
 import {
   calculatePopupPosition,
   findFunctionCallContext,
+  findVariableHoverContext,
   type FunctionCallInfo,
+  type VariableHoverInfo,
 } from './function-signature.ts'
 import type { FunctionSignature } from './function-signature.ts'
 import type { InputState } from './input.ts'
@@ -5720,6 +5722,20 @@ export class CanvasEditor {
       visualColumn,
       wrappedLines,
     )
+
+    // First check if we're hovering over a variable (identifiers not followed by parentheses)
+    const variableInfo = findVariableHoverContext(
+      this.inputState.lines,
+      logicalPos.logicalLine,
+      logicalPos.logicalColumn,
+      this.functionDefinitions,
+    )
+
+    if (variableInfo) {
+      return {
+        functionName: variableInfo.variableName,
+      }
+    }
 
     // Check if we're hovering over a function call
     const callInfo = findFunctionCallContext(

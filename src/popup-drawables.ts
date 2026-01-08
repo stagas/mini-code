@@ -1,10 +1,10 @@
+import type { EditorError } from './editor-error.ts'
+import { type FunctionParameter, type FunctionSignature } from './function-signature.ts'
 import { drawTokensWithCustomLigatures, extractTokensForSegment, type MonoLigatureCache } from './mono-text.ts'
 import { type PopupCanvasHitRegion, popupCanvasThemeFallback, popupCanvasUiFont } from './popup-canvas.ts'
 import { fillRoundedRectWithShadow, fontWithWeight, maxLineWidth, roundedRectPath, strokeRoundedRect,
   wrapText } from './popup-drawing.ts'
-import { type FunctionParameter, type FunctionSignature } from './function-signature.ts'
-import { highlightCode, defaultTokenizer, type Theme, type Token, type Tokenizer } from './syntax.ts'
-import type { EditorError } from './editor-error.ts'
+import { defaultTokenizer, highlightCode, type Theme, type Token, type Tokenizer } from './syntax.ts'
 
 export type FunctionSignaturePopupCache = {
   exampleLigatureCache: MonoLigatureCache
@@ -349,13 +349,13 @@ export const drawFunctionSignaturePopup = (
 
     // Signature line
     addText(fontBold, effectiveTheme.functionSignaturePopup.functionName, signature.name)
-    addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, '(')
-    signature.parameters.forEach((param, index) =>
-      addParam(param, index, index === signature.parameters.length - 1)
-    )
-    addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ')')
+    if (signature.type !== 'variable') {
+      addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, '(')
+      signature.parameters.forEach((param, index) => addParam(param, index, index === signature.parameters.length - 1))
+      addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ')')
+    }
     if (signature.returnType) {
-      addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ':')
+      addText(fontNormal, effectiveTheme.functionSignaturePopup.separator, ': ')
       addText(fontNormal, effectiveTheme.functionSignaturePopup.returnType, signature.returnType)
     }
 
@@ -374,49 +374,52 @@ export const drawFunctionSignaturePopup = (
       }
     }
 
-    const param = signature.parameters[effectiveParameterIndex]
-    if (param) {
-      y += 8
-      if (paint) {
-        context.strokeStyle = effectiveTheme.functionSignaturePopup.border
-        context.lineWidth = 1
-        context.beginPath()
-        context.moveTo(contentLeft, y + 0.5)
-        context.lineTo(left + frameWidth - padding, y + 0.5)
-        context.stroke()
-      }
-      y += 8
+    // Only show parameter details for functions, not variables
+    if (signature.type !== 'variable') {
+      const param = signature.parameters[effectiveParameterIndex]
+      if (param) {
+        y += 8
+        if (paint) {
+          context.strokeStyle = effectiveTheme.functionSignaturePopup.border
+          context.lineWidth = 1
+          context.beginPath()
+          context.moveTo(contentLeft, y + 0.5)
+          context.lineTo(left + frameWidth - padding, y + 0.5)
+          context.stroke()
+        }
+        y += 8
 
-      x = contentLeft
-      const titleSegments: Array<{ font: string; color: string; text: string }> = [
-        {
-          font: fontBold,
-          color: effectiveTheme.functionSignaturePopup.parameterName,
-          text: `${param.name}${param.optional ? '?' : ''}`,
-        },
-      ]
-      if (param.type) {
-        titleSegments.push({ font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator, text: ':' })
-        titleSegments.push({
-          font: fontNormal,
-          color: effectiveTheme.functionSignaturePopup.parameterType,
-          text: param.type,
-        })
-      }
+        x = contentLeft
+        const titleSegments: Array<{ font: string; color: string; text: string }> = [
+          {
+            font: fontBold,
+            color: effectiveTheme.functionSignaturePopup.parameterName,
+            text: `${param.name}${param.optional ? '?' : ''}`,
+          },
+        ]
+        if (param.type) {
+          titleSegments.push({ font: fontNormal, color: effectiveTheme.functionSignaturePopup.separator, text: ':' })
+          titleSegments.push({
+            font: fontNormal,
+            color: effectiveTheme.functionSignaturePopup.parameterType,
+            text: param.type,
+          })
+        }
 
-      for (const s of titleSegments) addText(s.font, s.color, s.text)
-      x = contentLeft
-      y += lineHeight
+        for (const s of titleSegments) addText(s.font, s.color, s.text)
+        x = contentLeft
+        y += lineHeight
 
-      if (param.description) {
-        y += 4
-        const lines = wrapText(context, uiFont, param.description, contentWidth)
-        usedWidth = Math.max(usedWidth, maxLineWidth(context, uiFont, lines))
-        for (const line of lines) {
-          if (paint) {
-            drawText(uiFont, effectiveTheme.functionSignaturePopup.description, line, contentLeft, y)
+        if (param.description) {
+          y += 4
+          const lines = wrapText(context, uiFont, param.description, contentWidth)
+          usedWidth = Math.max(usedWidth, maxLineWidth(context, uiFont, lines))
+          for (const line of lines) {
+            if (paint) {
+              drawText(uiFont, effectiveTheme.functionSignaturePopup.description, line, contentLeft, y)
+            }
+            y += lineHeight
           }
-          y += lineHeight
         }
       }
     }
@@ -955,5 +958,3 @@ export const drawAutocompletePopup = (input: {
 
   return regions
 }
-
-
