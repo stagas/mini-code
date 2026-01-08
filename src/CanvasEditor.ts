@@ -423,7 +423,7 @@ class OffscreenLineCache {
 
     const entry: OffscreenLineEntry = {
       id,
-      key: 0,
+      key: -1,
       logicalLine,
       canvas,
       ctx,
@@ -956,14 +956,22 @@ export class CanvasEditor {
       const prev = wrappedLines[visualIndex - 1]
       const cur = wrappedLines[visualIndex]
       if (prev && cur && prev.logicalLine === cur.logicalLine) {
-        const spacingWidgets = aboveWidgets.filter(w => w.culling !== false)
-        return spacingWidgets.length > 0
-          ? Math.max(...spacingWidgets.map(w => this.getWidgetHeight(w)))
-          : 0
+        let max = 0
+        for (const w of aboveWidgets) {
+          if (w.culling === false) continue
+          const h = this.getWidgetHeight(w)
+          if (h > max) max = h
+        }
+        return max
       }
     }
 
-    return Math.max(...aboveWidgets.map(w => this.getWidgetHeight(w)))
+    let max = 0
+    for (const w of aboveWidgets) {
+      const h = this.getWidgetHeight(w)
+      if (h > max) max = h
+    }
+    return max
   }
 
   private getHeaderHeight(): number {
@@ -1894,8 +1902,8 @@ export class CanvasEditor {
 
     // Calculate column position within the visual line, accounting for inline widgets
     const textPadding = this.getTextPadding()
-    const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || []
-    const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+    const emptyInlineWidgets: { widget: EditorWidget; column: number }[] = []
+    const sortedInlineWidgets = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || emptyInlineWidgets
 
     let xAdjusted = adjustedX - textPadding
     let visualColumn = 0
@@ -3724,6 +3732,11 @@ export class CanvasEditor {
       }
     }
 
+    // Inline widgets are consumed in multiple hot paths and must be in column order.
+    for (const ws of inlineWidgets.values()) {
+      if (ws.length > 1) ws.sort((a, b) => a.column - b.column)
+    }
+
     const widgetAdjustments = new Map<EditorWidget, { startVisualLine: number; anchorVisualLine: number }>()
     if (this.options.wordWrap) {
       // In wordWrap mode, only the first wrapped segment of a logical line expands into empty logical lines above.
@@ -3903,7 +3916,6 @@ export class CanvasEditor {
 
   private getWrappedLineOffscreenKey(
     wrappedLine: WrappedLine,
-    segmentTokens: Token[] | null,
     inlineWidgets: { widget: EditorWidget; column: number }[],
     textPadding: number,
     theme: Theme,
@@ -3915,17 +3927,6 @@ export class CanvasEditor {
     h = hashNumber(h, wrappedLine.endColumn)
     h = hashNumber(h, textPadding)
     h = hashString(h, theme.font)
-
-    if (segmentTokens) {
-      h = hashNumber(h, segmentTokens.length)
-      for (const t of segmentTokens) {
-        h = hashString(h, t.type)
-        h = hashString(h, t.content)
-      }
-    }
-    else {
-      h = hashString(h, wrappedLine.text)
-    }
 
     if (inlineWidgets.length > 0) {
       h = hashNumber(h, inlineWidgets.length)
@@ -4389,7 +4390,7 @@ export class CanvasEditor {
             wrappedLine.endColumn,
           )
           const columnInWrappedLine = (col: number) => col - wrappedLine.startColumn
-          const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+          const sortedInlineWidgets = inlineWidgetsForLine
 
           let currentX = textPadding
           let tokenIndex = 0
@@ -4434,7 +4435,7 @@ export class CanvasEditor {
         }
         else {
           let currentX = textPadding
-          const sortedInlineWidgets = [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
+          const sortedInlineWidgets = inlineWidgetsForLine
 
           for (const { widget, column } of sortedInlineWidgets) {
             const columnInWrappedLine = column - wrappedLine.startColumn
@@ -4508,6 +4509,7 @@ export class CanvasEditor {
     this.offscreenLineCache.setDpr(window.devicePixelRatio || 1)
     this.offscreenLineCache.setCapacity(wrappedLines.length + 200)
 
+    const emptyInlineWidgets: { widget: EditorWidget; column: number }[] = []
     wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
       const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
       let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
@@ -4521,37 +4523,30 @@ export class CanvasEditor {
         return
       }
 
-      const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || []
-      const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
-
-      const sortedInlineWidgets = inlineWidgetsForLine.length <= 1
-        ? inlineWidgetsForLine
-        : [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
-
-      const segmentTokens = logicalHighlighted
-        ? extractTokensForSegment(
-          logicalHighlighted.tokens,
-          wrappedLine.startColumn,
-          wrappedLine.endColumn,
-        )
-        : null
-
-      const key = this.getWrappedLineOffscreenKey(
-        wrappedLine,
-        segmentTokens,
-        sortedInlineWidgets,
-        textPadding,
-        theme,
-      )
-
       const id = `${wrappedLine.logicalLine}:${wrappedLine.startColumn}:${wrappedLine.endColumn}`
       const entry = this.offscreenLineCache.get(id, wrappedLine.logicalLine, width, this.lineHeight + 12)
 
       if (entry) {
+        const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || emptyInlineWidgets
+        const key = this.getWrappedLineOffscreenKey(
+          wrappedLine,
+          inlineWidgetsForLine,
+          textPadding,
+          theme,
+        )
         const needsRender = entry.key !== key
         if (needsRender) {
           entry.key = key
           entry.cssWidth = Math.max(entry.cssWidth, Math.ceil(width))
+
+          const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+          const segmentTokens = logicalHighlighted
+            ? extractTokensForSegment(
+              logicalHighlighted.tokens,
+              wrappedLine.startColumn,
+              wrappedLine.endColumn,
+            )
+            : null
 
           const render = (): number => {
             this.offscreenLineCache.ensureCanvasSize(entry)
@@ -4564,7 +4559,7 @@ export class CanvasEditor {
               theme,
               textPadding,
               segmentTokens,
-              sortedInlineWidgets,
+              inlineWidgetsForLine,
             )
           }
 
@@ -4589,6 +4584,15 @@ export class CanvasEditor {
         )
       }
       else {
+        const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(visualIndex) || emptyInlineWidgets
+        const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+        const segmentTokens = logicalHighlighted
+          ? extractTokensForSegment(
+            logicalHighlighted.tokens,
+            wrappedLine.startColumn,
+            wrappedLine.endColumn,
+          )
+          : null
         this.drawWrappedLineText(
           ctx,
           wrappedLine,
@@ -4596,11 +4600,13 @@ export class CanvasEditor {
           theme,
           textPadding,
           segmentTokens,
-          sortedInlineWidgets,
+          inlineWidgetsForLine,
         )
       }
 
-      if (matchingBraces && logicalHighlighted) {
+      if (matchingBraces) {
+        const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
+        if (!logicalHighlighted) return
         this.drawBraceMatchingForWrappedLine(
           ctx,
           highlightedCode,
@@ -5367,7 +5373,7 @@ export class CanvasEditor {
         if (changed && this.lastAutocompleteInfo !== null) {
           // Delay slightly to ensure caret/layout state is finalized before measuring
           // Use higher priority to ensure position updates before popup draws
-          animationManager.register(this.animId('autocompleteDelay'), (timestamp) => {
+          animationManager.register(this.animId('autocompleteDelay'), timestamp => {
             animationManager.unregister(this.animId('autocompleteDelay'))
             const ctx = this.canvas.getContext('2d')
             if (!ctx) return
@@ -5661,7 +5667,7 @@ export class CanvasEditor {
     const ws = widgetLayout.widgetsByVisualLine.get(clampedVisualLineIndex)
     let aboveHeight = 0
     if (ws?.above && ws.above.length > 0) {
-      aboveHeight = Math.max(...ws.above.map(w => this.getWidgetHeight(w)))
+      aboveHeight = this.getAboveSpacingHeight(wrappedLines, clampedVisualLineIndex, ws.above)
     }
     const lineTextTop = this.padding + clampedVisualLineIndex * this.lineHeight + yOffset + aboveHeight
     const lineTextBottom = lineTextTop + this.lineHeight
@@ -5672,10 +5678,8 @@ export class CanvasEditor {
 
     // Ignore hover when over inline widgets and when outside the drawn text width.
     const xInLine = adjustedX - textPadding
-    const inlineWidgetsForLine = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || []
-    const sortedInlineWidgets = inlineWidgetsForLine.length > 0
-      ? [...inlineWidgetsForLine].sort((a, b) => a.column - b.column)
-      : []
+    const emptyInlineWidgets: { widget: EditorWidget; column: number }[] = []
+    const sortedInlineWidgets = widgetLayout.inlineWidgets.get(clampedVisualLineIndex) || emptyInlineWidgets
 
     let currentX = 0
     let visualColumn = 0
