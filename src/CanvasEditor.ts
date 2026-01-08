@@ -7,14 +7,13 @@ import {
   KEYWORDS,
 } from './autocomplete.ts'
 import type { EditorError } from './editor-error.ts'
+import type { FunctionSignature } from './function-signature.ts'
 import {
   calculatePopupPosition,
   findFunctionCallContext,
   findVariableHoverContext,
   type FunctionCallInfo,
-  type VariableHoverInfo,
 } from './function-signature.ts'
-import type { FunctionSignature } from './function-signature.ts'
 import type { InputState } from './input.ts'
 import { drawTokensWithCustomLigatures, extractTokensForSegment } from './mono-text.ts'
 import { type PopupCanvasDrawable, setPopupCanvasDrawable } from './popup-canvas.ts'
@@ -4510,7 +4509,8 @@ export class CanvasEditor {
     this.offscreenLineCache.setCapacity(wrappedLines.length + 200)
 
     const emptyInlineWidgets: { widget: EditorWidget; column: number }[] = []
-    wrappedLines.forEach((wrappedLine: WrappedLine, visualIndex: number) => {
+    for (let visualIndex = 0; visualIndex < wrappedLines.length; visualIndex++) {
+      const wrappedLine = wrappedLines[visualIndex]
       const yOffset = widgetLayout.yOffsets.get(visualIndex) || 0
       let y = this.padding + visualIndex * this.lineHeight + yOffset - 1.5
 
@@ -4520,7 +4520,7 @@ export class CanvasEditor {
       }
 
       if (y + this.lineHeight < visibleStartY || y > visibleEndY) {
-        return
+        continue
       }
 
       const id = `${wrappedLine.logicalLine}:${wrappedLine.startColumn}:${wrappedLine.endColumn}`
@@ -4606,7 +4606,7 @@ export class CanvasEditor {
 
       if (matchingBraces) {
         const logicalHighlighted = highlightedCode[wrappedLine.logicalLine]
-        if (!logicalHighlighted) return
+        if (!logicalHighlighted) continue
         this.drawBraceMatchingForWrappedLine(
           ctx,
           highlightedCode,
@@ -4617,7 +4617,7 @@ export class CanvasEditor {
           matchingBraces,
         )
       }
-    })
+    }
 
     // Draw error squiggles
     if (this.errors.length > 0) {
