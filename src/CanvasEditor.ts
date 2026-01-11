@@ -529,6 +529,9 @@ export class CanvasEditor {
   private resizeObserver: ResizeObserver | null = null
   private scrollX = 0
   private scrollY = 0
+  private targetScrollX = 0
+  private targetScrollY = 0
+  private readonly scrollSmoothAlpha = 0.18
   private readonly padding = 16
   private readonly lineHeight = 20
   private isActive = false
@@ -1852,7 +1855,8 @@ export class CanvasEditor {
       // Canvas got narrower - adjust scroll to keep right edge visible
       const rightEdge = this.scrollX + oldWidth
       if (rightEdge > newWidth) {
-        this.scrollX = Math.max(0, rightEdge - newWidth)
+        this.targetScrollX = Math.max(0, rightEdge - newWidth)
+        this.scrollX = this.targetScrollX
       }
     }
 
@@ -1862,13 +1866,16 @@ export class CanvasEditor {
       // Canvas got shorter - adjust scroll to keep bottom edge visible
       const bottomEdge = this.scrollY + oldContentHeight
       if (bottomEdge > newContentHeight) {
-        this.scrollY = Math.max(0, bottomEdge - newContentHeight)
+        this.targetScrollY = Math.max(0, bottomEdge - newContentHeight)
+        this.scrollY = this.targetScrollY
       }
     }
 
     // Clamp scroll values to new maximums
-    this.scrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
-    this.scrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
+    this.targetScrollX = Math.min(Math.max(this.targetScrollX, 0), maxScrollX)
+    this.targetScrollY = Math.min(Math.max(this.targetScrollY, 0), maxScrollY)
+    this.scrollX = this.targetScrollX
+    this.scrollY = this.targetScrollY
 
     // Notify about scroll changes
     this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
@@ -2471,12 +2478,13 @@ export class CanvasEditor {
     const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
     const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
-    const nextScrollX = x === null ? this.scrollX : Math.min(Math.max(x, 0), maxScrollX)
-    const nextScrollY = y === null ? this.scrollY : Math.min(Math.max(y, 0), maxScrollY)
+    const nextScrollX = x === null ? this.targetScrollX : Math.min(Math.max(x, 0), maxScrollX)
+    const nextScrollY = y === null ? this.targetScrollY : Math.min(Math.max(y, 0), maxScrollY)
 
-    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-      this.scrollX = nextScrollX
-      this.scrollY = nextScrollY
+    if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+      this.targetScrollX = nextScrollX
+      this.targetScrollY = nextScrollY
+      this.startAnimationLoop()
       this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       this.publishScrollMetrics(
         ctx,
@@ -2514,12 +2522,13 @@ export class CanvasEditor {
     const maxScrollX = Math.max(0, contentSize.width - viewportWidth)
     const maxScrollY = Math.max(0, contentSize.height - viewportHeight)
 
-    const nextScrollX = x === null ? this.scrollX : Math.min(Math.max(x, 0), maxScrollX)
-    const nextScrollY = y === null ? this.scrollY : Math.min(Math.max(y, 0), maxScrollY)
+    const nextScrollX = x === null ? this.targetScrollX : Math.min(Math.max(x, 0), maxScrollX)
+    const nextScrollY = y === null ? this.targetScrollY : Math.min(Math.max(y, 0), maxScrollY)
 
-    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-      this.scrollX = nextScrollX
-      this.scrollY = nextScrollY
+    if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+      this.targetScrollX = nextScrollX
+      this.targetScrollY = nextScrollY
+      this.startAnimationLoop()
       this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       this.publishScrollMetrics(
         ctx,
@@ -2746,16 +2755,14 @@ export class CanvasEditor {
         this.wheelScrollDebounceTimer = null
       }
 
-      // If we're actively scrolling (debounce active), always prevent default (even at the end)
+      // If we're actively scrolling (debounce active), only prevent default if there's more scroll available
       // If we're not actively scrolling (debounce completed), only prevent if there's more scroll (not at the end)
       // If there's more vertical scroll available, always prevent default regardless of dominant scroll intent
       const hasScrollToPrevent = hasMoreScrollY
         ? true
         : (horizontalIntent ? canScrollXInDirection : canScrollYInDirection)
 
-      const shouldPrevent = this.isWheelScrolling
-        ? (hasScrollToPrevent || isAtEndY)
-        : hasScrollToPrevent
+      const shouldPrevent = hasScrollToPrevent
 
       if (!shouldPrevent) {
         // Set debounce timer to mark scrolling as stopped
@@ -2777,12 +2784,13 @@ export class CanvasEditor {
 
       e.preventDefault()
 
-      const nextScrollX = Math.min(Math.max(this.scrollX + finalDeltaX, 0), maxScrollX)
-      const nextScrollY = Math.min(Math.max(this.scrollY + finalDeltaY, 0), maxScrollY)
+      const nextScrollX = Math.min(Math.max(this.targetScrollX + finalDeltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.targetScrollY + finalDeltaY, 0), maxScrollY)
 
-      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-        this.scrollX = nextScrollX
-        this.scrollY = nextScrollY
+      if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+        this.targetScrollX = nextScrollX
+        this.targetScrollY = nextScrollY
+        this.startAnimationLoop()
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
         this.publishScrollMetrics(
           ctx,
@@ -2949,6 +2957,8 @@ export class CanvasEditor {
       const nextScrollY = Math.min(Math.max(this.touchStartScrollY + deltaY, 0), maxScrollY)
 
       if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+        this.targetScrollX = nextScrollX
+        this.targetScrollY = nextScrollY
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         this.touchScrolled = true
@@ -3230,14 +3240,19 @@ export class CanvasEditor {
     nextScrollX = Math.min(Math.max(nextScrollX, 0), maxScrollX)
     nextScrollY = Math.min(Math.max(nextScrollY, 0), maxScrollY)
 
-    if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
+    if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+      this.targetScrollX = nextScrollX
+      this.targetScrollY = nextScrollY
       this.scrollX = nextScrollX
       this.scrollY = nextScrollY
+      this.startAnimationLoop()
       queueMicrotask(() => {
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       })
       // This eliminates a weird flicker probably caused by some other reactive change
       animationManager.nextFrame(this.animId('scrollFlickerFix'), () => {
+        this.targetScrollX = nextScrollX
+        this.targetScrollY = nextScrollY
         this.scrollX = nextScrollX
         this.scrollY = nextScrollY
         queueMicrotask(() => {
@@ -3398,9 +3413,10 @@ export class CanvasEditor {
       }
 
       // Update scroll position
-      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-        this.scrollX = nextScrollX
-        this.scrollY = nextScrollY
+      if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+        this.targetScrollX = nextScrollX
+        this.targetScrollY = nextScrollY
+        this.startAnimationLoop()
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
         this.publishScrollMetrics(
           ctx,
@@ -3496,9 +3512,10 @@ export class CanvasEditor {
         )
       }
 
-      if (nextScrollX !== this.scrollX || nextScrollY !== this.scrollY) {
-        this.scrollX = nextScrollX
-        this.scrollY = nextScrollY
+      if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
+        this.targetScrollX = nextScrollX
+        this.targetScrollY = nextScrollY
+        this.startAnimationLoop()
         this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
         this.maybeDraw()
         this.updateFunctionSignature()
@@ -3568,6 +3585,46 @@ export class CanvasEditor {
     if (animationManager.isRegistered(this.animId('mainAnimation'))) return
 
     const animate = () => {
+      const diffX = this.targetScrollX - this.scrollX
+      const diffY = this.targetScrollY - this.scrollY
+
+      if (Math.abs(diffX) > 0.01 || Math.abs(diffY) > 0.01) {
+        const ctx = this.canvas.getContext('2d')
+        if (ctx) {
+          this.setFont(ctx)
+          const dpr = window.devicePixelRatio || 1
+          const viewportWidth = this.canvas.width / dpr
+          const headerHeight = this.getHeaderHeight()
+          const viewportHeight = (this.canvas.height / dpr) - headerHeight
+
+          const maxDistance = Math.max(viewportWidth, viewportHeight)
+          const distanceX = Math.abs(diffX)
+          const distanceY = Math.abs(diffY)
+          const maxDistanceXY = Math.max(distanceX, distanceY)
+          const normalizedDistance = Math.min(1, maxDistanceXY / maxDistance)
+
+          const baseAlpha = this.scrollSmoothAlpha
+          const easeInFactor = normalizedDistance * normalizedDistance
+          const alpha = baseAlpha * (1 - easeInFactor * 0.01)
+
+          this.scrollX += diffX * alpha
+          this.scrollY += diffY * alpha
+
+          const contentSize = this.options.wordWrap
+            ? this.getContentSizeWithWrapping(ctx, this.getWrappedLines(ctx))
+            : this.getContentSize(ctx)
+
+          this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
+          this.publishScrollMetrics(
+            ctx,
+            viewportWidth,
+            viewportHeight,
+            contentSize.width,
+            contentSize.height,
+          )
+        }
+      }
+
       this.draw()
     }
 
@@ -4102,12 +4159,15 @@ export class CanvasEditor {
     // Clamp scroll position to content bounds before drawing (use content height)
     const maxScrollX = Math.max(0, content.width - width)
     const maxScrollY = Math.max(0, content.height - contentHeight)
-    const clampedScrollX = Math.min(Math.max(this.scrollX, 0), maxScrollX)
-    const clampedScrollY = Math.min(Math.max(this.scrollY, 0), maxScrollY)
+    const clampedScrollX = Math.min(Math.max(this.targetScrollX, 0), maxScrollX)
+    const clampedScrollY = Math.min(Math.max(this.targetScrollY, 0), maxScrollY)
 
-    if (clampedScrollX !== this.scrollX || clampedScrollY !== this.scrollY) {
+    if (clampedScrollX !== this.targetScrollX || clampedScrollY !== this.targetScrollY) {
+      this.targetScrollX = clampedScrollX
+      this.targetScrollY = clampedScrollY
       this.scrollX = clampedScrollX
       this.scrollY = clampedScrollY
+      this.startAnimationLoop()
       this.callbacks.onScrollChange?.(this.scrollX, this.scrollY)
       // Re-publish metrics with updated scroll position
       this.publishScrollMetrics(ctx, width, contentHeight, content.width, content.height)
