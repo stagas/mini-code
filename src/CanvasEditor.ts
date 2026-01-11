@@ -2722,32 +2722,15 @@ export class CanvasEditor {
 
       // Determine dominant intent and only prevent default if that axis can scroll
       const horizontalIntent = this.currentDominantAxis === 'horizontal'
-      // Treat very small remaining scroll room as non-scrollable to avoid trapping the page
-      const epsilon = 1
-      const canScrollHorizontally = finalDeltaX !== 0 && maxScrollX > epsilon
-      const canScrollVertically = finalDeltaY !== 0 && maxScrollY > epsilon
+
+      // Calculate what the next scroll position would be
+      const nextScrollX = Math.min(Math.max(this.targetScrollX + finalDeltaX, 0), maxScrollX)
+      const nextScrollY = Math.min(Math.max(this.targetScrollY + finalDeltaY, 0), maxScrollY)
 
       // Check if we can actually scroll in the direction we're trying to scroll
-      const canScrollXInDirection = canScrollHorizontally
-        && ((finalDeltaX > 0 && this.scrollX < maxScrollX)
-          || (finalDeltaX < 0 && this.scrollX > 0))
-      const canScrollYInDirection = canScrollVertically
-        && ((finalDeltaY > 0 && this.scrollY < maxScrollY)
-          || (finalDeltaY < 0 && this.scrollY > 0))
-
-      // Check if there's more scroll available in the y direction
-      // For vertical scrolling, check if we can scroll in that direction
-      // For horizontal scrolling, check if there's any vertical scroll room
-      const hasMoreScrollY = maxScrollY > epsilon
-        && (finalDeltaY !== 0
-          ? canScrollYInDirection
-          : (this.scrollY < maxScrollY || this.scrollY > 0))
-
-      // Check if we're at the end of vertical scroll
-      const isAtEndY = maxScrollY > epsilon
-        && ((finalDeltaY > 0 && this.scrollY >= maxScrollY)
-          || (finalDeltaY < 0 && this.scrollY <= 0)
-          || (finalDeltaY === 0 && this.scrollY >= maxScrollY))
+      // Only prevent default if the scroll position would actually change
+      const wouldScrollX = nextScrollX !== this.targetScrollX
+      const wouldScrollY = nextScrollY !== this.targetScrollY
 
       // Clear existing debounce timer
       if (this.wheelScrollDebounceTimer !== null) {
@@ -2755,14 +2738,11 @@ export class CanvasEditor {
         this.wheelScrollDebounceTimer = null
       }
 
-      // If we're actively scrolling (debounce active), only prevent default if there's more scroll available
-      // If we're not actively scrolling (debounce completed), only prevent if there's more scroll (not at the end)
-      // If there's more vertical scroll available, always prevent default regardless of dominant scroll intent
-      const hasScrollToPrevent = hasMoreScrollY
-        ? true
-        : (horizontalIntent ? canScrollXInDirection : canScrollYInDirection)
-
-      const shouldPrevent = hasScrollToPrevent
+      // If we're actively scrolling (debounce active), always prevent default (even at the end)
+      // If we're not actively scrolling (debounce completed), only prevent if there's more scroll
+      // This blocks overscroll during active scrolling, but allows it after releasing
+      const canScrollInDirection = horizontalIntent ? wouldScrollX : wouldScrollY
+      const shouldPrevent = this.isWheelScrolling ? true : canScrollInDirection
 
       if (!shouldPrevent) {
         // Set debounce timer to mark scrolling as stopped
@@ -2783,9 +2763,6 @@ export class CanvasEditor {
       }, 100)
 
       e.preventDefault()
-
-      const nextScrollX = Math.min(Math.max(this.targetScrollX + finalDeltaX, 0), maxScrollX)
-      const nextScrollY = Math.min(Math.max(this.targetScrollY + finalDeltaY, 0), maxScrollY)
 
       if (nextScrollX !== this.targetScrollX || nextScrollY !== this.targetScrollY) {
         this.targetScrollX = nextScrollX
