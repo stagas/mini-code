@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { getActiveEditor, setActiveEditor, subscribeActiveEditor } from './active-editor.ts'
-import { type AutocompleteInfo, findCurrentWord } from './autocomplete.ts'
+import { type AutocompleteInfo } from './autocomplete.ts'
 import { CanvasEditor, type CanvasEditorCallbacks, type EditorHeader, type EditorWidget } from './CanvasEditor.ts'
 import { CodeFile, type CodeFileEvent, type CodeFileState } from './CodeFile.ts'
 import { type EditorError } from './editor-error.ts'
